@@ -1,0 +1,326 @@
+---
+title: Erişim, blip’ler ve yer NPC’leri
+description: "readAccess, isPublic, decideAccess, ACCESS_FIELDS, accessFields, readBlipStyle, BLIP_STYLE_FIELDS, PLACE_PED_SPEC, placePedFields ve readPlacePed: her yerin paylaştığı panel parçaları."
+icon: MapPin
+---
+
+Bir script’in eklediği yerlerin çoğu (bir market, bir depo, bir garaj, bir belediye binası) aynı üç panel parçasına sahiptir: **kimin kullanabileceği**, **harita blip’i** ve **orada duran bir NPC**. Her parça üçlü olarak gelir: `schema.ts` için bir veri tanımı, ai-core’un kendi etiketleriyle hazır panel alanları ve kaydedilen değer için bir okuyucu. Her script’in paneli aynı görünsün ve aynı davransın diye bunları kullan.
+
+```ts title="TypeScript"
+import { readAccess, isPublic, decideAccess, ACCESS_FIELDS, accessFields, readBlipStyle, BLIP_STYLE_FIELDS, PLACE_PED_SPEC, placePedFields, readPlacePed } from "@aicore-fivem/lib/shared";
+```
+
+**Lua:** bunların hiçbirinin Lua karşılığı yok (admin paneli yalnızca TypeScript’tir).
+
+## Erişim
+
+Kural bir [AccessRule](/tr/docs/developers/api/types#accessrule)’dır: listelenen mesleklerden biri (minimum rütbesinde, `onDuty` ayarlıysa görevde) ya da listelenen çetelerden biri (minimum rütbesinde). İki liste de boşsa herkes demektir. Client kontrolü (`allows(rule)`, bkz. [Üyelik](/tr/docs/developers/api/lib-client/membership)) ve server kontrolü (`online.allows(source, rule)`, bkz. [Oyuncular](/tr/docs/developers/api/lib-server/players)) aynı kararı kullanır; böylece oyuncunun gördüğü server’ın izin verdiğiyle eşleşir.
+
+### readAccess
+
+Bir kaydın kendi alanlarından (`jobs`, `gangs`, `grades`, `onDuty`) bir erişim kuralı okur. Eksik alanlar herkesin kullanabileceği anlamına gelir.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readAccess(value: unknown): AccessRule
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Kayıt (ya da erişim alanlarını tutan herhangi bir nesne).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`AccessRule`. String olmayan adlar atılır; 0 ya da daha büyük tam sayı olmayan rütbeler atılır.
+
+#### Örnek
+
+```ts
+import { readAccess } from "@aicore-fivem/lib/shared";
+
+readAccess({ label: "Armoury", jobs: ["police"], grades: { police: 2 }, onDuty: true });
+// { jobs: ["police"], gangs: [], grades: { police: 2 }, onDuty: true }
+```
+
+### isPublic
+
+Bir kuralın herkesi içeri alıp almadığı (hiç meslek ve hiç çete listelenmemiş). Kontrolleri atlamak ve bir yeri herkese göstermek için kullan.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+isPublic(rule: AccessRule): boolean
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'Test edilecek kural.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hem `jobs` hem `gangs` boşsa `true`.
+
+#### Örnek
+
+```ts
+import { isPublic, readAccess } from "@aicore-fivem/lib/shared";
+
+isPublic(readAccess({})); // true
+```
+
+### decideAccess
+
+Bir oyuncunun üyeliklerinden kuralın kararı. Client’ın `allows`’u ve server’ın `online.allows`’u bunu senin için çağırır; onu yalnızca üyelikleri başka bir yoldan tuttuğunda (bir NUI sayfası, bir test) kendin çağır.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+decideAccess(
+  rule: AccessRule,
+  jobs: ReadonlyArray<{ job: string; grade: number }>,
+  gangs: ReadonlyArray<{ gang: string; grade: number }>,
+  dutyJob: string | null,
+): boolean
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'Yerin kuralı.', required: true },
+    jobs: { type: 'ReadonlyArray<JobMembership>', description: 'Oyuncunun meslekleri.', required: true },
+    gangs: { type: 'ReadonlyArray<GangMembership>', description: 'Oyuncunun çeteleri.', required: true },
+    dutyJob: { type: 'string | null', description: 'Oyuncunun görevde olduğu meslek; görevde değilken `null`.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Kural herkese açıksa, listelenen bir çete minimum rütbesinde eşleşiyorsa ya da listelenen bir meslek minimum rütbesinde eşleşiyorsa (ve `onDuty` ayarlıysa oyuncu o meslekte görevdeyse) `true`.
+
+#### Örnek
+
+```ts
+import { decideAccess, readAccess } from "@aicore-fivem/lib/shared";
+
+const rule = readAccess({ jobs: ["police"], grades: { police: 2 }, onDuty: true });
+decideAccess(rule, [{ job: "police", grade: 3 }], [], "police"); // true
+decideAccess(rule, [{ job: "police", grade: 3 }], [], null);     // false: görevde değil
+```
+
+### ACCESS_FIELDS
+
+Erişim alanlarının veri tanımı; `schema.ts` içindeki bir records dosyasının `sections`’ına yayılmak için.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+const ACCESS_FIELDS: Record<string, DataSpec>
+// { jobs: meslek aramalı adlar, isteğe bağlı; gangs: çete aramalı adlar, isteğe bağlı; onDuty: bool, isteğe bağlı }
+```
+
+#### Örnek
+
+```ts title="resource/server/schema.ts"
+import { ACCESS_FIELDS } from "@aicore-fivem/lib/shared";
+
+const stashSections = {
+  label: { type: "text", min: 1, max: 48 },
+  coords: { type: "vec3" },
+  ...ACCESS_FIELDS,
+};
+```
+
+### accessFields
+
+Erişim kuralının panel alanları (meslek etiketleri, çete etiketleri, bir görevde anahtarı); ai-core’un kendi panel etiketleri ve ipuçları zaten ayarlı.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+accessFields(): WidgetSpec[]
+```
+
+#### Dönüş değeri
+
+`WidgetSpec[]`: `jobs`, `gangs` ve `onDuty` yollarında üç alan. Onları panelinin `tabs`’ındaki bir kartın `fields`’ına yay.
+
+#### Örnek
+
+```ts title="resource/server/schema.ts"
+import { accessFields } from "@aicore-fivem/lib/shared";
+
+import type { CardSpec } from "@aicore-fivem/shared";
+
+const accessCard: CardSpec = { icon: "lock", title: "ADMIN_CARD_ACCESS", fields: [...accessFields()] };
+```
+
+<Callout type="info">
+`ACCESS_FIELDS` ve `accessFields()` yalnızca `jobs`, `gangs` ve `onDuty`’yi kapsar. `readAccess`, kayıtta varsa `grades`’i (`{ police: 2 }`) de okur; o olmadan listelenen her meslek ya da çete 0 rütbesini gerektirir.
+</Callout>
+
+## Blip’ler
+
+### readBlipStyle
+
+Panel verisinden bir blip stili okur. Eksik ya da hatalı her parça yedekten gelir; değerler aralıkta tutulur (sprite 0-1000, renk 0-100, ölçek 0.3-2).
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readBlipStyle(value: unknown, fallback: BlipStyle): BlipStyle
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Kaydedilen stil (`{ sprite, color, scale }`).', required: true },
+    fallback: { type: 'BlipStyle', description: 'Script’inin varsayılan stili.', required: true, typeDescription: '{ sprite, color, scale }' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Bir [BlipStyle](/tr/docs/developers/api/types#blipstyle).
+
+#### Örnek
+
+```ts
+import { readBlipStyle } from "@aicore-fivem/lib/shared";
+
+readBlipStyle({ sprite: 52, color: 500 }, { sprite: 52, color: 2, scale: 0.8 });
+// { sprite: 52, color: 100, scale: 0.8 }: renk sıkıştırıldı, ölçek yedekten
+```
+
+### BLIP_STYLE_FIELDS
+
+Bir blip stilinin alanlarının veri tanımı; `schema.ts` içinde `{ type: "object", fields: BLIP_STYLE_FIELDS }` için. Panel onu `blip` widget’ıyla gösterir.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+const BLIP_STYLE_FIELDS: Record<string, DataSpec>
+// sprite: tam sayı 0-1000, color: tam sayı 0-100, scale: sayı 0.3-2
+```
+
+#### Örnek
+
+```ts title="resource/server/schema.ts"
+import { BLIP_STYLE_FIELDS } from "@aicore-fivem/lib/shared";
+
+const sections = {
+  blip: { type: "bool" },
+  blipStyle: { type: "object", optional: true, fields: BLIP_STYLE_FIELDS },
+};
+```
+
+## Yer NPC’leri
+
+### PLACE_PED_SPEC
+
+Bir yerin `ped` bölümünün veri tanımı: model, bekleme senaryosu ve konum, hepsi isteğe bağlı. Modeli olmayan bir yerin NPC’si yoktur.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+const PLACE_PED_SPEC: DataSpec
+// { type: "object", optional: true, fields: { model: 64’e kadar metin, scenario: sunulan senaryolardan biri, coords: vec4 } }
+```
+
+Panelin sunduğu senaryolar: yok (hareketsiz durur), `WORLD_HUMAN_STAND_IMPATIENT`, `WORLD_HUMAN_CLIPBOARD`, `WORLD_HUMAN_STAND_MOBILE`, `WORLD_HUMAN_AA_COFFEE`, `WORLD_HUMAN_SMOKING`, `WORLD_HUMAN_GUARD_STAND`, `WORLD_HUMAN_COP_IDLES`, `WORLD_HUMAN_HANG_OUT_STREET`.
+
+#### Örnek
+
+```ts title="resource/server/schema.ts"
+import { PLACE_PED_SPEC } from "@aicore-fivem/lib/shared";
+
+const sections = { ped: PLACE_PED_SPEC, label: { type: "text", min: 1, max: 48 } };
+```
+
+### placePedFields
+
+Bir yerin NPC’sinin panel alanları: bir ped model seçici, bir senaryo seçimi ve zemine oturan, heading’li bir nokta aracı. Etiketler ai-core’un kendisinindir.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+placePedFields(path?: string): WidgetSpec[]
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    path: { type: 'string', description: 'Ped bölümünün kayıtta bulunduğu yer.', default: '"ped"' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`WidgetSpec[]`: `<path>.model`, `<path>.scenario` ve `<path>.coords` yollarında üç alan.
+
+#### Örnek
+
+```ts title="resource/server/schema.ts"
+import { placePedFields } from "@aicore-fivem/lib/shared";
+
+import type { CardSpec } from "@aicore-fivem/shared";
+
+const npcCard: CardSpec = { icon: "user", title: "ADMIN_CARD_NPC", fields: [...placePedFields()] };
+```
+
+### readPlacePed
+
+Panel verisinden bir yerin NPC’sini okur.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readPlacePed(value: unknown): PlacePed | null
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Kaydedilen `ped` bölümü.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Bir [PlacePed](/tr/docs/developers/api/types#placeped) ya da model yoksa (yerin NPC’si yok) `null`. `x`, `y`, `z` ve `heading`’in hepsi sayı değilse `coords` dışarıda bırakılır; boş bir senaryo dışarıda bırakılır.
+
+#### Örnek
+
+```ts title="resource/common/shop.ts"
+import { readPlacePed, readBlipStyle, readAccess, str, type PlacePed, type BlipStyle, type AccessRule } from "@aicore-fivem/lib/shared";
+
+export interface Shop {
+  label: string;
+  ped: PlacePed | null;
+  blipStyle: BlipStyle;
+  access: AccessRule;
+}
+
+export function readShop(id: string, v: Record<string, unknown>): Shop {
+  return {
+    label: str(v.label, id, 48),
+    ped: readPlacePed(v.ped),
+    blipStyle: readBlipStyle(v.blipStyle, { sprite: 52, color: 2, scale: 0.8 }),
+    access: readAccess(v),
+  };
+}
+```
+
+Client’ta `shop.ped ?? undefined`’ı bir `Points` noktasının `ped` seçeneği olarak geçir: nokta NPC’yi oluşturur ve target seçeneğini onun üzerine koyar.

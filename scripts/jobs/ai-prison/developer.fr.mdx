@@ -1,0 +1,225 @@
+---
+title: ai-prison pour les développeurs
+description: Incarcérer, libérer et lire le temps restant à travers la couche prison d’AI Core, les exports serveur d’ai-prison et les métadonnées de personnage qu’il conserve.
+icon: Code
+---
+
+<Callout type="info">
+Pour incarcérer depuis votre script, utilisez `prison.jail`, `prison.release` et `prison.timeLeft` de la lib (TypeScript) ou `aiLib.prison.*` (Lua). Ils passent par la couche prison d’AI Core et atteignent le script de prison qui tourne, quel qu’il soit (ai-prison, qb-prison, rcore_prison, xt-prison, tgiann-policejob). Les exports plus bas sont ce qu’appelle cette couche tant qu’ai-prison tourne.
+</Callout>
+
+## Fonctions de la lib (recommandé)
+
+### prison.jail
+
+Envoie un joueur chargé en prison pour un certain nombre de minutes. Avec ai-prison : le joueur va dans une cellule, les objets sont confisqués (interrupteur du panneau), la peine est ramenée à **Longest sentence**, et une fiche MDT `jail` est écrite.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+prison.jail(source: number, minutes: number, by?: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.prison.jail(source, minutes, by)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serveur du joueur à incarcérer. Nécessite un personnage chargé.', required: true },
+    minutes: { type: 'number', description: 'Durée de la peine en minutes. ai-prison l’arrondit vers le bas, la porte à au moins 1 et la ramène à la Longest sentence du panneau.', required: true },
+    by: { type: 'number', description: 'Id serveur de qui l’a envoyé (l’agent), pour le log et la fiche MDT. 0 = personne.', default: '0' },
+  }}
+/>
+
+#### Retour
+
+`true` quand le script de prison a pris la peine. `false` quand aucun script de prison ne tourne ou que le joueur n’a pas de personnage chargé.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, notify, prison } from "@aicore-fivem/lib/server";
+
+// /judge <id> <minutes> : pour les joueurs ayant le principal de juge.
+addCommand(
+  "judge",
+  {
+    help: "Sentence a player",
+    restricted: "ai.job.judge",
+    params: [
+      { name: "id", type: "playerId" },
+      { name: "minutes", type: "number" },
+    ] as const,
+  },
+  (source, { id, minutes }) => {
+    if (!prison.jail(id, minutes, source))
+      notify(source, "No prison is running", "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua : shared_script '@ai-lib/init.lua')
+aiLib.addCommand('judge', {
+  help = 'Sentence a player',
+  restricted = 'ai.job.judge',
+  params = {
+    { name = 'id', type = 'playerId' },
+    { name = 'minutes', type = 'number' },
+  },
+}, function(source, args)
+  if not aiLib.prison.jail(args.id, args.minutes, source) then
+    aiLib.notify(source, 'No prison is running', 'error')
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Incarcérer un joueur déjà incarcéré **règle** la peine à la nouvelle durée (elle ne s’ajoute pas). Avec tgiann-policejob comme script de prison, les minutes s’ajoutent au contraire.
+</Callout>
+
+### prison.release
+
+Libère maintenant un joueur incarcéré. Avec ai-prison : il va au point de libération et récupère ses objets confisqués.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+prison.release(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.prison.release(source)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serveur du joueur incarcéré.', required: true },
+  }}
+/>
+
+#### Retour
+
+`true` quand le joueur était incarcéré et est maintenant libre. `false` quand il n’était pas incarcéré ou qu’aucun script de prison ne tourne.
+
+### prison.timeLeft
+
+Minutes de peine restantes.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+prison.timeLeft(source: number): number
+```
+
+```lua title="Lua"
+local minutes = aiLib.prison.timeLeft(source)
+```
+
+#### Retour
+
+Les minutes restantes, `0` quand le joueur est libre ou qu’aucun script de prison ne tourne.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, prison } from "@aicore-fivem/lib/server";
+
+inventory.registerUsableItem("phone", (source: number) => {
+  if (prison.timeLeft(source) > 0) {
+    notify(source, "No phones in prison", "error");
+    return;
+  }
+  // ... ouvrir le téléphone
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.inventory.registerUsableItem('phone', function(source)
+  if aiLib.prison.timeLeft(source) > 0 then
+    aiLib.notify(source, 'No phones in prison', 'error')
+    return
+  end
+  -- ... ouvrir le téléphone
+end)
+```
+</Tab>
+</Tabs>
+
+## Exports serveur
+
+La couche prison les appelle tant qu’ai-prison tourne. Ils ne sont pas typés dans `@aicore-fivem/shared` : en TypeScript, appelez-les avec `callExport("ai-prison", name, ...args)`. Chaque export répond aussi sous son jumeau en minuscules (`jailPlayer`).
+
+### JailPlayer
+
+```ts title="Signature"
+JailPlayer(source: number, minutes: number, by?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-prison']:JailPlayer(source, minutes, by)
+```
+
+Même comportement et même valeur de retour que `prison.jail`. Répond `false` quand `source` ou `minutes` n’est pas un nombre.
+
+### ReleasePlayer
+
+```ts title="Signature"
+ReleasePlayer(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-prison']:ReleasePlayer(source)
+```
+
+`true` quand le joueur était incarcéré et est maintenant libéré ; `false` sinon.
+
+### GetJailTime
+
+```ts title="Signature"
+GetJailTime(source: number): number
+```
+
+```lua title="Lua"
+local minutes = exports['ai-prison']:GetJailTime(source)
+```
+
+Minutes restantes, `0` quand il est libre.
+
+## Métadonnées de personnage
+
+ai-prison garde son état dans les métadonnées de personnage d’ai-core (à lire avec `GetMeta(source, key)` sur les exports d’ai-core, ou `PlayerData.metadata` via le pont QB).
+
+| Clé | Type | Ce qu’elle contient |
+| --- | --- | --- |
+| `injail` | `number` | Minutes restantes (la clé de QBCore). Écrire un nombre supérieur à 0 depuis un autre script démarre une peine ; écrire 0 libère. |
+| `jailitems` | `{ name: string; count: number; metadata?: object }[] \| null` | Les objets confisqués à l’entrée, rendus à la libération. |
+| `ai:jailLeftAt` | `number \| null` | Le moment (ms depuis 1970) où le joueur est parti pendant son incarcération, réglé uniquement quand **Count time offline** est activé. |
+
+<Callout type="warn">
+Préférez `prison.jail` à l’écriture de `injail` : il fonctionne avec chaque script de prison, alors que `injail` n’est lu que par ai-prison et les prisons de style QB.
+</Callout>
+
+## Events et callbacks privés
+
+Le contrat propre du script (`resource/common/prison.ts`). Ils peuvent changer d’une version à l’autre : ne les déclenchez pas et ne les écoutez pas depuis d’autres ressources.
+
+| Nom | Direction | Ce qu’il transporte |
+| --- | --- | --- |
+| `ai-prison:client:state` | serveur -> joueur incarcéré | `(minutes)` : minutes restantes, 0 quand il est libre (au chargement, chaque minute, à la libération). |
+| `ai-prison:client:move` | serveur -> joueur incarcéré | `(point)` : téléportation dans une cellule, retour à l’intérieur après une évasion, ou sortie à la libération. |
+| `ai-prison:workStart` | callback client | `(taskId)` : travailler à un poste ; le serveur exécute la barre de progression, puis retire des minutes. |
+| `ai-prison:canteen` | callback client | `()` : un repas de la cantine. |

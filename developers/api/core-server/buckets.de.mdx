@@ -1,0 +1,157 @@
+---
+title: Routing-Buckets
+description: Einen freien Routing-Bucket für eine separate Welt nehmen (ein instanziertes Interior, ein Einbruchshaus) und zurückgeben.
+icon: Layers
+---
+
+Ein **Routing-Bucket** ist eine separate Kopie der Welt: Spieler und Entities in Bucket 5 können die in Bucket 0 (der normalen Welt) weder sehen noch berühren. Nutze einen für eine Welt, die vollständig getrennt sein muss, etwa eine instanzierte Wohnung oder das Innere eines Einbruchshauses. Um Spieler nur innerhalb eines Interiors zu verbergen, sind die Conceal-Natives günstiger.
+
+Jedes Skript nimmt seine Buckets aus dem Allocator von ai-core, sodass nie zwei Skripte denselben nutzen. Wähle nie selbst eine Bucket-Nummer (`1000 + houseId`).
+
+### AcquireBucket
+
+Nimmt einen freien Routing-Bucket für deine Ressource. Der neue Bucket hat keine Umgebungsbevölkerung (keinen Verkehr, keine Fußgänger) und einen strikten Entity-Lockdown (nur der Server kann darin Entities erstellen). Er gehört dir, bis du ihn zurückgibst oder deine Ressource stoppt.
+
+**Seite:** Server · **Wartet:** nein · **Lib:** [`buckets.acquire`](/de/docs/developers/api/lib-server/world#bucketsacquire)
+
+```ts title="Signature"
+AcquireBucket(tag: string): number
+```
+
+```lua title="Lua"
+local bucket = exports['ai-core']:AcquireBucket('apartment:12')
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    tag: { type: 'string', description: 'Ein kurzer Name, der sagt, wofür der Bucket ist (`apartment:12`), in Logs angezeigt. Auf 64 Zeichen gekürzt; `unnamed`, wenn leer.', required: true },
+  }}
+/>
+
+#### Rückgabe
+
+`number`: die Bucket-ID, 1000 oder höher. Zurückgegebene IDs werden zuerst wieder vergeben.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, PlayerMap, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const INSIDE = { x: 266.1, y: -1007.3, z: -101.0, heading: 0 };
+// Wer in welchem Wohnungs-Bucket ist; leert sich von selbst, wenn ein Spieler die Verbindung verliert.
+const inside = new PlayerMap<number>();
+
+onClientCallback("myscript:enterApartment", { lock: true }, (source) => {
+  if (inside.has(source)) return fail("ALREADY_INSIDE");
+  const bucket = core.AcquireBucket(`apartment:${source}`);
+  inside.set(source, bucket);
+  SetPlayerRoutingBucket(String(source), bucket);
+  SetEntityCoords(GetPlayerPed(String(source)), INSIDE.x, INSIDE.y, INSIDE.z, false, false, false, false);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local INSIDE = vector3(266.1, -1007.3, -101.0)
+local inside = {}
+
+aiLib.onClientCallback('myscript:enterApartment', function(source)
+  if inside[source] then return aiLib.fail('ALREADY_INSIDE') end
+  local bucket = exports['ai-core']:AcquireBucket('apartment:' .. source)
+  inside[source] = bucket
+  SetPlayerRoutingBucket(source, bucket)
+  SetEntityCoords(GetPlayerPed(source), INSIDE.x, INSIDE.y, INSIDE.z, false, false, false, false)
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Wenn der Spieler hinausgeht (oder die Verbindung verliert), bringe ihn zurück in Bucket 0 und gib den Bucket mit `ReleaseBucket` zurück. Ein Bucket, den du nie freigibst, bleibt belegt, bis deine Ressource stoppt.
+</Callout>
+
+### ReleaseBucket
+
+Gibt einen Bucket an den Allocator zurück. Nur die Ressource, die ihn genommen hat, kann das.
+
+**Seite:** Server · **Wartet:** nein · **Lib:** [`buckets.release`](/de/docs/developers/api/lib-server/world#bucketsrelease)
+
+```ts title="Signature"
+ReleaseBucket(id: number): boolean
+```
+
+```lua title="Lua"
+local released = exports['ai-core']:ReleaseBucket(bucket)
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'Eine Bucket-ID, die deine Ressource von `AcquireBucket` bekommen hat.', required: true },
+  }}
+/>
+
+#### Rückgabe
+
+`boolean`: `true`, wenn der Bucket zurückgegeben wurde. `false`, wenn deine Ressource ihn nicht hält (eine andere Ressource hat ihn genommen, er wurde bereits freigegeben) oder `id` keine Zahl ist.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, PlayerMap, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const DOOR = { x: -269.4, y: -955.3, z: 31.2 };
+const inside = new PlayerMap<number>({ onDrop: (_source, bucket) => core.ReleaseBucket(bucket) });
+
+onClientCallback("myscript:leaveApartment", (source) => {
+  const bucket = inside.get(source);
+  if (bucket === undefined) return fail("NOT_INSIDE");
+  inside.delete(source);
+  // Zuerst den Spieler hinausbringen, dann den Bucket zurückgeben.
+  SetPlayerRoutingBucket(String(source), 0);
+  SetEntityCoords(GetPlayerPed(String(source)), DOOR.x, DOOR.y, DOOR.z, false, false, false, false);
+  core.ReleaseBucket(bucket);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local DOOR = vector3(-269.4, -955.3, 31.2)
+local inside = {} -- gefüllt vom Betreten-Callback oben
+
+aiLib.onClientCallback('myscript:leaveApartment', function(source)
+  local bucket = inside[source]
+  if not bucket then return aiLib.fail('NOT_INSIDE') end
+  inside[source] = nil
+  SetPlayerRoutingBucket(source, 0)
+  SetEntityCoords(GetPlayerPed(source), DOOR.x, DOOR.y, DOOR.z, false, false, false, false)
+  exports['ai-core']:ReleaseBucket(bucket)
+  return { ok = true }
+end)
+
+AddEventHandler('playerDropped', function()
+  local bucket = inside[source]
+  inside[source] = nil
+  if bucket then exports['ai-core']:ReleaseBucket(bucket) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Wenn deine Ressource stoppt, gibt ai-core sofort jeden Bucket frei, den sie gehalten hat. Spieler, die noch drinnen sind, werden nicht bewegt: Erledige das in deinem eigenen Stop-Handler.
+</Callout>

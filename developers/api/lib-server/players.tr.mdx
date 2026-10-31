@@ -1,0 +1,986 @@
+---
+title: Oyuncular ve karakterler
+description: "online, onCharacter, notify, yakındaki oyuncular, konumlar ve oyuncu başına depolar: PlayerMap, Cooldowns, KeyedCooldowns, SourceLock, RateLimit, KeyWatchers."
+icon: Users
+---
+
+```ts title="TypeScript"
+import { online, onCharacter, notify, playersNear, coordsOf, PlayerMap, Cooldowns } from "@aicore-fivem/lib/server";
+```
+
+**Oyuncu**, server id’si (`source`) olan bağlı bir client’tır. **Karakter** ise oynadığı kişidir; karakter ekranındaki bir oyuncunun yüklü karakteri yoktur. Oyuncuların ve karakterlerin sahibi ai-core’dur; bu yardımcılar onları okur.
+
+## online
+
+`online`, resource’unun ai-core’un yüklü oyuncularından tuttuğu kopyadır: karakterler, rütbeleriyle meslek ve çete üyelikleri, meslek ve çete başına üye listeleri ve görev durumu. İlk kullanımda ai-core’u bir kez okur, sonra ai-core’un event’lerini takip eder; bu yüzden bir okuma bellekten bakmaktır. Sık çalışan yollarda (her sohbet mesajı, her ihbar) ai-core’un export’larını çağırmak yerine bunu kullan.
+
+Lua’da `aiLib.online` her çağrıda ai-core’un export’larına sorar: aksiyonlar için uygundur, her tick için değil. `character`, `name`, `jobs`, `gangs`, `jobGrade`, `gangGrade`, `dutyJob` ve `sources` vardır; geri kalanının Lua karşılığı yoktur.
+
+### online.sources
+
+Yüklü karakteri olan her oyuncunun server id’si.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.sources(): IterableIterator<number>
+```
+
+```lua title="Lua"
+local list = aiLib.online.sources() -- integer[]
+```
+
+#### Dönüş değeri
+
+`IterableIterator<number>` (Lua: bir dizi). Karakter ekranındaki oyuncular içinde değildir.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { online, notify } from "@aicore-fivem/lib/server";
+
+for (const source of online.sources()) notify(source, "Server restart in 5 minutes", "warning", 10_000);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+for _, source in ipairs(aiLib.online.sources()) do
+    aiLib.notify(source, 'Server restart in 5 minutes', 'warning', 10000)
+end
+```
+</Tab>
+</Tabs>
+
+### online.size
+
+Kaç oyuncunun yüklü karakteri olduğu.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+readonly online.size: number
+```
+
+Lua karşılığı yok: `#aiLib.online.sources()`.
+
+### online.character
+
+Bir oyuncunun yüklü karakteri.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.character(source: number): CharacterInfo | null
+```
+
+```lua title="Lua"
+local character = aiLib.online.character(source) -- table ya da nil
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+[`CharacterInfo`](/tr/docs/developers/api/types#characterinfo) (`id`, `citizenid`, `slot`, `firstname`, `lastname`, `birthdate`, `sex`, `nationality`) ya da oyuncunun yüklü karakteri yoksa `null` (Lua’da `nil`).
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const character = online.character(source);
+if (character) console.log(`${character.citizenid} is ${character.firstname}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local character = aiLib.online.character(source)
+if character then print(character.citizenid .. ' is ' .. character.firstname) end
+```
+</Tab>
+</Tabs>
+
+### online.charId
+
+Oyuncunun yüklü karakterinin id’si (veritabanı id’si, yeniden bağlanmalarda değişmez).
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.charId(source: number): number | undefined
+```
+
+Lua karşılığı yok: `(aiLib.online.character(source) or {}).id`.
+
+**Dönüş değeri**: karakter id’si ya da hiçbiri yüklü değilse `undefined`. Yeniden bağlanmadan sonra da kalması gereken verileri (cooldown’lar, sahiplik) `source` ile değil, bu id ile anahtarla.
+
+```ts
+const charId = online.charId(source);
+if (charId === undefined) return fail("NO_CHARACTER");
+```
+
+### online.name
+
+Karakterin "Ad Soyad"ı ya da karakter yüklü değilse FiveM oyuncu adı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.name(source: number, options?: { fallback?: boolean }): string
+```
+
+```lua title="Lua"
+local name = aiLib.online.name(source, fallback) -- fallback: boolean?
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    "options.fallback": { type: "boolean", description: "`false` iken karakteri olmayan bir oyuncu FiveM adı yerine boş bir string verir. Lua’da ikinci argüman olarak `false` geçir.", default: "true" },
+  }}
+/>
+
+**Dönüş değeri** `string`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+notify(target, `${online.name(source)} sent you a gift`, "success");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.notify(target, aiLib.online.name(source) .. ' sent you a gift', 'success')
+```
+</Tab>
+</Tabs>
+
+### online.jobs
+
+Görevde olsun ya da olmasın oyuncunun üyesi olduğu her meslek. ai-core bir karakterin birkaç meslek tutmasına (paneldeki `maxJobs`) ve aynı anda tek bir meslekte görevde olmasına izin verir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.jobs(source: number): readonly string[]
+```
+
+```lua title="Lua"
+local memberships = aiLib.online.jobs(source) -- { { job = 'police', grade = 2 }, ... }
+```
+
+**Dönüş değeri**: meslek adları (hiç yoksa ya da karakter yoksa boş). Lua karşılığı adları değil, üyelik tablolarını `{ job, grade }` döndürür.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const isMechanic = online.jobs(source).includes("mechanic");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local isMechanic = aiLib.online.jobGrade(source, 'mechanic') ~= nil
+```
+</Tab>
+</Tabs>
+
+### online.gangs
+
+Oyuncunun içinde olduğu her çete.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.gangs(source: number): readonly string[]
+```
+
+```lua title="Lua"
+local memberships = aiLib.online.gangs(source) -- { { gang = 'ballas', grade = 0 }, ... }
+```
+
+**Dönüş değeri**: çete adları (hiç yoksa boş). Lua karşılığı üyelik tablolarını `{ gang, grade }` döndürür.
+
+```ts
+if (online.gangs(source).length === 0) return fail("NOT_IN_GANG");
+```
+
+### online.jobGrade
+
+Oyuncunun bir meslekteki rütbesi.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.jobGrade(source: number, job: string): number | null
+```
+
+```lua title="Lua"
+local grade = aiLib.online.jobGrade(source, job) -- integer ya da nil
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    job: { type: "string", description: "Meslek adı (`police`).", required: true },
+  }}
+/>
+
+**Dönüş değeri**: rütbe numarası ya da oyuncu üye değilse `null` (Lua’da `nil`). `0` rütbesi bir üyedir: truthy kontrolüyle değil, `null` ile karşılaştır.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const grade = online.jobGrade(source, "police");
+if (grade === null || grade < 3) return fail("RANK_TOO_LOW");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local grade = aiLib.online.jobGrade(source, 'police')
+if not grade or grade < 3 then return aiLib.fail('RANK_TOO_LOW') end
+```
+</Tab>
+</Tabs>
+
+### online.gangGrade
+
+Oyuncunun bir çetedeki rütbesi.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.gangGrade(source: number, gang: string): number | null
+```
+
+```lua title="Lua"
+local grade = aiLib.online.gangGrade(source, gang) -- integer ya da nil
+```
+
+**Dönüş değeri**: rütbe ya da üye değilse `null` (Lua’da `nil`).
+
+```ts
+const boss = (online.gangGrade(source, "ballas") ?? -1) >= 4;
+```
+
+### online.jobMembers
+
+Görevde olsun ya da olmasın bir meslekte üyeliği olan her oyuncu.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.jobMembers(job: string): ReadonlySet<number>
+```
+
+Lua karşılığı yok.
+
+**Dönüş değeri**: canlı bir server id set’i (hiç yoksa boş). Oyuncular mesleğe girip çıktıkça değişir: bir `await`’ten önce onu kopyala (`[...set]`).
+
+```ts
+for (const source of online.jobMembers("mechanic")) notify(source, "A customer is waiting", "info");
+```
+
+### online.gangMembers
+
+Bir çetedeki her oyuncu.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.gangMembers(gang: string): ReadonlySet<number>
+```
+
+Lua karşılığı yok. **Dönüş değeri**: canlı bir server id set’i; bir `await`’ten önce onu kopyala.
+
+```ts
+const members = [...online.gangMembers("ballas")];
+```
+
+### online.dutyJob
+
+Oyuncunun görevde olduğu meslek.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.dutyJob(source: number): string | null
+```
+
+```lua title="Lua"
+local job = aiLib.online.dutyJob(source) -- string ya da nil
+```
+
+**Dönüş değeri**: meslek adı ya da görevde değilse `null` (Lua’da `nil`).
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (online.dutyJob(source) !== "ambulance") return fail("NOT_ON_DUTY");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if aiLib.online.dutyJob(source) ~= 'ambulance' then return aiLib.fail('NOT_ON_DUTY') end
+```
+</Tab>
+</Tabs>
+
+### online.onDutyIn
+
+Oyuncunun birkaç meslekten birinde (tüm polis meslekleri, tüm EMS meslekleri) görevde olup olmadığı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.onDutyIn(source: number, jobs: readonly string[]): boolean
+```
+
+Lua karşılığı yok. **Dönüş değeri**: görevdeki meslek `jobs` içindeyse `true`.
+
+```ts
+const POLICE = ["police", "sheriff"];
+if (!online.onDutyIn(source, POLICE)) return fail("NOT_POLICE");
+```
+
+### online.onDutyFor
+
+Bir meslekte görevde olan oyuncular.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.onDutyFor(job: string): ReadonlySet<number>
+```
+
+Lua karşılığı yok. **Dönüş değeri**: canlı bir server id set’i; bir `await`’ten önce onu kopyala.
+
+```ts
+for (const medic of online.onDutyFor("ambulance")) notify(medic, "Patient at Pillbox", "info");
+```
+
+### online.countOnDuty
+
+Birkaç meslek genelinde kaç oyuncunun görevde olduğu.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.countOnDuty(jobs: readonly string[]): number
+```
+
+Lua karşılığı yok. **Dönüş değeri**: toplam sayı (maliyet oyuncu sayısıyla değil, meslek sayısıyla artar).
+
+```ts
+if (online.countOnDuty(["police", "sheriff"]) < 2) return fail("NOT_ENOUGH_POLICE");
+```
+
+### online.allows
+
+Oyuncunun bir erişim kuralıyla (meslekler, çeteler, minimum rütbeler, görevde olma) kilitlenmiş bir yeri kullanıp kullanamayacağı. Client’ın `allows`’u aynı kuralı kullanır; böylece oyuncunun gördüğü, server’ın kullanmasına izin verdiğiyle aynıdır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+online.allows(source: number, rule: AccessRule): boolean
+```
+
+Lua karşılığı yok.
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    rule: { type: "AccessRule", typeDescriptionLink: "/tr/docs/developers/api/types#accessrule", description: "`{ jobs, gangs, grades, onDuty }`, bir panel kaydından `readAccess(record)` ile okunur. İki liste de boş: herkes.", required: true },
+  }}
+/>
+
+**Dönüş değeri**: listeler boşsa, oyuncu `gangs`’ten birinde minimum rütbesindeyse ya da `jobs`’tan birinde minimum rütbesindeyse (ve `onDuty` ayarlıysa o meslekte görevdeyse) `true`.
+
+```ts
+import { online } from "@aicore-fivem/lib/server";
+import { readAccess, fail } from "@aicore-fivem/lib/shared";
+
+const rule = readAccess(stashRecord); // { jobs: ["police"], gangs: [], grades: { police: 2 }, onDuty: true }
+if (!online.allows(source, rule)) return fail("NO_ACCESS");
+```
+
+## Karakter yaşam döngüsü
+
+### onCharacter
+
+Bir karakter dünyaya girdiğinde ve ayrıldığında kodunu çalıştırır. Resource’un (yeniden) başladığında dünyada zaten olan karakterleri de yeniden oynatır ve oyundan çıkmaları kapsar; bu yüzden yanında bir `playerDropped` handler’ına ihtiyacın olmaz.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+onCharacter(handlers: CharacterHandlers): void
+```
+
+```lua title="Lua"
+aiLib.onCharacter({ loaded = function(source, character) end, unloaded = function(source, charId, reason) end })
+```
+
+#### CharacterHandlers
+
+<TypeTable
+  type={{
+    loaded: { type: "(source: number, character: CharacterInfo) => void | Promise<void>", typeDescriptionLink: "/tr/docs/developers/api/types#characterinfo", description: "Bir karakter dünyaya girdi. Ayrıca `onCharacter`’ı çağırdıktan sonraki tick’te, resource’un başlamadan önce yüklenmiş her karakter için bir kez çalışır. Fırlatılan bir hata ya da reddetme loglanır.", required: false },
+    unloaded: { type: '(source: number, charId: number, reason: "dropped" | "switch") => void', description: "Karakter ayrıldı: çıkış yapma ya da karakter değiştirme için `switch`, oyuncunun bağlantısı koptuğunda `dropped`. Her `loaded` tam olarak bir `unloaded` alır.", required: false },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onCharacter, PlayerMap } from "@aicore-fivem/lib/server";
+
+const playtime = new PlayerMap<{ charId: number; since: number }>();
+
+onCharacter({
+  loaded(source, character) {
+    playtime.set(source, { charId: character.id, since: Date.now() });
+  },
+  unloaded(source, charId, reason) {
+    const entry = playtime.get(source);
+    if (entry) console.log(`character ${charId} played ${Date.now() - entry.since} ms (${reason})`);
+    playtime.delete(source);
+  },
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local since = {}
+
+aiLib.onCharacter({
+    loaded = function(source, character)
+        since[source] = os.time()
+    end,
+    unloaded = function(source, charId, reason)
+        print(('character %d played %ds (%s)'):format(charId, os.time() - (since[source] or os.time()), reason))
+        since[source] = nil
+    end,
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Onu bir server dosyasının en üst seviyesinde bir kez çağır. Yukarıdaki PlayerMap oyundan çıkışta kendiliğinden boşalır; bir çıkış için `unloaded` handler’ı yine önce çalışır, böylece veriyi orada kaydedebilirsin.
+</Callout>
+
+## Oyuncularla konuşmak
+
+### notify
+
+Bir oyuncunun ekranında bir bildirim kartı gösterir (onu ai-lib ya da sahibin ai-core panelinde seçtiği bildirim arayüzü çizer).
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+notify(source: number, text: string, kind?: NotificationKind, duration?: number): void
+```
+
+```lua title="Lua"
+aiLib.notify(source, text, kind, duration)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    text: { type: "string", description: "Mesaj, zaten çevrilmiş halde (`Locale(\"PAID\", price)`).", required: true },
+    kind: { type: '"success" | "error" | "info" | "warning"', typeDescriptionLink: "/tr/docs/developers/api/types#notificationkind", description: "Kartın rengi ve ikonu.", default: '"info"' },
+    duration: { type: "number", description: "Ekranda kalma süresi, milisaniye.", default: "4000" },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, createLocale } from "@aicore-fivem/lib/server";
+
+const Locale = createLocale();
+notify(source, Locale("PAID", 250), "success");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+aiLib.notify(source, Locale('PAID', 250), 'success')
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bir client aksiyonuna cevap vermek için `notify` çağırmak yerine `fail("KEY")` döndür: client’ın `callAction`’ı çevrilmiş hatayı kendisi gösterir.
+</Callout>
+
+### isOnline
+
+Bir oyuncunun hâlâ bağlı olup olmadığı. Uzun bir `await`’ten sonra bir şey vermeden önce kontrol et.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+isOnline(source: number): boolean
+```
+
+Lua karşılığı yok: `GetPlayerName(source) ~= nil`.
+
+**Dönüş değeri**: oyuncu bağlıyken `true`.
+
+```ts
+await new Promise((resolve) => setTimeout(resolve, 60_000));
+if (!isOnline(source)) return;
+```
+
+## Yakındaki oyuncular
+
+Bunlar, server’daki her oyuncuyu dolaşmak yerine ai-core’a hangi oyuncuların birbirinin OneSync menzilinde (yaklaşık 424 metre) olduğunu sorar ve yalnızca o birkaç oyuncuyu ölçer. Yaklaşık 424 m’den büyük bir yarıçap daha uzaktaki kimseyi bulmaz.
+
+### playersNear
+
+Bir oyuncuya `radius` metre içindeki oyuncular.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+playersNear(source: number, radius: number): number[]
+```
+
+```lua title="Lua"
+local list = aiLib.playersNear(source, radius) -- integer[]
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Merkezdeki oyuncunun server id’si.", required: true },
+    radius: { type: "number", description: "Metre cinsinden yarıçap (yaklaşık 424’e kadar).", required: true },
+  }}
+/>
+
+**Dönüş değeri**: bir server id dizisi. TypeScript `source`’un kendisini de içerir; **Lua onu dışarıda bırakır**.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+for (const other of playersNear(source, 20)) if (other !== source) notify(other, "You hear a scream", "warning");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+for _, other in ipairs(aiLib.playersNear(source, 20.0)) do
+    aiLib.notify(other, 'You hear a scream', 'warning')
+end
+```
+</Tab>
+</Tabs>
+
+### playersNearEntity
+
+Ağa bağlı bir entity’ye (bir araç, bir prop) `radius` metre içindeki oyuncular: sahibi ve sahibinin menzilindeki oyuncular.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+playersNearEntity(entity: number, radius: number): number[]
+```
+
+```lua title="Lua"
+local list = aiLib.playersNearEntity(entity, radius) -- integer[]
+```
+
+<TypeTable
+  type={{
+    entity: { type: "number", description: "Server entity handle’ı.", required: true },
+    radius: { type: "number", description: "Metre cinsinden yarıçap (yaklaşık 424’e kadar).", required: true },
+  }}
+/>
+
+**Dönüş değeri**: bir server id dizisi. Entity yoksa ya da hiçbir oyuncu onun sahibi değilse boş (sahibi yalnızca server olan bir entity’nin yakınında kimse yoktur).
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const witnesses = playersNearEntity(vehicle, 30);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local witnesses = aiLib.playersNearEntity(vehicle, 30.0)
+```
+</Tab>
+</Tabs>
+
+### nearestPlayerTo
+
+Bir oyuncuya `metres` mesafe içindeki, filtrenden geçen en yakın diğer oyuncu.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+nearestPlayerTo(source: number, metres: number, filter?: (other: number) => boolean): number | null
+```
+
+```lua title="Lua"
+local other = aiLib.nearestPlayerTo(source, metres, filter) -- integer ya da nil
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Bakan oyuncunun server id’si.", required: true },
+    metres: { type: "number", description: "Metre cinsinden en büyük mesafe (yaklaşık 424’e kadar).", required: true },
+    filter: { type: "(other: number) => boolean", description: "`false` cevabını verdiği oyuncuları atla (karakteri yok, araçta, kelepçeli...).", required: false },
+  }}
+/>
+
+**Dönüş değeri**: en yakın eşleşmenin server id’si ya da hiç yoksa `null` (Lua’da `nil`).
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const target = nearestPlayerTo(source, 2, (other) => online.character(other) !== null);
+if (target === null) return fail("NOBODY_NEAR");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local target = aiLib.nearestPlayerTo(source, 2.0, function(other) return aiLib.online.character(other) ~= nil end)
+if not target then return aiLib.fail('NOBODY_NEAR') end
+```
+</Tab>
+</Tabs>
+
+## Konumlar
+
+Lua karşılıkları yok: Lua’da vektör matematiği vardır (`GetEntityCoords(GetPlayerPed(source))`, `#(a - b)`).
+
+### coordsOf
+
+Server’ın gördüğü haliyle bir oyuncunun ped konumu.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+coordsOf(source: number): Vec3
+```
+
+**Dönüş değeri**: bir [`Vec3`](/tr/docs/developers/api/types#vec3) `{ x, y, z }`.
+
+```ts
+const { x, y, z } = coordsOf(source);
+```
+
+### entityCoords
+
+Herhangi bir entity’nin konumu (sahibinin senkronunun server’daki kopyası).
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+entityCoords(entity: number): Vec3
+```
+
+**Dönüş değeri**: bir [`Vec3`](/tr/docs/developers/api/types#vec3).
+
+```ts
+import { distance } from "@aicore-fivem/lib/shared";
+if (distance(entityCoords(vehicle), coordsOf(source)) > 5) return fail("TOO_FAR");
+```
+
+### isNear
+
+Oyuncunun ped’inin bir noktaya `metres` kadar yakın olup olmadığı. `near` koruması bunu kullanır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+isNear(source: number, point: Vec3, metres: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    point: { type: "Vec3", typeDescriptionLink: "/tr/docs/developers/api/types#vec3", description: "Mesafenin ölçüleceği nokta.", required: true },
+    metres: { type: "number", description: "Metre cinsinden en büyük mesafe (3D).", required: true },
+  }}
+/>
+
+**Dönüş değeri**: menzil içindeyse `true`.
+
+```ts
+if (!isNear(source, { x: 25.7, y: -1347.3, z: 29.5 }, 3)) return fail("TOO_FAR");
+```
+
+### vehicleOf
+
+Oyuncunun oturduğu araç.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+vehicleOf(source: number, options?: { driver?: boolean }): number
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    "options.driver": { type: "boolean", description: "Yalnızca sürücü koltuğunu say.", default: "false" },
+  }}
+/>
+
+**Dönüş değeri**: araç entity’si ya da yayaysa (veya `driver: true` ile sürücü koltuğunda değilse) `0`.
+
+```ts
+const vehicle = vehicleOf(source, { driver: true });
+if (!vehicle) return fail("NOT_DRIVING");
+```
+
+## Oyuncu başına depolar
+
+Bunların hiçbirinin Lua karşılığı yok: bir Lua tablosu kullan ve onu `playerDropped`’ta temizle. Her depoyu modül seviyesinde bir kez oluştur, asla bir handler içinde değil.
+
+### PlayerMap
+
+Oyuncu server id’siyle anahtarlanan ve oyuncu oyundan çıktığında kendini boşaltan bir `Map`. Oyuncu başına tuttuğun her şey için kullan (açık bir ekran, seçili bir eşya).
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+new PlayerMap<V>(options?: { onDrop?: (source: number, value: V) => void })
+```
+
+<TypeTable
+  type={{
+    "options.onDrop": { type: "(source: number, value: V) => void", description: "Oyundan çıkan bir oyuncunun girdisi kaldırıldıktan sonra son değeriyle çalışır (bir aksiyonu bitir, bir şey kaydet).", required: false },
+  }}
+/>
+
+Bir JavaScript `Map`’inin tüm metotlarına sahiptir (`get`, `set`, `has`, `delete`, `size`, iterasyon).
+
+```ts
+import { PlayerMap } from "@aicore-fivem/lib/server";
+
+const carrying = new PlayerMap<string>({
+  onDrop: (source, item) => console.log(`${source} left while carrying ${item}`),
+});
+carrying.set(source, "box");
+```
+
+### Cooldowns
+
+Oyun saatine göre oyuncu başına cooldown’lar; oyuncu oyundan çıktığında serbest bırakılır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+new Cooldowns()
+ready(source: number): boolean
+start(source: number, ms: number): void
+take(source: number, ms: number): boolean
+left(source: number): number
+clear(source: number): void
+```
+
+| Metot | Ne yapar | Dönüş değeri |
+| --- | --- | --- |
+| `ready(source)` | Oyuncu için çalışan bir cooldown yok. | `boolean` |
+| `start(source, ms)` | Oyuncunun cooldown’ını `ms` milisaniye için başlatır (ya da yeniden başlatır). | `void` |
+| `take(source, ms)` | Hazırsa cooldown’ı başlatır. | başladıysa `true`, biri hâlâ çalışıyorken `false` |
+| `left(source)` | Kalan milisaniye. | `number`, hazırsa `0` |
+| `clear(source)` | Oyuncunun cooldown’ını bitirir. | `void` |
+
+```ts
+import { onClientCallback, Cooldowns } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const searchCooldown = new Cooldowns();
+
+onClientCallback("my-bins:search", (source) => {
+  if (!searchCooldown.take(source, 30_000)) return fail("WAIT");
+  return { ok: true };
+});
+```
+
+<Callout type="warn">
+Bir oyuncu yeniden bağlanarak bir `Cooldowns` girdisini sıfırlayabilir. Yeniden bağlanmadan sonra da kalması gereken bir cooldown, `online.charId(source)` ile anahtarlanan `KeyedCooldowns` kullanır.
+</Callout>
+
+### KeyedCooldowns
+
+Bir bağlantıdan uzun yaşayan herhangi bir anahtara göre cooldown’lar: bir karakter id’si, bir entity, bir kapı id’si. Süresi dolan girdiler map büyüdükçe temizlenir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+new KeyedCooldowns<K = number>()
+ready(key: K): boolean
+start(key: K, ms: number): void
+take(key: K, ms: number): boolean
+left(key: K): number
+clear(key: K): void
+```
+
+`Cooldowns` ile aynı metotlar, `key`’e göre. `ms` 0 ya da daha az olan bir `start` cooldown’ı bitirir.
+
+```ts
+import { KeyedCooldowns, online } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const robbed = new KeyedCooldowns<string>(); // market id’sine göre
+const perCharacter = new KeyedCooldowns(); // karakter id’sine göre
+
+function canRob(source: number, store: string) {
+  const charId = online.charId(source);
+  if (charId === undefined) return fail("NO_CHARACTER");
+  if (!robbed.ready(store)) return fail("STORE_EMPTY");
+  if (!perCharacter.take(charId, 15 * 60_000)) return fail("WAIT");
+  robbed.start(store, 30 * 60_000);
+  return { ok: true };
+}
+```
+
+### SourceLock
+
+Birkaç callback genelinde oyuncu başına çalışan tek bir aksiyon. Bir callback’in kendi `lock: true`’su yalnızca o callback’i kapsar; birbirini dışlaması gereken iki aksiyon (aynı aracı listelemek ve satmak) tek bir `SourceLock` paylaşır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+new SourceLock()
+run<T, B>(source: number, busy: B, task: () => Promise<T>): Promise<T | B>
+release(source: number): void
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    busy: { type: "B", description: "Oyuncunun zaten çalışan bir görevi varsa `run`’ın döndürdüğü (`fail(\"BUSY\")`).", required: true },
+    task: { type: "() => Promise<T>", description: "Aksiyon. Kilit, görev sonuçlandığında, hata fırlatsa bile serbest bırakılır.", required: true },
+  }}
+/>
+
+**Dönüş değeri** (`run`): görevin sonucu ya da `busy`. `release(source)` oyuncuyu serbest bırakır; onu `playerDropped`’tan çağır (hâlâ çalışan bir görev, sonuçlanana kadar kendi girdisini tutar).
+
+```ts
+import { onClientCallback, SourceLock } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const dealer = new SourceLock();
+on("playerDropped", () => dealer.release(Number(globalThis.source)));
+
+onClientCallback("my-dealer:list", (source) => dealer.run(source, fail("BUSY"), async () => ({ ok: true })));
+onClientCallback("my-dealer:sell", (source) => dealer.run(source, fail("BUSY"), async () => ({ ok: true })));
+```
+
+### RateLimit
+
+Oyuncu başına bir patlama sınırı: herhangi bir `windowMs` içinde en fazla `count` aksiyon. Kapı zaten her girdiye hız sınırı uygular; bunu tek bir aksiyon için ek, daha yavaş bir sınır olarak kullan.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+new RateLimit(count: number, windowMs: number)
+take(source: number): boolean
+release(source: number): void
+```
+
+```lua title="Lua"
+local limit = aiLib.RateLimit.new(count, windowMs)
+local allowed = limit:take(source)
+limit:release(source)
+```
+
+<TypeTable
+  type={{
+    count: { type: "number", description: "Pencere başına izin verilen aksiyon sayısı.", required: true },
+    windowMs: { type: "number", description: "Milisaniye cinsinden pencere uzunluğu (kayan pencere).", required: true },
+  }}
+/>
+
+**Dönüş değeri** (`take`): `true` ve bir aksiyonu sayar ya da oyuncu sınırı aşmışsa `false` (sayılmaz). `release(source)` oyuncuyu unutur; onu `playerDropped`’tan çağır.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, RateLimit } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const reports = new RateLimit(3, 60_000);
+on("playerDropped", () => reports.release(Number(globalThis.source)));
+
+onClientCallback("my-report:send", (source) => {
+  if (!reports.take(source)) return fail("TOO_MANY_REPORTS");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local reports = aiLib.RateLimit.new(3, 60000)
+AddEventHandler('playerDropped', function() reports:release(source) end)
+
+aiLib.onClientCallback('my-report:send', function(source)
+    if not reports:take(source) then return aiLib.fail('TOO_MANY_REPORTS') end
+    return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### KeyWatchers
+
+Tek bir anahtarın canlı değişikliklerini alan oyuncular (bir otoparkın arabaları, açık bir karakter sayfası). Oyuncu başına bir anahtar: yeni bir anahtarı izlemek eskisini bırakır. Oyundan çıkışta serbest bırakılır; her işlem sabit zamanlıdır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+new KeyWatchers<K>()
+watch(source: number, key: K): void
+stop(source: number): void
+of(key: K): ReadonlySet<number> | undefined
+keyOf(source: number): K | undefined
+```
+
+| Metot | Ne yapar | Dönüş değeri |
+| --- | --- | --- |
+| `watch(source, key)` | Oyuncu `key`’i izler ve öncekini izlemeyi bırakır. | `void` |
+| `stop(source)` | Oyuncu izlemeyi bırakır. | `void` |
+| `of(key)` | `key`’i izleyen oyuncular. | bir set ya da kimse izlemiyorsa `undefined` |
+| `keyOf(source)` | Oyuncunun izlediği anahtar. | anahtar ya da `undefined` |
+
+```ts
+import { onClientCallback, onClientEvent, KeyWatchers } from "@aicore-fivem/lib/server";
+import { oneArg, readText } from "@aicore-fivem/lib/shared";
+
+const lots = new KeyWatchers<string>();
+
+onClientCallback("my-lot:open", { args: oneArg((v) => readText(v, 32)) }, (source, lot) => {
+  lots.watch(source, lot);
+  return { ok: true, cars: [] }; // snapshot
+});
+onClientEvent("my-lot:close", (source) => lots.stop(source));
+
+function carChanged(lot: string, car: unknown) {
+  for (const source of lots.of(lot) ?? []) emitNet("my-lot:car", source, car); // delta
+}
+```

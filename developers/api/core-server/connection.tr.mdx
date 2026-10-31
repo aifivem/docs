@@ -1,0 +1,183 @@
+---
+title: Bağlantı kontrolleri
+description: "Bağlanan her oyuncunun geçmesi gereken kontroller ekle (whitelist’ler, ban’lar) ve script’inin başka birinin yerine geçtiğini bildir."
+icon: ShieldCheck
+---
+
+Bağlanan her oyuncu ai-core’da tek bir kapıdan geçer. Önce ai-core’un kendi kontrolleri gelir: oyuncunun bir FiveM hesabı olmalı ve gereksiz hiçbir script onun yerine geçen script’in yanında çalışmamalı (panelin **Refuse players while both run** ayarı açıkken). Sonra diğer resource’ların `AddConnectionCheck` ile eklediği kontroller, eklendikleri sırayla gelir. İlk ret kazanır.
+
+### AddConnectionCheck
+
+Bağlanan her oyuncunun geçmesi gereken bir kontrol ekler. Bir whitelist, ban listesi ya da bakım modu için kullan.
+
+**Taraf:** Server · **Bekler:** hayır (kontrolün kendisi hemen cevap vermeli) · **Lib:** yok
+
+```ts title="İmza"
+AddConnectionCheck(
+  id: string,
+  check: (source: number, identifiers: Record<string, string>) => string | null | undefined,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(source, identifiers) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Bu kontrol için benzersiz bir ad (`myscript:whitelist`). Aynı id’yi tekrar eklemek kontrolü değiştirir ve sıradaki yerini korur.', required: true },
+    check: { type: '(source, identifiers) => string | null | undefined', description: 'Bağlanan her oyuncu için çalışır. Oyuncuyu o metinle reddetmek için bir metin, geçirmek için `null` ya da hiçbir şey döndür.', required: true, typeDescription: '(source: number, identifiers: Record<string, string>) => string | null | undefined' },
+  }}
+/>
+
+`identifiers` her tanımlayıcı tipini değeriyle **önek olmadan** tutar: `identifiers.license` `abc123...`’tür, `license:abc123...` değil. Oyuncuda olmayan tipler bulunmaz.
+
+#### Dönüş değeri
+
+Hiçbir şey. Metin bir `id` ya da bir fonksiyon olmadan çağrı hiçbir şey yapmaz. Resource’un durduğunda kontrol kaldırılır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const allowed = new Set<string>(); // açılışta veritabanından doldurulur
+
+core.AddConnectionCheck("myscript:whitelist", (_source, identifiers) => {
+  const fivem = identifiers.fivem;
+  return fivem && allowed.has(fivem) ? null : Locale("CONNECT_NOT_WHITELISTED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local allowed = {} -- fivem id -> true, açılışta veritabanından doldurulur
+
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(_, identifiers)
+  if identifiers.fivem and allowed[identifiers.fivem] then return nil end
+  return Locale('CONNECT_NOT_WHITELISTED')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Kontrol oyuncu bağlanırken çalışır ve hemen cevap vermelidir: veritabanı sorgusu yok, `await` yok, `Wait` yok. Kontrol ettiğin şeyi bellekte tut (açılışta yükle, değiştiğinde güncelle). Hata fırlatan bir kontrol loglanır ve atlanır, böylece asla herkesi dışarıda bırakmaz.
+</Callout>
+
+### RegisterReplacement
+
+Bir script’in başkalarını gereksiz kıldığını bildirir (script’in onlarınkiyle aynı işi yapar). İkisi de kuruluyken ai-core konsolda uyarır ve silinecek klasörü söyler; ikisi de başlatılmışken ve panelin **Refuse players while both run** ayarı açıkken kimse giremez.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+RegisterReplacement(remove: string | string[], keep?: string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    remove: { type: 'string | string[]', description: 'Gereksiz kılınan resource adı/adları. Boş adlar atlanır.', required: true },
+    keep: { type: 'string', description: 'Onların yerine geçen resource.', default: 'çağıran resource' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. Çağıran resource durduğunda kural kaldırılır. ai-core herhangi bir resource başladıktan ya da durduktan bir saniye sonra çakışmaları yeniden kontrol eder.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Bizim banka script’imiz bunların yaptığını yapar; ikisini birden çalıştırmak banka ekranlarını ikiye katlar.
+core.RegisterReplacement(["qb-banking", "okokBanking"]);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Değiştiremediğin bir resource (escrow’lu bir script) aynısını `fxmanifest.lua` dosyasındaki bir satırla bildirebilir: `ai_replaces 'qb-banking'`.
+</Callout>
+
+### GetConflicts
+
+Şu an bulunan her çakışma: onun yerine geçen bir script’in yanına kurulmuş bir script.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+GetConflicts(): { keep: string; remove: string; running: boolean; from: string }[]
+```
+
+```lua title="Lua"
+local conflicts = exports['ai-core']:GetConflicts() -- tablo listesi
+```
+
+#### Parametreler
+
+Yok.
+
+#### Dönüş değeri
+
+Çakışma başına bir kayıt içeren bir liste:
+
+<TypeTable
+  type={{
+    keep: { type: 'string', description: 'Kalan script.' },
+    remove: { type: 'string', description: 'Silinecek gereksiz script.' },
+    running: { type: 'boolean', description: 'İkisi de başlatılmışsa `true` (panel anahtarı açıkken oyuncular reddedilir); gereksiz olan yalnızca kuruluysa `false`.' },
+    from: { type: 'string', description: 'Kuralın nereden geldiği: `ai-core`, `<resource> fxmanifest` ya da `RegisterReplacement`’ı çağıran resource.' },
+  }}
+/>
+
+Çakışma yoksa boş liste.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("conflicts", { help: "Lists scripts to remove", restricted: true }, () => {
+  for (const c of core.GetConflicts())
+    console.log(`${c.keep} replaces ${c.remove}${c.running ? " (both started!)" : ""} [${c.from}]`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('conflicts', { help = 'Lists scripts to remove', restricted = true }, function()
+  for _, c in ipairs(exports['ai-core']:GetConflicts()) do
+    print(('%s replaces %s%s [%s]'):format(c.keep, c.remove, c.running and ' (both started!)' or '', c.from))
+  end
+end)
+```
+</Tab>
+</Tabs>

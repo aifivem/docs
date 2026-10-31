@@ -1,0 +1,121 @@
+---
+title: Streaming par zone
+description: "AreaStream : des objets du monde (objets au sol, plantes, corps, props) envoyés uniquement aux joueurs proches, en un snapshot puis seulement les changements."
+icon: Radar
+---
+
+```ts title="TypeScript"
+import { AreaStream } from "@aicore-fivem/lib/server";
+```
+
+### AreaStream
+
+Range les éléments du monde (objets lâchés au sol, plantes, props posés, corps) sur une grille de cellules et n’envoie à chaque joueur que les éléments des cellules qui l’entourent. Un joueur qui commence à suivre reçoit un snapshot de sa zone ; ensuite il ne reçoit que les changements : un élément ajouté, modifié, déplacé ou retiré, ou de nouvelles cellules qui entrent à portée quand il se déplace. Qui possède un élément se déduit des cellules, donc rien n’est stocké par joueur et par élément, et cela tient la charge avec un très grand nombre d’éléments et de joueurs. Les suiveurs sont libérés quand ils se déconnectent.
+
+Utilisez un `AreaStream` par type d’élément, créé au niveau du module. Côté client, `new AreaFollower(event, cellSize)` ([Lib : client](/fr/docs/developers/api/lib-client)) envoie `(cx, cy)` sur son propre événement chaque fois que la cellule du joueur change (vérifiée toutes les 2 secondes), pour `followReported` ; votre code client écoute l’`event` du stream et conserve les éléments.
+
+**Côté :** serveur · **Attend :** non
+
+Pas d’équivalent Lua.
+
+```ts title="Signature"
+new AreaStream<T extends AreaItem, V = T>(options: AreaStreamOptions<T, V>)
+```
+
+#### AreaItem
+
+Ce que chaque élément doit avoir :
+
+<TypeTable
+  type={{
+    id: { type: "number | string", description: "Id unique de l’élément.", required: true },
+    x: { type: "number", description: "Position X dans le monde, utilisée pour trouver sa cellule.", required: true },
+    y: { type: "number", description: "Position Y dans le monde.", required: true },
+  }}
+/>
+
+#### AreaStreamOptions
+
+<TypeTable
+  type={{
+    event: { type: "string", description: "L’événement client sur lequel partent les messages. Le client reçoit `(reset: boolean, puts: V[], removes: id[], ...extra)` : `reset` à true signifie tout oublier d’abord (un snapshot).", required: true },
+    view: { type: "(item: T) => V", description: "Ce qu’un client reçoit d’un élément : laissez de côté les champs réservés au serveur.", required: true },
+    cellSize: { type: "number", description: "Taille d’une cellule en mètres. Le client doit utiliser la même valeur.", default: "64" },
+    range: { type: "number", description: "Cellules autour de la cellule du suiveur qu’il connaît : 1 signifie les 3x3 cellules autour de lui.", default: "1" },
+    chunk: { type: "number", description: "Nombre maximal d’éléments par événement. Une liste plus longue part en plusieurs petits événements, qui gardent leur ordre.", default: "50" },
+    alsoTo: { type: "(item: T) => number | undefined", description: "Un joueur qui reçoit cet élément où qu’il soit (le corps qu’un joueur porte).", required: false },
+    extra: { type: "() => unknown[]", description: "Valeurs ajoutées à la fin de chaque événement (une horloge serveur pour les comptes à rebours).", required: false },
+  }}
+/>
+
+#### Éléments
+
+| Méthode | Ce qu’elle fait | Retour |
+| --- | --- | --- |
+| `set(item: T, resend = true): void` | Ajoute ou met à jour un élément. Les suiveurs autour reçoivent un put ; ceux qui l’ont perdu parce qu’il a bougé reçoivent un remove. Avec `resend` à false, seuls les suiveurs qui ne l’avaient pas encore reçoivent le put (pour un élément dont les clients suivent eux-mêmes les changements). | `void` |
+| `delete(id): void` | Retire un élément ; les suiveurs qui l’avaient reçoivent un remove. | `void` |
+| `load(items: Iterable<T>): void` | Range de nombreux éléments sans message pour chacun (chargement depuis la base de données au démarrage), puis renvoie à chaque suiveur sa zone sous forme de snapshot. | `void` |
+| `get(id): T \| undefined` | Un élément. | l’élément ou `undefined` |
+| `values(): Generator<T>` | Tous les éléments. | un générateur |
+| `size: number` | Le nombre d’éléments. | `number` |
+| `cellOf(x, y): { cx, cy }` | La cellule d’un point sur la grille de ce stream. | coordonnées de cellule |
+| `countAt(x, y): number` | Éléments dans la cellule d’un point (un plafond par cellule). | `number` |
+| `around(x, y, cells = 1): Generator<T>` | Éléments dans la cellule d’un point et dans `cells` cellules autour (contrôles d’espacement et de fusion). | un générateur |
+| `recipients(id): Set<number>` | Les joueurs dont le client possède l’élément en ce moment. | un ensemble d’ids serveur |
+| `knows(source, id): boolean` | Si le client du joueur possède l’élément en ce moment. | `boolean` |
+
+#### Suiveurs
+
+| Méthode | Ce qu’elle fait | Retour |
+| --- | --- | --- |
+| `start(source, at = coordsOf(source)): void` | Le joueur commence à suivre à partir d’un point (par défaut : la position serveur de son ped) et reçoit un snapshot. | `void` |
+| `follow(source, cx, cy): void` | La cellule actuelle du joueur : un premier appel lance le suivi avec un snapshot, un changement n’envoie que la différence. | `void` |
+| `followReported(source, cx, cy): boolean` | `follow` pour une cellule envoyée par le client, refusée si elle n’est pas à une cellule au plus de la position serveur du ped (la cellule d’un client peut avoir un temps de retard). | `true` si acceptée |
+| `followAll(): void` | Lit la position serveur de chaque suiveur et envoie la différence à ceux qui ont changé de cellule. Appelez-la depuis un minuteur `every` quand le client ne signale pas ses cellules. | `void` |
+| `stop(source, tell = false): void` | Le joueur arrête de suivre (déconnexion, monde privé). `tell` vide son client. | `void` |
+| `following(source): boolean` | Si le joueur suit. | `boolean` |
+
+#### Exemple
+
+```ts
+import { AreaStream, onClientEvent, onCharacter, every } from "@aicore-fivem/lib/server";
+import { readInt } from "@aicore-fivem/lib/shared";
+
+interface Plant { id: number; x: number; y: number; z: number; growth: number; owner: number }
+
+const plants = new AreaStream<Plant, { id: number; x: number; y: number; z: number; growth: number }>({
+  event: "my-plants:stream",
+  view: ({ id, x, y, z, growth }) => ({ id, x, y, z, growth }), // le propriétaire reste sur le serveur
+});
+
+// Au démarrage : plants.load(rowsFromDatabase);
+
+onCharacter({
+  loaded: (source) => plants.start(source),
+  unloaded: (source) => plants.stop(source),
+});
+
+// L'AreaFollower du client signale sa cellule quand elle change.
+onClientEvent(
+  "my-plants:cell",
+  {
+    args: ([cx, cy]) => {
+      const x = readInt(cx, -1000, 1000);
+      const y = readInt(cy, -1000, 1000);
+      return x !== null && y !== null ? [x, y] : null;
+    },
+  },
+  (source, cx, cy) => {
+    plants.followReported(source, cx, cy);
+  },
+);
+
+// Les changements de croissance n'atteignent que les joueurs proches de chaque plante.
+every(60_000, () => {
+  for (const plant of plants.values()) if (plant.growth < 100) plants.set({ ...plant, growth: plant.growth + 1 });
+});
+```
+
+<Callout type="warn">
+Ne construisez jamais votre propre index de cellules, vos propres ensembles d’observateurs ou votre propre code de snapshot à côté. Les éléments `alsoTo` d’un joueur déconnecté sont relâchés (le prochain joueur qui obtient cet id ne les reçoit jamais), mais votre script continue de mettre à jour l’élément lui-même (l’endroit où le corps se trouve maintenant). Le `cellSize` du serveur et celui de l’`AreaFollower` du client doivent correspondre.
+</Callout>

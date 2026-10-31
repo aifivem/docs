@@ -1,0 +1,272 @@
+---
+title: Factures
+description: Envoyer des factures (amendes, frais de service, factures entre joueurs), lister et payer les factures ouvertes d’un joueur, via le script de factures qui tourne ou les propres factures d’ai-core.
+icon: Receipt
+---
+
+Les factures passent par ai-core, jamais par les exports ou événements propres à un script de factures. ai-core envoie chaque facture au **script de factures actif** : celui que choisit le réglage **Billing script** du panneau, ou le premier qui tourne. Sans script, ce sont **les propres factures d’ai-core** qui la prennent : le joueur voit à l’écran une liste de factures ouvertes et l’argent bouge quand il paie. Une facture ne se perd jamais.
+
+Une facture vient **d’un métier** (le compte `bank` du métier reçoit le paiement : amendes de police, frais d’un mécanicien) ou **d’un joueur** (ce joueur reçoit le paiement).
+
+Les propres factures d’ai-core en bref : les factures ouvertes sont stockées par personnage (personnages hors ligne compris), 20 factures ouvertes au plus par personnage, et le paiement prend l’argent sur `bank`, puis sur `cash`, en une seule transaction avec la suppression de la facture.
+
+### GetBillingSystem
+
+Où vont les factures.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`billing.provider()`](/fr/docs/developers/api/lib-server/money#billingprovider)
+
+```ts title="Signature"
+GetBillingSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetBillingSystem() -- 'ai-core' ou un nom de script
+```
+
+#### Paramètres
+
+Aucun.
+
+#### Retour
+
+`string | null` : le nom de ressource du script de factures, ou `"ai-core"` pour les propres factures d’ai-core. Comme les propres factures d’ai-core sont toujours disponibles, ce n’est pas `null` en pratique.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Bills to offline characters only work with ai-core's own bills. */
+export function canBillOffline(): boolean {
+  return core.GetBillingSystem() === "ai-core";
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function CanBillOffline()
+  return exports['ai-core']:GetBillingSystem() == 'ai-core'
+end
+```
+</Tab>
+</Tabs>
+
+### SendBill
+
+Envoie une facture à un joueur.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`billing.send`](/fr/docs/developers/api/lib-server/money#billingsend)
+
+```ts title="Signature"
+SendBill(bill: BillRequest): boolean
+```
+
+```lua title="Lua"
+local sent = exports['ai-core']:SendBill({ to = target, amount = 250, label = 'Speeding', from = source, job = 'police' })
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    bill: { type: 'BillRequest', description: 'La facture. Champs ci-dessous.', required: true },
+  }}
+/>
+
+#### BillRequest
+
+<TypeTable
+  type={{
+    to: { type: 'number', description: 'Id serveur du joueur qui reçoit la facture. Donnez `to` ou `toCitizenid`, jamais les deux.' },
+    toCitizenid: { type: 'string', description: 'Citizen id du personnage qui la reçoit, en ligne ou hors ligne (lettres et chiffres, jusqu’à 16). Un personnage hors ligne ne la reçoit que via les propres factures d’ai-core.' },
+    amount: { type: 'number', description: 'Dollars entiers, de 1 à 10 000 000.', required: true },
+    label: { type: 'string', description: 'Ce qu’elle concerne (`Speeding`, `Engine repair`), déjà traduit. Coupé à 80 caractères.', required: true },
+    from: { type: 'number', description: 'Id serveur du joueur qui l’émet (agent, mécanicien). Requis pour une facture personnelle (sans `job`) : ce joueur reçoit le paiement.' },
+    job: { type: 'string', description: 'Métier dont le compte reçoit le paiement (nom en minuscules, 2-32 caractères). Sans lui, la facture est personnelle.' },
+  }}
+/>
+
+Voir [BillRequest](/fr/docs/developers/api/types#billrequest).
+
+#### Retour
+
+`boolean` : `true` quand la facture a été envoyée. `false` quand :
+
+- la facture est invalide : `to` et `toCitizenid` tous deux ou aucun des deux, pas de `label`, `amount` qui n’est pas un nombre entier de 1 à 10 000 000, ni `job` ni `from`, ou `from` égal au destinataire ;
+- `from` est donné mais n’a pas de personnage chargé, ou `job` n’existe pas ;
+- le destinataire est hors ligne et les factures vont à un script de factures (seules les propres factures d’ai-core atteignent les personnages hors ligne) ;
+- le script de factures l’a refusée, ou le destinataire a déjà 20 factures ouvertes avec les propres factures d’ai-core.
+
+Une facture hors ligne avec les propres factures d’ai-core répond `true` dès qu’elle est valide ; la base de données peut encore la refuser (citizen id inconnu, 20 factures ouvertes), ce qui est enregistré dans le log.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, coordsOf, isNear, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readId, readInt } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+// Un agent met une amende au joueur devant lui ; le compte de la police reçoit l’argent.
+onClientCallback(
+  "myscript:fine",
+  {
+    args: ([target, amount]) => {
+      const t = readId(target);
+      const a = readInt(amount, 1, 50_000);
+      return t === null || a === null ? null : [t, a];
+    },
+  },
+  (source, target, amount) => {
+    if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+    if (!isNear(target, coordsOf(source), 3)) return fail("TOO_FAR");
+    const sent = core.SendBill({ to: target, amount, label: Locale("BILL_FINE"), from: source, job: "police" });
+    return sent ? { ok: true } : fail("BILL_FAILED");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('myscript:fine', function(source, target, amount)
+  if math.type(target) ~= 'integer' or math.type(amount) ~= 'integer' or amount < 1 or amount > 50000 then
+    return aiLib.fail('BAD_INPUT')
+  end
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  if #(GetEntityCoords(GetPlayerPed(source)) - GetEntityCoords(GetPlayerPed(target))) > 3.0 then return aiLib.fail('TOO_FAR') end
+  local sent = exports['ai-core']:SendBill({ to = target, amount = amount, label = Locale('BILL_FINE'), from = source, job = 'police' })
+  if not sent then return aiLib.fail('BILL_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Ne prenez jamais vous-même l’argent de la cible comme « facture forcée » (`TransferMoney` depuis son compte) : une facture, c’est le choix du joueur de payer.
+</Callout>
+
+### GetUnpaidBills
+
+Les factures ouvertes (impayées) d’un joueur.
+
+**Côté :** Serveur · **Attend :** non (répond via `done`) · **Lib :** [`billing.unpaid(source)`](/fr/docs/developers/api/lib-server/money#billingunpaid) renvoie une Promise
+
+```ts title="Signature"
+GetUnpaidBills(source: number, done: (bills: UnpaidBill[] | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetUnpaidBills(source, function(bills) end) -- liste ou nil
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serveur du joueur.', required: true },
+    done: { type: '(bills) => void', description: 'Appelé une fois avec la réponse.', required: true, typeDescription: '(bills: UnpaidBill[] | null) => void' },
+  }}
+/>
+
+#### Retour
+
+Rien. `done` reçoit une entrée par facture ouverte avec `id` (l’id du script de factures), `label`, `amount` (ce qui reste dû) et `sender` (libellé du métier ou nom du joueur) ([UnpaidBill](/fr/docs/developers/api/types#unpaidbill)), ou `null` quand le joueur n’a pas de personnage chargé ou que le script de factures ne sait pas lister les factures. Sans fonction comme `done`, l’appel ne fait rien.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import type { UnpaidBill } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// Un guichet de mairie montre ce que doit le joueur.
+onClientCallback("myscript:myBills", async (source) => {
+  const bills = await new Promise<UnpaidBill[] | null>((resolve) => core.GetUnpaidBills(source, resolve));
+  if (!bills) return fail("BILLS_UNAVAILABLE");
+  return { ok: true, bills, total: bills.reduce((sum, b) => sum + b.amount, 0) };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:myBills', function(source)
+  local p = promise.new()
+  exports['ai-core']:GetUnpaidBills(source, function(bills) p:resolve(bills or false) end)
+  local bills = Citizen.Await(p)
+  if not bills then return aiLib.fail('BILLS_UNAVAILABLE') end
+  local total = 0
+  for _, b in ipairs(bills) do total = total + b.amount end
+  return { ok = true, bills = bills, total = total }
+end)
+```
+</Tab>
+</Tabs>
+
+### PayBill
+
+Le joueur paie l’une de ses factures ouvertes.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`billing.pay`](/fr/docs/developers/api/lib-server/money#billingpay)
+
+```ts title="Signature"
+PayBill(source: number, id: string): boolean
+```
+
+```lua title="Lua"
+local paid = exports['ai-core']:PayBill(source, billId)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serveur du joueur qui paie (le destinataire de la facture).', required: true },
+    id: { type: 'string', description: 'L’`id` de la facture venant de `GetUnpaidBills`.', required: true },
+  }}
+/>
+
+#### Retour
+
+`boolean` : `true` quand la facture a été payée. `false` quand le joueur n’a pas de personnage chargé, que la facture n’est pas la sienne ou a disparu, qu’il ne peut pas la payer, que le script de factures a refusé ou n’accepte les paiements que dans son propre écran. Avec les propres factures d’ai-core, une facture personnelle exige aussi que l’émetteur soit en ligne (l’argent va sur sa banque).
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "myscript:payBill",
+  { args: ([id]) => { const v = readText(id, 64); return v ? [v] : null; }, lock: true },
+  (source, id) => (core.PayBill(source, id) ? { ok: true } : fail("BILL_NOT_PAID")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:payBill', function(source, id)
+  if type(id) ~= 'string' or not exports['ai-core']:PayBill(source, id) then return aiLib.fail('BILL_NOT_PAID') end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>

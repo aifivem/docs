@@ -1,0 +1,433 @@
+---
+title: Parler au serveur
+description: Interroger le serveur et attendre sa réponse, lancer des actions serveur avec des refus traduits, écouter les événements serveur et répondre aux callbacks serveur.
+icon: ArrowLeftRight
+---
+
+Un script client ne se fait jamais confiance : il demande au serveur, et le serveur décide. Ces helpers transportent ces questions et ces réponses. Les moitiés serveur sont sur [Entrées client](/fr/docs/developers/api/lib-server/client-input) (`onClientCallback`, `onClientEvent`, `triggerClientCallback`).
+
+| Vous voulez | Utilisez |
+| --- | --- |
+| Lancer quelque chose que le serveur doit autoriser (acheter, louer, ouvrir) et afficher son refus | [`callAction`](#callaction) |
+| Demander des données au serveur | [`triggerServerCallback`](#triggerservercallback) |
+| Recevoir ce que le serveur envoie | [`onServerEvent`](#onserverevent) |
+| Répondre à une question que le serveur pose à ce client | [`onServerCallback`](#onservercallback) |
+
+### triggerServerCallback
+
+Interroge le serveur et attend sa réponse. Le serveur répond avec `onClientCallback(name, ...)`. Utilisez-le pour lire des données que le serveur conserve (une liste de prix, les enregistrements propres à un joueur). Pour une action qui peut être refusée, utilisez [`callAction`](#callaction) : il affiche le refus pour vous.
+
+**Côté :** client · **Attend :** oui (Promise en TypeScript, cède la main (yield) du thread en Lua)
+
+```ts title="Signature"
+triggerServerCallback(name: string, args?: unknown[], timeoutMs?: number): Promise<unknown>
+```
+
+```lua title="Lua"
+local result, err = aiLib.triggerServerCallback(name, args, timeout) -- à appeler dans un thread
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Le nom du callback que le serveur a enregistré avec onClientCallback.', required: true },
+    args: { type: 'unknown[]', description: 'Les valeurs envoyées au gestionnaire serveur, dans l’ordre. Elles arrivent comme arguments du gestionnaire après source.', default: '[]' },
+    timeoutMs: { type: 'number', description: 'Millisecondes d’attente de la réponse avant d’abandonner. En Lua il s’appelle timeout.', default: '30000' },
+  }}
+/>
+
+#### Retour
+
+TypeScript : `Promise<unknown>`. Elle se résout avec ce que le gestionnaire serveur a renvoyé (`null` quand il n’a rien renvoyé). La valeur n’est pas vérifiée : testez son type avant de l’utiliser. La promesse est **rejetée** quand le gestionnaire serveur a levé une erreur, quand le filtre du serveur a refusé l’appel (limite de débit, un garde, de mauvais arguments, un verrou), ou quand aucune réponse n’est arrivée dans les `timeoutMs`.
+
+Lua : deux valeurs. `result` est la réponse ; `err` vaut `nil` en cas de succès, `'failed'` quand le serveur a refusé ou échoué, `'timeout'` quand aucune réponse n’est arrivée à temps. En cas d’erreur, `result` vaut `nil`.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { createLocale, notify, triggerServerCallback } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+RegisterCommand(
+  "mycash",
+  async () => {
+    const cash = await triggerServerCallback("myscript:cash").catch(() => null);
+    if (typeof cash !== "number") return notify(Locale("ERROR"), "error");
+    notify(Locale("YOUR_CASH", cash), "info");
+  },
+  false,
+);
+```
+
+```ts title="resource/server/index.ts"
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:cash", (source) => core.GetMoney(source, "cash"));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local t = aiLib.locale()
+
+RegisterCommand('mycash', function()
+    local cash, err = aiLib.triggerServerCallback('myscript:cash')
+    if err or type(cash) ~= 'number' then return aiLib.notify(t('ERROR'), 'error') end
+    aiLib.notify(t('YOUR_CASH', cash), 'info')
+end, false)
+```
+
+```lua title="server.lua"
+aiLib.onClientCallback('myscript:cash', function(source)
+    return exports['ai-core']:GetMoney(source, 'cash')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+En TypeScript, gérez toujours le rejet (`.catch(() => null)` ou `try`) : un appel refusé ou expiré est rejeté. Par défaut, le serveur limite chaque callback à 20 appels par seconde et par joueur, donc ne l’appelez jamais dans une boucle ni à chaque frame. Le format sur le réseau est le même dans les deux langages : un client Lua peut appeler un serveur TypeScript et inversement.
+</Callout>
+
+### callAction
+
+Lance une action sur le serveur et affiche le refus pour vous. Le gestionnaire serveur (`onClientCallback`) répond un [`ActionResult`](/fr/docs/developers/api/types#actionresult) : `{ ok: true, ...data }` quand cela a fonctionné, ou `fail("LANG_KEY")` quand il a refusé. En cas de refus, d’expiration ou de refus du filtre, `callAction` cherche la clé d’erreur dans le fichier de langue de **votre ressource** et l’affiche comme notification d’erreur. Utilisez-le pour chaque bouton qui change quelque chose : acheter, vendre, louer, réparer.
+
+**Côté :** client · **Attend :** oui (Promise en TypeScript, cède la main (yield) du thread en Lua)
+
+```ts title="Signature"
+callAction(name: string, args: unknown[] | undefined, options: CallActionOptions): Promise<({ ok: true } & Record<string, unknown>) | null>
+```
+
+```lua title="Lua"
+local reply = aiLib.callAction(name, args, options) -- table ou nil, à appeler dans un thread
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Le nom du callback que le serveur a enregistré avec onClientCallback.', required: true },
+    args: { type: 'unknown[]', description: 'Les valeurs envoyées au gestionnaire serveur, dans l’ordre.', default: '[]' },
+    options: { type: 'CallActionOptions', description: 'La clé de langue de repli et la façon d’attendre. Champs ci-dessous.', required: true },
+  }}
+/>
+
+#### CallActionOptions
+
+<TypeTable
+  type={{
+    fallback: { type: 'string', description: 'Clé de langue affichée quand la réponse n’a pas de clé d’erreur : pas de réponse à temps, un refus du filtre (limite de débit, garde, mauvais arguments) ou une réponse mal formée.', required: true },
+    timeout: { type: 'number', description: 'Millisecondes d’attente de la réponse avant qu’elle compte comme un échec.', default: '30000' },
+    silent: { type: 'boolean', description: 'true : aucune notification en cas de refus. Utilisez-le quand vous affichez l’erreur vous-même.', default: 'false' },
+  }}
+/>
+
+#### Retour
+
+`Promise<({ ok: true } & Record<string, unknown>) | null>` : toute la réponse ok (avec les champs supplémentaires ajoutés par le serveur) quand l’action a fonctionné ; `null` quand elle a été refusée, a échoué ou a expiré (la notification est déjà affichée, sauf avec `silent`). Les champs supplémentaires ne sont pas vérifiés : testez le type de chacun de ceux que vous lisez. Lua renvoie la table de réponse ou `nil`.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { callAction, createLocale, notify } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+export async function buy(itemId: string): Promise<void> {
+  const reply = await callAction("myshop:buy", [itemId], { fallback: "BUY_FAILED" });
+  if (!reply) return; // le refus est déjà à l’écran
+  const paid = typeof reply.paid === "number" ? reply.paid : 0;
+  notify(Locale("BOUGHT", paid), "success");
+}
+```
+
+```ts title="resource/server/index.ts"
+import { inventory, onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const PRICES: Record<string, number> = { water: 5, bread: 8 };
+
+onClientCallback(
+  "myshop:buy",
+  { args: oneArg((v) => readText(v, 32)) },
+  (source, item) => {
+    const price = PRICES[item];
+    if (price === undefined) return fail("UNKNOWN_ITEM");
+    if (!inventory.canCarryItem(source, item, 1)) return fail("NO_ROOM");
+    if (!core.RemoveMoney(source, "cash", price, "shop")) return fail("NO_MONEY");
+    inventory.addItem(source, item, 1);
+    return { ok: true, paid: price };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local t = aiLib.locale()
+
+local function buy(itemId)
+    CreateThread(function()
+        local reply = aiLib.callAction('myshop:buy', { itemId }, { fallback = 'BUY_FAILED' })
+        if not reply then return end -- le refus est déjà à l’écran
+        aiLib.notify(t('BOUGHT', reply.paid or 0), 'success')
+    end)
+end
+```
+
+```lua title="server.lua"
+local PRICES = { water = 5, bread = 8 }
+
+aiLib.onClientCallback('myshop:buy', function(source, item)
+    local price = PRICES[item]
+    if not price then return aiLib.fail('UNKNOWN_ITEM') end
+    if not aiLib.inventory.canCarryItem(source, item, 1) then return aiLib.fail('NO_ROOM') end
+    if not exports['ai-core']:RemoveMoney(source, 'cash', price, 'shop') then return aiLib.fail('NO_MONEY') end
+    aiLib.inventory.addItem(source, item, 1)
+    return { ok = true, paid = price }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+La clé d’erreur est cherchée dans le fichier de langue de la ressource qui appelle `callAction` : mettez donc chaque clé que le serveur peut répondre (`NO_MONEY`, `NO_ROOM`, `UNKNOWN_ITEM`) ainsi que la clé `fallback` dans le `locales/en.json` de cette ressource. Une clé absente y est affichée telle quelle.
+</Callout>
+
+### isActionOk
+
+Indique si une réponse est un [`ActionResult`](/fr/docs/developers/api/types#actionresult) ok (`ok` vaut exactement `true`). Utilisez-le quand vous appelez `triggerServerCallback` vous-même et lisez la réponse à la main.
+
+**Côté :** client et serveur (depuis `/shared`, réexporté par `/client`) · **Attend :** non
+
+```ts title="Signature"
+isActionOk(reply: unknown): reply is { ok: true } & Record<string, unknown>
+```
+
+Pas d’équivalent Lua : testez `type(reply) == 'table' and reply.ok == true`.
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Ce que le serveur a répondu, quoi que ce soit.', required: true },
+  }}
+/>
+
+#### Retour
+
+`boolean` : `true` quand `reply` est un objet (pas un tableau) dont `ok` vaut `true`. En TypeScript, il restreint aussi `reply` à `{ ok: true } & Record<string, unknown>`.
+
+#### Exemple
+
+```ts
+import { isActionOk, replyError, triggerServerCallback } from "@aicore-fivem/lib/client";
+
+export async function buyWater(): Promise<void> {
+  const reply = await triggerServerCallback("myshop:buy", ["water"]).catch(() => null);
+  if (isActionOk(reply)) console.log("bought");
+  else console.log("refused with", replyError(reply, "BUY_FAILED"));
+}
+```
+
+### replyError
+
+La clé de langue d’une réponse refusée : son champ `error`, ou `fallback` quand la réponse manque ou n’a pas de texte d’erreur. Utilisez-le avec [`isActionOk`](#isactionok) quand vous affichez l’erreur à votre façon (dans une page NUI au lieu d’une notification).
+
+**Côté :** client et serveur (depuis `/shared`, réexporté par `/client`) · **Attend :** non
+
+```ts title="Signature"
+replyError(reply: unknown, fallback: string): string | null
+```
+
+Pas d’équivalent Lua.
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Ce que le serveur a répondu (null après un appel rejeté).', required: true },
+    fallback: { type: 'string', description: 'Clé de langue renvoyée quand la réponse n’a pas de clé d’erreur utilisable.', required: true },
+  }}
+/>
+
+#### Retour
+
+`string | null` : `null` quand la réponse est ok ; l’`error` de la réponse quand c’est une chaîne non vide ; sinon `fallback`.
+
+#### Exemple
+
+```ts
+import { replyError, triggerServerCallback } from "@aicore-fivem/lib/client";
+
+export async function buyFromPage(item: string): Promise<void> {
+  const reply = await triggerServerCallback("myshop:buy", [item]).catch(() => null);
+  const error = replyError(reply, "BUY_FAILED");
+  if (error) SendNUIMessage({ action: "error", data: error });
+}
+```
+
+### onServerEvent
+
+Écoute un événement réseau que le serveur envoie avec `emitNet` (`TriggerClientEvent` en Lua). Les appels qui ne viennent pas du serveur (un `emit` local d’une autre ressource) sont ignorés, si bien qu’un menu de triche ne peut pas les simuler. Chaque client `ai-*` écoute le serveur de cette façon, jamais avec un `onNet` nu. En TypeScript, un gestionnaire qui prend des arguments doit indiquer un parseur `args` : il vérifie les valeurs brutes, et `null` ignore l’appel.
+
+**Côté :** client · **Attend :** non
+
+```ts title="Signature"
+onServerEvent(name: string, handler: () => unknown): void
+onServerEvent<A extends readonly unknown[]>(name: string, options: { args: (raw: unknown[]) => A | null }, handler: (...args: A) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onServerEvent(name, handler) -- handler(...) reçoit les arguments bruts
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Le nom de l’événement réseau que le serveur émet.', required: true },
+    options: { type: '{ args: (raw: unknown[]) => A | null }', description: 'TypeScript uniquement, nécessaire quand le gestionnaire prend des arguments. args reçoit les valeurs brutes et les renvoie analysées sous forme de liste, ou null pour ignorer l’appel (un avertissement est journalisé).' },
+    handler: { type: '(...args: A) => unknown', description: 'S’exécute pour chaque événement venant du serveur. Une erreur levée ou une promesse rejetée est journalisée avec le nom de l’événement.', required: true },
+  }}
+/>
+
+#### Retour
+
+`void`.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { onServerEvent, Points } from "@aicore-fivem/lib/client";
+
+let renting = false;
+const points = new Points();
+
+// Aucun argument : la forme courte.
+onServerEvent("myscript:reset", () => points.clear());
+
+// Un argument booléen : analysez-le, null ignore un mauvais appel.
+onServerEvent(
+  "myscript:state",
+  { args: ([active]) => (typeof active === "boolean" ? [active] : null) },
+  (active) => {
+    renting = active;
+    points.refresh();
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local renting = false
+local points = aiLib.Points.new()
+
+aiLib.onServerEvent('myscript:state', function(active)
+    if type(active) ~= 'boolean' then return end -- vérifiez ce que le serveur a envoyé
+    renting = active
+    points:refresh()
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Le serveur envoie l’événement avec `emitNet("myscript:state", source, true)` (TypeScript) ou `TriggerClientEvent('myscript:state', source, true)` (Lua). Les gestionnaires Lua reçoivent les arguments bruts : vérifiez leurs types vous-même.
+</Callout>
+
+### fromServer
+
+Indique si l’événement réseau en cours de traitement vient du serveur. `onServerEvent` l’utilise déjà ; vous n’en avez besoin que dans un gestionnaire `onNet` nu que vous ne pouvez pas remplacer.
+
+**Côté :** client · **Attend :** non
+
+```ts title="Signature"
+fromServer(): boolean
+```
+
+Pas d’équivalent Lua : dans un gestionnaire d’événement réseau Lua, `source` est vide pour les émissions locales.
+
+#### Retour
+
+`boolean` : `true` quand l’événement en cours porte la source numérique du serveur ; `false` pour une émission locale par n’importe quelle ressource.
+
+#### Exemple
+
+```ts
+import { fromServer } from "@aicore-fivem/lib/client";
+
+onNet("legacy:event", (value: unknown) => {
+  if (!fromServer()) return; // une émission locale, pas le serveur
+  console.log("server said", value);
+});
+```
+
+<Callout type="warn">
+Lisez-le avant le premier `await` du gestionnaire : après un `await`, l’événement en cours n’existe plus et la réponse est fausse.
+</Callout>
+
+### onServerCallback
+
+Répond à une question que le serveur pose à ce client avec `triggerClientCallback(name, source, ...)`. La valeur que votre gestionnaire renvoie (ou vers laquelle sa promesse se résout) est renvoyée au serveur. Une erreur levée répond un échec, et la promesse du serveur est rejetée.
+
+**Côté :** client · **Attend :** non (le gestionnaire peut être async)
+
+```ts title="Signature"
+onServerCallback(name: string, handler: (...args: unknown[]) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onServerCallback(name, handler) -- la valeur renvoyée par le gestionnaire est la réponse
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Le nom du callback que le serveur appelle avec triggerClientCallback.', required: true },
+    handler: { type: '(...args: unknown[]) => unknown', description: 'Reçoit les arguments envoyés par le serveur (unknown : vérifiez-les) et renvoie la réponse. Une promesse est attendue. undefined est envoyé comme null.', required: true },
+  }}
+/>
+
+#### Retour
+
+`void`.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { onServerCallback, player } from "@aicore-fivem/lib/client";
+
+// Le serveur demande à quelle distance d’un point se trouve ce joueur.
+onServerCallback("myscript:distance", (x, y, z) => {
+  if (typeof x !== "number" || typeof y !== "number" || typeof z !== "number") return null;
+  return player.distanceTo({ x, y, z });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+aiLib.onServerCallback('myscript:distance', function(x, y, z)
+    if type(x) ~= 'number' or type(y) ~= 'number' or type(z) ~= 'number' then return nil end
+    return aiLib.player.distanceTo(vector3(x, y, z))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+En Lua, un gestionnaire qui renvoie `false` répond `nil` (le serveur reçoit `null`) : renvoyez `true` / `nil`, un nombre ou une table quand le serveur doit distinguer `false` d’une « absence de réponse ». La réponse vient de l’ordinateur du joueur, donc un tricheur peut la modifier. Utilisez les réponses client pour ce que seul le client connaît (ce qui est à l’écran, une entité locale), et jamais comme preuve pour de l’argent ou des objets.
+</Callout>

@@ -1,0 +1,298 @@
+---
+title: Admin paneli
+description: "AdminPanel ve DataFile: script’inin ayarlarını ai-core’un admin paneline koy, onları oku, düzenlemelere tepki ver ve panel içeriğini data/*.json dosyalarına kaydet."
+icon: SlidersHorizontal
+---
+
+```ts title="TypeScript"
+import { AdminPanel, DataFile } from "@aicore-fivem/lib/server";
+```
+
+Her `ai-*` script’i, sunucu sahibinin ayarladığı ayarları bir config dosyasında değil, ai-core’un admin panelinde tutar. Veriyi ve formu `resource/server/schema.ts` içinde tanımlarsın ([`PanelSchema`](/tr/docs/developers/api/types#panelschema): dosyalar, sekmeler, kartlar, widget’lar; bkz. [Script oluşturmak](/tr/docs/developers/creating-a-script)), ondan tek bir `AdminPanel` oluşturursun ve değerleri onun üzerinden okursun. Sahibin tarafı (paneli açmak, düzenlemek, yetkiler) [Admin paneli](/tr/docs/admin-panel) sayfasındadır.
+
+Lua karşılığı yok: admin paneli yalnızca TypeScript’tir.
+
+### AdminPanel
+
+Resource’unun panel içeriği. Her `data/<file>.json` dosyasını açılışta bir kez yükler, bellekte tutar, her panel düzenlemesini şemaya göre kontrol eder, dosyayı kaydeder (atomik, art arda gelen düzenlemeler tek seferde yazılır) ve senin kodunu, açık panelleri ve `sync: "all"` dosyaları için her client’ı haberdar eder. Ayrıca bir editörün elle yapılan düzenlemeyi kontrol edebilmesi için `data/schemas/<file>.schema.json` dosyasını yazar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+new AdminPanel(schema: PanelSchema)
+```
+
+<TypeTable
+  type={{
+    schema: { type: "PanelSchema", typeDescriptionLink: "/tr/docs/developers/api/types#panelschema", description: "`schema.ts` export’un: `title`, `icon`, `files` (her `data/<file>.json` için bir girdi, `settings` ya da `records`) ve `tabs`.", required: true },
+  }}
+/>
+
+Tam olarak bir tane oluştur, modül seviyesinde, genellikle `resource/server/content.ts` içinde: `export const panel = new AdminPanel(schema);`. Ayar dosyaları yüklenirken eksik bölümlerini `defaults`’tan alır. ai-core paneli oluşturulduktan bir tick sonra listeler.
+
+#### AdminPanel.get
+
+Bir dosyanın güncel içeriği.
+
+```ts title="Signature"
+get<T = Record<string, unknown>>(file: string): T
+```
+
+**Dönüş değeri**: ayar nesnesi (bir `settings` dosyası) ya da `{ key: record }` (bir `records` dosyası); bilinmeyen bir dosya için `{}`. Salt okunur: dönen nesneyi asla değiştirme, `commit` kullan.
+
+```ts
+const settings = panel.get<{ prices: { repair: number } }>("settings");
+```
+
+#### AdminPanel.view
+
+Senin okuyucunla ayrıştırılan ve her değişiklikte güncel tutulan bir ayar dosyası (`onChange` handler’ları çalışmadan önce ayrıştırılır).
+
+```ts title="Signature"
+view<T>(file: string, read: (raw: unknown) => T): { readonly value: T }
+```
+
+**Dönüş değeri**: `value`’su her zaman en son ayrıştırılmış içerik olan bir nesne. `.value`’yu her seferinde oku; bir kez kopyalayıp saklama.
+
+```ts
+import { int, record } from "@aicore-fivem/lib/shared";
+
+const settings = panel.view("settings", (raw) => ({
+  repairPrice: int(record(record(raw).prices).repair, 250),
+}));
+// daha sonra: settings.value.repairPrice
+```
+
+#### AdminPanel.records
+
+Kayıt kayıt ayrıştırılan bir records dosyası. Bir değişiklik yalnızca değişen kaydı yeniden okur.
+
+```ts title="Signature"
+records<T>(file: string, readOne: (key: string, raw: Record<string, unknown>) => T | null): ReadonlyMap<string, T>
+```
+
+**Dönüş değeri**: kayıt anahtarından ayrıştırılmış değerine canlı bir map. `readOne` `null` döndürürse kayıt dışarıda kalır.
+
+```ts
+const shops = panel.records("shops", (key, raw) =>
+  typeof raw.label === "string" ? { key, label: raw.label } : null,
+);
+for (const shop of shops.values()) console.log(shop.label);
+```
+
+#### AdminPanel.onChange
+
+Bir dosya, bir panel düzenlemesiyle ya da senin kendi `commit`’inle değiştikten sonra handler’ını çalıştırır.
+
+```ts title="Signature"
+onChange(file: string, handler: (key: string | undefined, value: unknown) => void): void
+```
+
+<TypeTable
+  type={{
+    file: { type: "string", description: "Şemadaki dosya adı.", required: true },
+    handler: { type: "(key: string | undefined, value: unknown) => void", description: "`key` değişen kayıttır (bir ayar dosyası için `undefined`). `value` yeni kayıt ya da ayar nesnesidir; bir kayıt silindiyse `null`.", required: true },
+  }}
+/>
+
+```ts
+panel.onChange("shops", (key, value) => {
+  if (value === null) console.log(`shop ${key} deleted`);
+});
+```
+
+#### AdminPanel.rule
+
+Bir düzenleme saklanmadan önce çalışan, alanlar arası bir kontrol. Şema tek tek değerleri kontrol eder; bir kural değerlerin birbirine nasıl uyduğunu kontrol eder.
+
+```ts title="Signature"
+rule(file: string, rule: (key: string | undefined, next: Record<string, unknown>) => string | null): void
+```
+
+**Dönüş değeri** (kuralından): kabul etmek için `null` ya da reddetmek için bir lang anahtarı (admin’e gösterilir). Dosya başına bir kural; ikinci bir çağrı onun yerine geçer.
+
+```ts
+panel.rule("settings", (_key, next) => {
+  const prices = next.prices as { min: number; max: number };
+  return prices.min > prices.max ? "ERR_MIN_ABOVE_MAX" : null;
+});
+```
+
+#### AdminPanel.onAction
+
+Bir admin bir `action` widget’ına (bir buton: gönder, sıfırla, at) bastığında çalışır. Buton için hiçbir şey saklanmaz.
+
+```ts title="Signature"
+onAction(id: string, handler: (admin: number, record: Record<string, unknown>, key: string | undefined) => string | null): void
+```
+
+<TypeTable
+  type={{
+    id: { type: "string", description: "Widget’ın `path`’i.", required: true },
+    handler: { type: "(admin: number, record: Record<string, unknown>, key: string | undefined) => string | null", description: "Admin’in server id’sini, kaydın (ya da ayar nesnesinin) bir kopyasını ve kayıt anahtarını alır. Başarı için `null` ya da butonun altında gösterilen bir lang anahtarı döndür. Fırlatılan bir hata loglanır ve reddedilir.", required: true },
+  }}
+/>
+
+```ts
+import { notify } from "@aicore-fivem/lib/server";
+
+panel.onAction("testAlert", (admin) => {
+  notify(admin, "Test alert sent", "success");
+  return null;
+});
+```
+
+#### AdminPanel.commit
+
+Script’inin kendisinin yaptığı bir değişikliği (panelin gösterdiği oyun durumu) doğrulama olmadan saklar. Bir `memory` dosyası onu yalnızca bellekte tutar.
+
+```ts title="Signature"
+commit(file: string, key: string | undefined, value: unknown): void
+```
+
+<TypeTable
+  type={{
+    file: { type: "string", description: "Dosya adı.", required: true },
+    key: { type: "string | undefined", description: "Kayıt anahtarı ya da bir ayar nesnesinin yerine geçmek için `undefined`.", required: true },
+    value: { type: "unknown", description: "Yeni kayıt ya da ayar nesnesi; `null` kaydı siler.", required: true },
+  }}
+/>
+
+```ts
+panel.commit("vaults", "bank_1", { ...panel.get<Record<string, object>>("vaults").bank_1, robbedAt: Date.now() });
+```
+
+#### AdminPanel.commitAfter
+
+Güncel değişiklik panele ulaştıktan sonra `commit`. Bir admin gönderdikten sonra kendini sıfırlayan bir form için kullan.
+
+```ts title="Signature"
+commitAfter(file: string, key: string | undefined, value: unknown): void
+```
+
+```ts
+panel.onAction("sendBroadcast", (admin, form) => {
+  if (typeof form.message !== "string" || form.message === "") return "ERR_EMPTY_MESSAGE";
+  for (const player of getPlayers()) notify(Number(player), form.message, "info", 10_000);
+  panel.commitAfter("broadcast", undefined, { message: "" }); // formu boşalt
+  return null;
+});
+```
+
+<Callout type="warn">
+Aynı dosya için `commit` ya da `commitAfter`’ı asla o dosyanın kendi `onChange` handler’ı içinden çağırma: commit `onChange`’i yeniden tetikler, sonsuza kadar.
+</Callout>
+
+#### AdminPanel.editor
+
+```ts title="Signature"
+editor: number
+```
+
+Düzenlemesi ya da aksiyonu uygulanan admin’in server id’si; `rule`, `onChange` ve `onAction` handler’ları içinde okunabilir; senin kendi `commit`’in için `0`. Yalnızca lib tarafından ayarlanır.
+
+```ts
+panel.onChange("settings", () => {
+  if (panel.editor) console.log(`settings changed by ${panel.editor}`);
+});
+```
+
+#### ai-core’un kullandıkları
+
+`snapshot()`, `dataSnapshot()`, `summary()` ve `apply(admin, patch)`, ai-core’un panelin kaydettiği export’lar (`AdminPanelSnapshot`, `AdminPanelData`, `AdminPanelSummary`, `AdminPanelApply`) üzerinden çağırdıklarıdır. Script’in onları çağırmaz.
+
+#### Örnek
+
+```ts title="resource/server/content.ts"
+import { AdminPanel, aiLog } from "@aicore-fivem/lib/server";
+import { int, record } from "@aicore-fivem/lib/shared";
+import { schema } from "./schema";
+
+export const panel = new AdminPanel(schema);
+
+export const settings = panel.view("settings", (raw) => ({
+  repairPrice: int(record(record(raw).prices).repair, 250),
+}));
+
+panel.onChange("settings", () => {
+  aiLog("admin", `repair price is now ${settings.value.repairPrice}`, { source: panel.editor || undefined });
+});
+```
+
+<Callout type="warn">
+`data/*.json` dosyasını asla kendin okuma ve ona asla yazma: dosyanın sahibi paneldir. Dünyanın client’larda ihtiyaç duyduğu veriler (yerler, blip’ler, oyuncuların gördüğü fiyatlar) client’ta `AdminWorld` ile okunan bir `sync: "all"` dosyasıdır; geri kalan her şey server’da kalır.
+</Callout>
+
+### DataFile
+
+Resource’unun güvenli yazmalı tek bir `data/<name>.json` dosyası. `AdminPanel` her dosya için onu kullanır; onu doğrudan yalnızca panel dışındaki içerik için kullan. Tek okuyan ve yazan server’dır: açılışta bir kez okur ve doğruyu bellekte tutar. Bir yazma, sonra gerçek dosyanın yerine geçen geçici bir dosyaya gider (bir çökme asla yarım dosya bırakmaz), önceki dosya `.bak` olarak saklanır ve bozuk bir dosya açılışta `.bak`’a geri döner.
+
+**Taraf:** Server · **Bekler:** hayır
+
+Lua karşılığı yok.
+
+```ts title="Signature"
+new DataFile(resource: string, name: string, log: Logger)
+```
+
+<TypeTable
+  type={{
+    resource: { type: "string", description: "Resource’unun adı (`GetCurrentResourceName()`).", required: true },
+    name: { type: "string", description: "Klasör ya da uzantı olmadan dosya adı: `routes`, `data/routes.json` demektir.", required: true },
+    log: { type: "Logger", description: "Hataların gittiği yer: `@aicore-fivem/lib/shared`’dan `createLogger(resource)`.", required: true },
+  }}
+/>
+
+#### DataFile.read
+
+```ts title="Signature"
+read(): unknown
+```
+
+**Dönüş değeri**: `$schema` anahtarı olmadan ayrıştırılmış dosya, dosya bozuksa `.bak` ya da ikisi de yoksa `null`. Sonucu kullanmadan önce ayrıştır.
+
+#### DataFile.write
+
+```ts title="Signature"
+write(value: unknown): void
+```
+
+`value`’yu saklar; son çağrı kazanır. Art arda gelen çağrıların ilkinden 250 ms sonra, önceki yazmalarla sıralı olarak diske yazılır. Başarısız bir yazma loglanır.
+
+#### DataFile.schemaRef
+
+```ts title="Signature"
+schemaRef: string | null
+```
+
+Ayarlandığında (`./schemas/<name>.schema.json`), dosyanın ilk anahtarı olarak `"$schema"` şeklinde yazılır; asla verinin parçası değildir.
+
+#### DataFile.hasSchemaRef
+
+```ts title="Signature"
+hasSchemaRef(): boolean
+```
+
+**Dönüş değeri**: diskteki dosyanın şemasını belirtip belirtmediği.
+
+#### Örnek
+
+```ts
+import { DataFile } from "@aicore-fivem/lib/server";
+import { createLogger, isRecord } from "@aicore-fivem/lib/shared";
+
+const resource = GetCurrentResourceName();
+const file = new DataFile(resource, "routes", createLogger(resource));
+
+const raw = file.read();
+const routes: Record<string, unknown> = isRecord(raw) ? raw : {};
+
+function saveRoute(id: string, route: unknown) {
+  routes[id] = route;
+  file.write(routes);
+}
+```
+
+<Callout type="info">
+Oyuncu verisi asla bir data dosyasına girmez: veritabanına aittir ([Veritabanı](/tr/docs/developers/api/lib-server/database)). Sırlar (webhook’lar, API anahtarları) git’e girmeyen `data/secrets.json` dosyasına gider.
+</Callout>

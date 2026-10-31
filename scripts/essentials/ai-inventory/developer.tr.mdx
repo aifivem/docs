@@ -1,0 +1,369 @@
+---
+title: Geliştiriciler için ai-inventory
+description: ai-inventory’nin server ve client export’ları, kullanılabilir eşyalar, script dükkânları, usedItem event’i ve cevapladığı ox_inventory ile qb-inventory API’leri.
+icon: Code
+---
+
+<Callout type="info">
+Kendi script’indeki eşyalar için AI Core’un envanter katmanını kullan: lib `inventory` (server `inventory.addItem`, `removeItem`, `getItemCount`, `hasItem`, `canCarryItem`, `registerUsableItem`, `registerStash`, `openInventory`, `registerShop`...; client `inventory.hasItem`, `openInventory`, `currentWeapon`) ya da Lua’da `aiLib.inventory`. Sunucu hangi envanteri çalıştırıyorsa onunla çalışır; böylece sunucu sahibi ai-inventory’yi değiştirebilir. Bkz. [lib referansı](/tr/docs/developers/api/lib-server). Aşağıdaki export’lar özel durumlar ve ai-inventory’nin kendisinin neyi cevapladığını okumak içindir.
+</Callout>
+
+## Envanter referansları
+
+`inv` alan her server export’u şunları kabul eder:
+
+| Değer | Envanter |
+| --- | --- |
+| `number` (ya da sayısal bir dize) | Bir oyuncunun envanteri, server id’siyle. Oyuncunun yüklenmiş bir karakteri olmalı. |
+| `string` | Adıyla bir depo (bir panel deposunun anahtarı ya da `RegisterStash` ile kaydedilmiş bir ad) veya plakayla bir aracın bagajı ya da torpidosu (`"trunk:<plate>"`, `"glovebox:<plate>"` ya da bagaj için sadece plaka). |
+| `{ id: string, owner: string \| number }` | Kişisel bir deponun tek bir karaktere ait kopyası. |
+
+<Callout type="warn">
+Export’lar bellekteki envanterlerde çalışır: çevrim içi oyuncular, script’lerin kaydettiği depolar ve yeniden başlatmadan beri birinin açtığı panel depoları, bagajlar ve torpidolar (5 dakika boşta kalınca bellekten çıkarılırlar). Yüklenmemiş bir envanter için `AddItem` ve `RemoveItem` `false`, `GetItemCount` `0` cevap verir.
+</Callout>
+
+## Server export’ları
+
+`@aicore-fivem/shared` içinde `AiInventoryServerExports` olarak tiplenmiştir: TypeScript’te `resourceExport("ai-inventory")`.
+
+### AddItem
+
+Bir envantere eşya ekler. Aynı ad ve metadata’ya sahip yığınlar eşyanın yığın boyutuna kadar birleşir; geri kalanı boş hücrelere gider.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+AddItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>, slot?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-inventory']:AddItem(source, 'water', 2)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    inv: { type: 'number | string | { id, owner }', description: 'Envanter (bkz. Envanter referansları).', required: true },
+    item: { type: 'string', description: 'Eşya adı ya da eşyanın **Other names** adlarından biri.', required: true },
+    count: { type: 'number', description: 'Kaç tane, 0’dan büyük bir tam sayı.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Yığında tutulan veri (bir seri numarası, bir kalite). Yığınlar sadece aynı metadata ile birleşir.' },
+    slot: { type: 'number', description: 'Konacağı hücre (1’den başlar, satır satır). Verilmezse: sığdığı ilk yer.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: her birim eklendiyse `true`. Envanter ya da eşya bilinmiyorsa, `count` geçerli değilse ya da sığmıyorsa (hücre ya da ağırlık) `false`. `false` cevap verdiğinde hiçbir şey eklenmez.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const inv = resourceExport("ai-inventory");
+
+onClientCallback("myscript:buyWater", (source) => {
+  if (!inv.CanCarryItem(source, "water", 1)) return fail("NO_SPACE");
+  if (!inv.AddItem(source, "water", 1)) return fail("NO_SPACE");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:buyWater', function()
+    local src = source
+    if not exports['ai-inventory']:CanCarryItem(src, 'water', 1) then return end
+    exports['ai-inventory']:AddItem(src, 'water', 1)
+end)
+```
+</Tab>
+</Tabs>
+
+### RemoveItem
+
+Bir envanterden eşya alır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+RemoveItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>, slot?: number): boolean
+```
+
+<TypeTable
+  type={{
+    inv: { type: 'number | string | { id, owner }', description: 'Envanter.', required: true },
+    item: { type: 'string', description: 'Eşya adı.', required: true },
+    count: { type: 'number', description: 'Kaç tane, 0’dan büyük bir tam sayı.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Sadece metadata’sı eşleşen yığınlar.' },
+    slot: { type: 'number', description: 'Sadece bu hücreden.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: her birim alındıysa `true`. Yeterli yoksa `false` (o zaman hiçbir şey alınmaz). Bir oyuncudan alınan silah elinden de alınır.
+
+### GetItemCount
+
+```ts title="Signature"
+GetItemCount(inv: number | string, item: string, metadata?: Record<string, unknown>): number
+```
+
+Envanterin `item`’dan (verildiyse `metadata` ile eşleşen) kaç birim tuttuğu. Bilinmeyen bir envanter ya da eşya için `0`. **Taraf:** Server · **Bekler:** hayır.
+
+### CanCarryItem
+
+```ts title="Signature"
+CanCarryItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>): boolean
+```
+
+`count` birimin, eklemeden, sığıp sığmayacağı (hücre ve ağırlık). **Taraf:** Server · **Bekler:** hayır.
+
+### GetItems
+
+```ts title="Signature"
+GetItems(inv: number | string): Array<{ name, label, weight, slot, count, amount, metadata, info, stack, unique, close, description, type, image }>
+```
+
+Envanterin her yığını. `count` / `metadata` (ox adları) ve `amount` / `info` (qb adları) aynı değerleri tutar; `weight` yığının gram cinsinden toplamıdır. Bilinmeyen bir envanter için boş liste. **Taraf:** Server · **Bekler:** hayır.
+
+### GetWeight
+
+```ts title="Signature"
+GetWeight(inv: number | string): { weight: number; maxWeight: number } | null
+```
+
+Gram cinsinden taşınan ağırlık ve sınır (`maxWeight` 0 = sınır yok). Envanter yüklenmemişse `null`. **Taraf:** Server · **Bekler:** hayır.
+
+### RegisterUsableItem
+
+Bir oyuncu bir eşyayı kullandığında fonksiyonunu çalıştırır. Önce eşyanın animasyonu (varsa) oynar; fonksiyonun animasyon bitince çalışır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+RegisterUsableItem(name: string, handler: (source: number, item: { name: string; slot: number; count: number; metadata: Record<string, unknown> }) => unknown): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Eşya adı.', required: true },
+    handler: { type: '(source, item) => unknown', description: 'Fonksiyonun. Eşyayı tutmak için `false` döndür; başka her şey eşyanın **Used up per use** miktarını düşer.', required: true },
+  }}
+/>
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, notify } from "@aicore-fivem/lib/server";
+
+const inv = resourceExport("ai-inventory");
+
+inv.RegisterUsableItem("repairkit", (source, item) => {
+  const ped = GetPlayerPed(String(source));
+  const vehicle = GetVehiclePedIsIn(ped, false);
+  if (vehicle === 0) {
+    notify(source, "Sit in a vehicle first", "error");
+    return false; // eşyayı tut
+  }
+  emitNet("myscript:repair", source, NetworkGetNetworkIdFromEntity(vehicle));
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-inventory']:RegisterUsableItem('repairkit', function(source, item)
+    local vehicle = GetVehiclePedIsIn(GetPlayerPed(source), false)
+    if vehicle == 0 then
+        aiLib.notify(source, 'Sit in a vehicle first', 'error')
+        return false -- eşyayı tut
+    end
+    TriggerClientEvent('myscript:repair', source, NetworkGetNetworkIdFromEntity(vehicle))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Oyuncuların eşyayı ekrandan kullanabilmesi için panelde eşyanın **Can be used** ayarı açık, tüketilmesi için **Used up per use** 0’dan büyük olmalı. Eşya adı başına tek handler: yeniden kaydetmek öncekinin yerine geçer. Handler resource’un durduktan sonra da kalır; açılışta bir kez kaydet.
+</Callout>
+
+### RegisterStash
+
+Bir script’ten depo kaydeder (bir ev, bir çete dolabı). Ortak depolar hemen yüklenir ve yüklü kalır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+RegisterStash(name: string, label: string, slots: number, maxWeight: number, jobs?: string[], personal?: boolean): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Depo id’si; onu açmak için ve eşya export’larında kullanılır.', required: true },
+    label: { type: 'string', description: 'Oyuncuların gördüğü ad.', required: true },
+    slots: { type: 'number', description: 'Kaç hücre; panelin sütun sayısına göre satırlara çevrilir.', default: '50' },
+    maxWeight: { type: 'number', description: 'Gram cinsinden ağırlık sınırı.', default: '100000' },
+    jobs: { type: 'string[]', description: 'Onu açabilen meslekler (her kademe). Boş: herkes.' },
+    personal: { type: 'boolean', description: '`true`: her karakterin kendi içeriği olur.', default: 'false' },
+  }}
+/>
+
+Bir script deposunun dünyada yeri yoktur: onu `OpenInventory` ile aç.
+
+### OpenInventory
+
+Bir oyuncunun ekranında, kendi envanterinin yanında bir envanter açar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+OpenInventory(source: number, inv: number | string): boolean
+```
+
+#### Dönüş değeri
+
+`boolean`: açıldıysa `true`. Oyuncunun yüklenmiş envanteri yoksa, envanter bilinmiyor ya da yüklenmemişse veya oyuncunun kendi envanteriyse `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const inv = resourceExport("ai-inventory");
+inv.RegisterStash("gang_ballas", "Ballas locker", 60, 200_000);
+
+onClientCallback("myscript:openLocker", (source) => {
+  return inv.OpenInventory(source, "gang_ballas") ? { ok: true } : fail("CANNOT_OPEN");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-inventory']:RegisterStash('gang_ballas', 'Ballas locker', 60, 200000)
+
+RegisterNetEvent('myscript:openLocker', function()
+    exports['ai-inventory']:OpenInventory(source, 'gang_ballas')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+`OpenInventory` çağırmadan önce oyuncunun onu açabileceğini (çete, mesafe) server’da kontrol et: export ne istersen onu açar.
+</Callout>
+
+### ClearInventory
+
+```ts title="Signature"
+ClearInventory(inv: number | string): void
+```
+
+Bir envanteri boşaltır. **Taraf:** Server · **Bekler:** hayır.
+
+### RegisterShop and OpenShop
+
+Yeri olmayan, script’inin açtığı bir dükkân (bir telefon uygulaması, bir NPC menüsü). Satın almaya sadece o oyuncu dükkânı açık tutarken izin verilir; ödeme önce nakitten sonra bankadan. Aynı id’ye sahip bir panel dükkânı önceliklidir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+RegisterShop(name: string, label: string, items: Array<{ name: string; price: number }>): void
+OpenShop(source: number, name: string): boolean
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Dükkân id’si.', required: true },
+    label: { type: 'string', description: 'Oyuncuların gördüğü ad. Varsayılanı `name`.', required: true },
+    items: { type: '{ name: string; price: number }[]', description: 'Ürünler: eşya adı ve birim başına 0 ya da daha büyük tam sayı fiyat. Geçersiz satırlar atlanır.', required: true },
+  }}
+/>
+
+Dükkân bilinmiyorsa ya da oyuncunun envanteri yoksa `OpenShop` `false` döndürür.
+
+### Items
+
+```ts title="Signature"
+Items(name?: string): { name, label, weight, stack, unique, close, description, type, image, useable } | Record<string, ...> | null
+```
+
+Tek bir eşya tanımı (ox şekli), `name` verilmezse ada göre her tanım, bilinmeyen bir ad için `null`. Yığın boyutu 1’den büyükse `stack` `true`’dur; 1 ise `unique`. **Taraf:** Server · **Bekler:** hayır.
+
+## Client export’ları
+
+| Export | Dönüş değeri | Ne yapar |
+| --- | --- | --- |
+| `OpenSelf()` | hiçbir şey | Oyuncunun kendi ekranını etraftaki yer, bagaj ya da torpidoyla açar (**F2** gibi). |
+| `OpenInventory(type, data)` | hiçbir şey | `type` `"stash"` ya da `"shop"` ve `data` id (ya da `{ id }`), `"drop"` ve bir drop id’si; başka her şey oyuncunun kendisininkini açar. Server erişimi yine kontrol eder. |
+| `CloseInventory()` | hiçbir şey | Ekranı kapatır. |
+| `GetItemCount(item: string)` | `number` | Oyuncunun kaç tane taşıdığı. |
+| `HasItem(items, amount?)` | `boolean` | `items` bir ad, bir liste (her biri en az `amount`, varsayılan 1) ya da `{ name: count }`. |
+| `GetPlayerItems()` | `array` | Oyuncunun yığınları (`name`, `label`, `slot`, `count`, `amount`, `metadata`, `info`, `weight`, `stack`, `close`, `description`). |
+
+`OpenSelf` ve `HasItem`, `AiInventoryClientExports` olarak tiplenmiştir.
+
+## Event’ler
+
+### ai-inventory:usedItem
+
+Bir eşyanın her kullanımından sonra server’da tetiklenir.
+
+**Taraf:** Server (yerel event)
+
+| Argüman | Tip | Ne olduğu |
+| --- | --- | --- |
+| `source` | `number` | Oyuncu. |
+| `name` | `string` | Eşya adı. |
+| `slot` | `number` | Yığının bulunduğu hücre. |
+| `metadata` | `Record<string, unknown>` | Yığının metadata’sı. |
+| `status` | `{ hunger?, thirst?, stress? }` | Eşyanın panelden gelen ihtiyaç değerleri. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("ai-inventory:usedItem", (source: number, name: string) => {
+  if (name === "joint") emitNet("myscript:highEffect", source);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('ai-inventory:usedItem', function(source, name)
+    if name == 'joint' then TriggerClientEvent('myscript:highEffect', source) end
+end)
+```
+</Tab>
+</Tabs>
+
+AI Core bunu kendi `ai-core:itemUsed (source, name, status)` event’ine çevirir; script’in her envanterle çalışacaksa dinlemen gereken odur.
+
+## ox_inventory API
+
+ai-inventory `ox_inventory` adını sağlar (`provide`) ve export’larını cevaplar (ox_inventory 2.44’e göre yazılmıştır). Envanterler ox’taki gibi adlandırılır: bir oyuncu source’u, bir depo adı, kişisel depolar için `{ id, owner }`, bagajlar için bir plaka.
+
+- **Server:** `AddItem` (`success, response` döndürür, `cb`’yi çağırır), `RemoveItem`, `GetItem`, `GetItemCount`, `Search` (`count` / `slots`), `CanCarryItem`, `CanCarryWeight`, `CanCarryAmount`, `GetInventory`, `GetInventoryItems`, `GetSlot`, `GetSlotWithItem`, `GetSlotsWithItem`, `GetSlotIdWithItem`, `GetSlotIdsWithItem`, `GetEmptySlot`, `SetMetadata`, `SetDurability`, `SetMaxWeight`, `RegisterStash`, `ClearInventory`, `Items`, `ItemList`, `forceOpenInventory` (depo, oyuncu, dükkân), `CreateTemporaryStash`, `CustomDrop`, `RemoveInventory`, `SwapSlots`.
+- **Client:** `openInventory`, `closeInventory`, `Search`, `GetItemCount`, `GetPlayerItems`, `GetPlayerWeight`, `GetPlayerMaxWeight`, `Items`, `useSlot`, `getCurrentWeapon` / `GetCurrentWeapon`. `displayMetadata`, `weaponWheel` ve `setStashTarget` kabul edilir ve hiçbir şey yapmaz.
+- **Cevaplanmayanlar:** hook’lar (`registerHook`, `removeHooks`), `UpdateVehicle`, `ConfiscateInventory` / `ReturnInventory`, `GetContainerFromSlot`, `RegisterShop` (dükkânlar panelden ya da ai-inventory’nin kendi `RegisterShop`’undan gelir).
+
+## qb-inventory API
+
+ai-inventory `qb-inventory` adını sağlar (`provide`, 2.0 API). Döndürülen eşyalar iki şekli de taşır: `count` / `metadata` ve `amount` / `info`.
+
+- **Server:** `AddItem(identifier, item, amount, slot, info)`, `RemoveItem`, `HasItem` (bir ad, bir liste ya da `{ name = amount }`), `GetItemCount`, `GetItemByName`, `GetItemsByName`, `GetItemBySlot`, `CanAddItem`, `GetFreeWeight`, `GetSlots`, `ClearInventory`, `SetItemData`, `CreateInventory`, `OpenInventory`, `OpenInventoryById`, `RemoveInventory`, `CloseInventory`.
+- **Client:** `HasItem`, `CloseInventory`.
+- **Cevaplanmayanlar:** hook’lar ve listener’lar, `CreateShop` / `OpenShop`, `SetInventory`, `GetInventory`, `SaveInventory`, `LoadInventory`, `UseItem`, `GetFirstSlotByItem`, `GetSlotsByItem`, `GetTotalWeight`.
+
+## Veritabanı ve loglar
+
+`ai_inventory_inventories` tablosu: saklanan her envanter için bir satır (`id`, `items` JSON). Ona sadece ai-inventory yazar; değişiklikler her 30 saniyede bir, bellekten çıkarılırken ve dururken kaydedilir. Log kanalları: `moves` (varsayılan kapalı), `drops`, `gives`, `purchases`, `crafting`.

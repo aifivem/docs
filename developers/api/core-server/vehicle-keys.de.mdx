@@ -1,0 +1,207 @@
+---
+title: Fahrzeugschlüssel
+description: Fahrzeugschlüssel geben, entfernen und prüfen, über das Schlüssel-Skript, das der Server nutzt.
+icon: KeyRound
+---
+
+Jeder Schlüssel-Aufruf läuft über ai-core, nie über die eigenen Exports eines Schlüssel-Skripts (ai-vehiclekeys eingeschlossen). ai-core leitet ihn an das **aktive Schlüsselsystem** weiter: das, das die Panel-Einstellung **Key script** (Schlüssel-Skript) wählt, oder das erste, das läuft. Wenn kein Schlüssel-Skript läuft, zählt jeder Spieler als Besitzer jedes Schlüssels.
+
+Ein **Fahrzeug** wird entweder als Server-Entity-Handle angegeben (die Zahl, die `CreateVehicleServerSetter` oder `spawnVehicle` zurückgibt) oder als Kennzeichen-Text. Ein Kennzeichen wird zuerst getrimmt und in Großbuchstaben umgewandelt, sodass `" ab12cde "` und `"AB12CDE"` derselbe Schlüssel sind.
+
+Jeder Schlüssel hat einen **Zweck**, der dem Schlüsselsystem sagt, warum der Spieler ihn bekommt. Manche Schlüsselsysteme behandeln sie unterschiedlich (ein gekauftes Fahrzeug bekommt ein neues Schlüssel-Item, ein Dienstfahrzeug einen fest im Zündschloss steckenden Schlüssel). Siehe [KeyPurpose](/de/docs/developers/api/types#keypurpose).
+
+| Zweck | Wann |
+| --- | --- |
+| `purchase` | Dem Spieler gehört jetzt das Fahrzeug (Händler, Admin-Vergabe): ein neuer Schlüssel, ältere Kopien funktionieren nicht mehr. |
+| `garage` | Ein eigenes Fahrzeug, das aus der Garage geholt wird: Der Besitzer hat den Schlüssel bereits. |
+| `job` | Ein Arbeitsfahrzeug für die Schicht. |
+| `rental` | Ein gemietetes Fahrzeug für die Mietdauer. |
+| `temporary` | Alles andere Kurzlebige (Admin-Spawn, Probefahrt, Fahrzeug bei einem Überfall). Der Standard. |
+
+### GiveVehicleKeys
+
+Gibt einem Spieler die Schlüssel eines Fahrzeugs.
+
+**Seite:** Server · **Wartet:** nein · **Lib:** [`vehicleKeys.give`](/de/docs/developers/api/lib-server/vehicles#vehiclekeysgive) (und [`spawnVehicle({ keysTo, purpose })`](/de/docs/developers/api/lib-server/vehicles#spawnvehicle) gibt sie für dich)
+
+```ts title="Signature"
+GiveVehicleKeys(source: number, vehicle: number | string, purpose?: KeyPurpose): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GiveVehicleKeys(source, vehicle, 'rental')
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server-ID des Spielers, der die Schlüssel bekommt.', required: true },
+    vehicle: { type: 'number | string', description: 'Server-Entity-Handle des Fahrzeugs oder sein Kennzeichen.', required: true },
+    purpose: { type: 'KeyPurpose', description: 'Warum der Spieler sie bekommt. Jeder andere Wert zählt als `temporary`.', default: '"temporary"', typeDescription: '"purchase" | "garage" | "job" | "rental" | "temporary"' },
+  }}
+/>
+
+#### Rückgabe
+
+Nichts. Der Aufruf tut nichts, wenn die Fahrzeug-Entity nicht existiert, das Kennzeichen leer ist, `source` keine Zahl ist oder kein Schlüsselsystem läuft. Ein Fehler des Schlüsselsystems wird geloggt, nicht geworfen.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, spawnVehicle } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const SPAWN = { x: -1023.5, y: -2694.1, z: 13.9, heading: 150 };
+
+onClientCallback("myscript:rentScooter", { lock: true }, async (source) => {
+  if (!core.RemoveMoney(source, "cash", 100, "scooter_rental")) return fail("NOT_ENOUGH_MONEY");
+  const vehicle = await spawnVehicle({ model: "faggio", coords: SPAWN, asker: source });
+  if (!vehicle) {
+    core.AddMoney(source, "cash", 100, "scooter_rental_refund");
+    return fail("SPAWN_FAILED");
+  }
+  core.GiveVehicleKeys(source, vehicle, "rental");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local SPAWN = vector4(-1023.5, -2694.1, 13.9, 150.0)
+
+aiLib.onClientCallback('myscript:rentScooter', function(source)
+  if not exports['ai-core']:RemoveMoney(source, 'cash', 100, 'scooter_rental') then return aiLib.fail('NOT_ENOUGH_MONEY') end
+  local vehicle = aiLib.spawnVehicle({ model = 'faggio', coords = SPAWN, asker = source })
+  if not vehicle then
+    exports['ai-core']:AddMoney(source, 'cash', 100, 'scooter_rental_refund')
+    return aiLib.fail('SPAWN_FAILED')
+  end
+  exports['ai-core']:GiveVehicleKeys(source, vehicle, 'rental')
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Ein frisch erstelltes Fahrzeug hat auf dem Server kein Kennzeichen, bis der Client seines Besitzers es synchronisiert hat. Übergib die Entity, kein Kennzeichen, das du direkt nach dem Erstellen gelesen hast; `spawnVehicle` der Lib wartet auf das Kennzeichen und kann die Schlüssel selbst geben (`keysTo`, `purpose`).
+</Callout>
+
+### RemoveVehicleKeys
+
+Nimmt einem Spieler die Schlüssel eines Fahrzeugs weg.
+
+**Seite:** Server · **Wartet:** nein · **Lib:** [`vehicleKeys.remove`](/de/docs/developers/api/lib-server/vehicles#vehiclekeysremove)
+
+```ts title="Signature"
+RemoveVehicleKeys(source: number, vehicle: number | string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RemoveVehicleKeys(source, 'AB12CDE')
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server-ID des Spielers.', required: true },
+    vehicle: { type: 'number | string', description: 'Server-Entity-Handle des Fahrzeugs oder sein Kennzeichen.', required: true },
+  }}
+/>
+
+#### Rückgabe
+
+Nichts. Dieselben stillen Fälle wie bei `GiveVehicleKeys`.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Die Miete ist vorbei: Erst gehen die Schlüssel, dann der Roller. */
+export function endRental(source: number, vehicle: number): void {
+  core.RemoveVehicleKeys(source, vehicle);
+  if (DoesEntityExist(vehicle)) DeleteEntity(vehicle);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function EndRental(source, vehicle)
+  exports['ai-core']:RemoveVehicleKeys(source, vehicle)
+  if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Entferne die Schlüssel, bevor du das Fahrzeug löschst. Manche Schlüsselsysteme lesen das Kennzeichen von der Entity, was fehlschlägt, sobald sie weg ist.
+</Callout>
+
+### HasVehicleKeys
+
+Ob ein Spieler die Schlüssel eines Fahrzeugs hat.
+
+**Seite:** Server · **Wartet:** nein · **Lib:** [`vehicleKeys.has`](/de/docs/developers/api/lib-server/vehicles#vehiclekeyshas)
+
+```ts title="Signature"
+HasVehicleKeys(source: number, vehicle: number | string): boolean
+```
+
+```lua title="Lua"
+local has = exports['ai-core']:HasVehicleKeys(source, vehicle)
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server-ID des Spielers.', required: true },
+    vehicle: { type: 'number | string', description: 'Server-Entity-Handle des Fahrzeugs oder sein Kennzeichen.', required: true },
+  }}
+/>
+
+#### Rückgabe
+
+`boolean`: `true`, wenn der Spieler die Schlüssel hat. Auch `true`, wenn kein Schlüsselsystem läuft, das Schlüsselsystem diese Frage nicht beantworten kann oder fehlschlägt, sodass ein fehlendes Schlüssel-Skript nie Spieler aussperrt. `false`, wenn der Spieler keinen Schlüssel hat, die Fahrzeug-Entity nicht existiert, das Kennzeichen leer ist oder `source` keine Zahl ist.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, vehicleNearPlayer } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Den Kofferraum eines Autos neben dem Spieler zu öffnen braucht seine Schlüssel.
+onClientCallback("myscript:openTrunk", { args: oneArg(readId) }, (source, netId) => {
+  const vehicle = vehicleNearPlayer(source, netId, { metres: 4 });
+  if (!vehicle) return fail("TOO_FAR");
+  if (!core.HasVehicleKeys(source, vehicle)) return fail("NO_KEYS");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:openTrunk', function(source, netId)
+  local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 4 }) -- 0, wenn nicht in der Nähe
+  if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:HasVehicleKeys(source, vehicle) then return aiLib.fail('NO_KEYS') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>

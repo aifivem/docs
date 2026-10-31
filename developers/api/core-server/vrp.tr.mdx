@@ -1,0 +1,169 @@
+---
+title: vRP köprüsü
+description: "ai-core’un yerleşik vRP köprüsünün kullandığı export’lar - vRP’nin veri deposu, veritabanı API’si, yetki eşlemesi ve yetki listesi."
+icon: Plug
+---
+
+ai-core vRP script’lerini yerleşik vRP köprüsüyle çalıştırır (`vrp`’yi `provide` eder). Köprünün Lua tarafı ai-core’un TypeScript tarafına bu sayfadaki export’lar üzerinden ulaşır. **Bunlar o köprü için vardır**: bir vRP script’i köprünün cevapladığı vRP’nin kendi API’sini kullanır (`vRP.getUData`, `vRP.query`, `vRP.hasPermission`...) ve bir ai-* script’inin onlara asla ihtiyacı olmaz. Panelin vRP eşlemesi (yetkiler, gruplar, eşyalar) bu export’larla değil, admin panelinde düzenlenir.
+
+Başvuru eksiksiz olsun diye listelenmiştir. Her biri, her ai-core export’u gibi, hemen ya da bir callback ile cevap verir.
+
+### VrpGetData
+
+vRP’nin anahtar-değer deposunun tek bir değerini okur (vRP’nin `getUData`, `getCData`, `getSData` ve `getGData`’sının okuduğu). Değerler hex metin olarak taşınır, böylece her bayt Lua ile TypeScript arasındaki yolculuktan sağ çıkar.
+
+**Taraf:** Server · **Bekler:** hayır (`done` ile cevap verir; önbellekteki bir anahtar için hemen) · **Lib:** yok (yalnızca köprü)
+
+```ts title="İmza"
+VrpGetData(kind: string, owner: string, key: string, done: (hex: string) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpGetData('u', tostring(userId), 'myscript:data', function(hex) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Hangi depo: `u` (kullanıcı / hesap verisi), `c` (karakter verisi), `s` (server verisi) ya da `g` (global veri).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'Metin olarak sahip id’si (`u` için hesap id’si, `c` için karakter id’si). En fazla 64 karakter.', required: true },
+    key: { type: 'string', description: 'Veri anahtarı. 1 ile 100 karakter arası.', required: true },
+    done: { type: '(hex: string) => void', description: 'Değerle hex metin olarak bir kez çağrılır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` değeri hex olarak alır; anahtar ayarlanmamışsa ya da bir argüman yanlışsa `""` alır. Yüklü hesapların ve karakterlerin verisi önbellekte kalır, bu yüzden hemen cevap verir.
+
+#### Örnek
+
+Örnek yok: vRP script’leri `vRP.getUData` ve benzerlerini çağırır, köprü de bunları bu export’a çevirir.
+
+### VrpSetData
+
+vRP’nin anahtar-değer deposuna tek bir değer saklar. Bir saniye içinde ve karakteri kaldırıldığında veritabanına (`ai_core_vrp_data`) yazılır.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok (yalnızca köprü)
+
+```ts title="İmza"
+VrpSetData(kind: string, owner: string, key: string, hex: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:VrpSetData('u', tostring(userId), 'myscript:data', hex)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Hangi depo: `u`, `c`, `s` ya da `g` (`VrpGetData`’daki gibi).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'Metin olarak sahip id’si. En fazla 64 karakter.', required: true },
+    key: { type: 'string', description: 'Veri anahtarı. 1 ile 100 karakter arası.', required: true },
+    hex: { type: 'string', description: 'Hex metin olarak değer (0-9 / a-f çiftleri). En fazla 16,000,000 karakter.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: değer saklandığında `true`. Bir argüman yanlışsa ya da `hex` geçerli bir hex metin değilse (konsol uyarısıyla) `false`.
+
+#### Örnek
+
+Örnek yok: vRP script’leri `vRP.setUData` ve benzerlerini çağırır.
+
+### VrpQuery
+
+ai-core’un veritabanı havuzunda vRP’nin veritabanı API’si (hazırlanmış ifadelerin `vRP.query`, `vRP.execute`, `vRP.scalar`’ı). `@name` yer tutucuları params tablosundan doldurulur; tek metindeki birkaç ifade tek bir transaction içinde sırayla çalışır ve sonuncusu cevap verir.
+
+**Taraf:** Server · **Bekler:** hayır (`done` ile cevap verir) · **Lib:** yok (yalnızca köprü)
+
+```ts title="İmza"
+VrpQuery(
+  sql: string,
+  params: unknown,
+  mode: "query" | "execute" | "scalar",
+  done: (error: string | null, ...answer: unknown[]) => void,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpQuery('SELECT 1 AS n', {}, 'scalar', function(err, value) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    sql: { type: 'string', description: 'Hazırlanmış ifadenin SQL metni.', required: true },
+    params: { type: 'unknown', description: 'İsimli değerlerden (`@name`) oluşan bir tablo, `?` yer tutucuları için bir liste ya da hiç yoksa boş bir tablo.', required: true },
+    mode: { type: '"query" | "execute" | "scalar"', description: 'Ne cevap verileceği. Başka herhangi bir değer `query` sayılır.', required: true },
+    done: { type: '(error, ...answer) => void', description: 'Bir kez çağrılır: başarıda `error` `null`’dır.', required: true, typeDescription: '(error: string | null, ...answer: unknown[]) => void' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` hata yerinden sonra şunları alır: `query` için satırlar ve etkilenen sayı; `execute` için etkilenen sayı; `scalar` için ilk satırın ilk sütunu (ya da `null`). Başarısızlıkta `done` yalnızca hata metnini alır (boş bir `sql` için `"empty query"`).
+
+#### Örnek
+
+Örnek yok: vRP script’leri `vRP.prepare` ve `vRP.query` çağırır. Diğer resource’lar `@aicore-fivem/mysql` (ai-* script’leri) ya da `ai-mysql`’in oxmysql API’sini kullanır.
+
+### GetVrpConfig
+
+Panelin vRP eşlemesi (`data/vrp.json`): hangi ai-core meslek, çete, rütbe ve admin’lerinin hangi vRP yetkilerine sahip olduğu, vRP grup adlarının ne anlama geldiği ve her vRP eşya id’sinin hangi envanter eşyası olduğu.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok (yalnızca köprü)
+
+```ts title="İmza"
+GetVrpConfig(): VrpConfig
+```
+
+```lua title="Lua"
+local config = exports['ai-core']:GetVrpConfig()
+```
+
+#### Parametreler
+
+Yok.
+
+#### Dönüş değeri
+
+`VrpConfig`: `defaults` (yerleşik önek kuralları), `permissions` (kurallar), `groups` (vRP grup adından meslek / çete / rütbe / admin’e) ve `items` (vRP eşya id’sinden eşya adına). Bkz. [VrpConfig](/tr/docs/developers/api/types#vrpconfig). Bir panel değişikliğinden sonra ai-core aynı şekille `ai-core:vrp:config` server event’ini tetikler.
+
+#### Örnek
+
+Örnek yok: köprü `vRP.hasPermission` ve `vRP.hasGroup`’u cevaplamak için bunu okur.
+
+### VrpPermissionAsked
+
+Bir vRP script’inin istediği bir yetki metnini kaydeder, böylece panel sunucunun script’lerinin kullandığı her yetkiyi listeleyebilir ve sahibi onları eşleyebilir.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok (yalnızca köprü)
+
+```ts title="İmza"
+VrpPermissionAsked(permission: string): boolean
+```
+
+```lua title="Lua"
+local new = exports['ai-core']:VrpPermissionAsked('police.armory')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    permission: { type: 'string', description: 'Yetki metni (`police.armory`). 1 ile 100 karakter arası.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: yetki yeniyse ve artık kaydedildiyse `true`. Zaten biliniyorsa, geçerli bir metin değilse ya da kayıtlı liste doluysa `false`.
+
+#### Örnek
+
+Örnek yok: köprü bunu `vRP.hasPermission`’dan çağırır.

@@ -1,0 +1,160 @@
+---
+title: Géométrie des zones
+description: "zoneContains, zoneBounds, polyFromCorners et readZoneShape : savoir si un point est dans une zone, sur le serveur, le client ou dans une NUI."
+icon: Shapes
+---
+
+Une zone du monde est un [ZoneShape](/fr/docs/developers/api/types#zoneshape) : une sphère, un cylindre ou un polygone au sol entre deux hauteurs. La classe client `Zones` (callbacks d’entrée et de sortie, voir [Zones](/fr/docs/developers/api/lib-client/zones)) utilise ces formes ; les utilitaires de cette page sont le simple calcul qui se trouve derrière, sans natives, pour que le serveur puisse vérifier la même zone (le joueur est-il vraiment dans le magasin avant la vente ?).
+
+```ts title="TypeScript"
+import { zoneContains, zoneBounds, polyFromCorners, readZoneShape, type ZoneShape } from "@aicore-fivem/lib/shared";
+```
+
+**Lua :** aucun de ces utilitaires n’a d’équivalent Lua. En Lua, les zones sont `aiLib.Zones.new()` sur le client (voir [Zones](/fr/docs/developers/api/lib-client/zones)).
+
+### zoneContains
+
+Indique si un point se trouve dans une forme de zone.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+zoneContains(shape: ZoneShape, x: number, y: number, z: number): boolean
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    shape: { type: 'ZoneShape', description: 'La zone.', required: true },
+    x: { type: 'number', description: 'x du point en mètres.', required: true },
+    y: { type: 'number', description: 'y du point en mètres.', required: true },
+    z: { type: 'number', description: 'z du point en mètres.', required: true },
+  }}
+/>
+
+#### Retour
+
+`true` quand le point est à l’intérieur (sur le bord compte comme à l’intérieur pour les sphères et les cylindres). Pour un cylindre, le point doit aussi être à `height` mètres au plus au-dessus ou au-dessous du centre. Pour un polygone, `z` doit être entre `minZ` et `maxZ`.
+
+#### Exemple
+
+```ts title="resource/server/index.ts"
+import { coordsOf, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail, zoneContains, type ZoneShape } from "@aicore-fivem/lib/shared";
+
+const shop: ZoneShape = { type: "cylinder", center: { x: 25.7, y: -1347.3, z: 29.5 }, radius: 6, height: 3 };
+
+onClientCallback("my-shop:open", (source) => {
+  const { x, y, z } = coordsOf(source);
+  if (!zoneContains(shop, x, y, z)) return fail("TOO_FAR");
+  return { ok: true };
+});
+```
+
+### zoneBounds
+
+La boîte englobante au sol d’une forme : le plus petit rectangle (x / y) qui la contient. Utilisez-la pour une première vérification peu coûteuse, ou pour ranger une zone dans des cases de grille.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+zoneBounds(shape: ZoneShape): [minX: number, minY: number, maxX: number, maxY: number]
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    shape: { type: 'ZoneShape', description: 'La zone.', required: true },
+  }}
+/>
+
+#### Retour
+
+`[minX, minY, maxX, maxY]` en mètres. Pour une sphère ou un cylindre : le centre plus et moins le rayon.
+
+#### Exemple
+
+```ts
+import { zoneBounds } from "@aicore-fivem/lib/shared";
+
+zoneBounds({ type: "sphere", center: { x: 100, y: 200, z: 30 }, radius: 10 }); // [90, 190, 110, 210]
+```
+
+### polyFromCorners
+
+Transforme les coins qu’enregistre le widget `zone` du panneau en une forme polygonale. La plage de hauteur va du `z` le plus bas au plus haut des coins, élargie de `height` mètres vers le haut et vers le bas.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+polyFromCorners(corners: readonly Vec3[], height: number): { type: "poly"; points: Array<{ x: number; y: number }>; minZ: number; maxZ: number } | null
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    corners: { type: 'readonly Vec3[]', description: 'Les coins dans l’ordre, autour de la zone.', required: true },
+    height: { type: 'number', description: 'Mètres ajoutés sous le coin le plus bas et au-dessus du plus haut.', required: true },
+  }}
+/>
+
+#### Retour
+
+Le `ZoneShape` polygonal, ou `null` avec moins de trois coins.
+
+#### Exemple
+
+```ts
+import { polyFromCorners } from "@aicore-fivem/lib/shared";
+
+const lot = polyFromCorners(
+  [ { x: 210, y: -810, z: 30 }, { x: 240, y: -800, z: 31 }, { x: 230, y: -770, z: 32 } ],
+  3,
+);
+// { type: "poly", points: [...], minZ: 27, maxZ: 35 }
+```
+
+### readZoneShape
+
+Vérifie une forme de zone qui vient d’une autre ressource ou d’un fichier : chaque nombre fini, un polygone d’au moins trois points. Utilisez-le sur une forme passée à l’un de vos exports.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+readZoneShape(value: unknown): ZoneShape | null
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'La forme brute.', required: true },
+  }}
+/>
+
+#### Retour
+
+Un `ZoneShape` propre (les champs en trop sont retirés), ou `null` quand ce n’est pas une sphère, un cylindre ou un polygone valide.
+
+#### Exemple
+
+```ts title="resource/server/index.ts"
+import { registerExport } from "@aicore-fivem/lib/server";
+import { readZoneShape, type ZoneShape } from "@aicore-fivem/lib/shared";
+
+const noParking = new Map<string, ZoneShape>();
+
+registerExport("AddNoParkingZone", (id: unknown, raw: unknown) => {
+  const shape = readZoneShape(raw);
+  if (typeof id !== "string" || !shape) return false;
+  noParking.set(id, shape);
+  return true;
+});
+```
+
+<Callout type="info">
+Un `vector3` Lua arrive en TypeScript sous forme de tableau, que `readZoneShape` n’accepte pas comme `center`. Les appelants Lua passent `center = { x = 1.0, y = 2.0, z = 3.0 }`.
+</Callout>

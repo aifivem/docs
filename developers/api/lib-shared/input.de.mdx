@@ -1,0 +1,516 @@
+---
+title: Aktionen und Client-Eingaben
+description: "fail, isActionOk, replyError und die strikten Leser readInt, readFinite, readId, readText, readVec3, readVec4, oneArg, asArgs, isRecord."
+icon: ShieldCheck
+---
+
+Alles, was ein Client sendet, kann ein Cheater fälschen: ein negativer Betrag, ein Bruch, wo du eine ganze Zahl erwartest, ein String mit 10 MB, ein Objekt statt einer Zahl. Die **strikten Leser** auf dieser Seite machen aus einem rohen Wert einen geprüften Wert, oder `null`, um ihn abzulehnen. Sie ersetzen einen fehlerhaften Wert nie durch einen Standardwert (das tun die [Leser für Panel-Daten](/de/docs/developers/api/lib-shared/panel-data), für Dateien, die der Serverbetreiber bearbeitet).
+
+Jede Server-Aktion antwortet mit einem [ActionResult](/de/docs/developers/api/types#actionresult): `{ ok: true }` oder einer Ablehnung mit einem Sprachschlüssel.
+
+```ts title="TypeScript"
+import { fail, isActionOk, replyError, readInt, readFinite, readId, readText, readVec3, readVec4, oneArg, asArgs, isRecord } from "@aicore-fivem/lib/shared";
+```
+
+Wohin die Leser gehören: in die Option `args` von `onClientCallback` und `onClientEvent` (siehe [Client-Eingaben](/de/docs/developers/api/lib-server/client-input)). Der Parser bekommt die rohen Argumente als Array und gibt die geprüften als Array zurück, oder `null`, um den Aufruf abzulehnen, bevor dein Handler läuft.
+
+## Aktionsergebnisse
+
+### fail
+
+Baut eine Ablehnung: `{ ok: false, error }`. Gib sie aus einem Aktions-Handler zurück; `callAction` auf dem Client zeigt den übersetzten Text von `error` als Fehlerbenachrichtigung an.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+fail(error: string): { ok: false; error: string }
+```
+
+```lua title="Lua"
+return aiLib.fail('NOT_ENOUGH_MONEY') -- { ok = false, error = 'NOT_ENOUGH_MONEY' }
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    error: { type: 'string', description: 'Ein Schlüssel aus der `locales/en.json` deiner Ressource (`"NOT_ENOUGH_MONEY"`). Der Client schlägt ihn in seiner Sprachdatei nach; ein fehlender Schlüssel wird als der Schlüssel selbst angezeigt.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`{ ok: false, error: string }`, was zu jedem `ActionResult` passt.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt, type ActionResult } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "my-shop:buyWater",
+  { args: oneArg((v) => readInt(v, 1, 10)), lock: true },
+  (source, count): ActionResult => {
+    if (!core.CanCarryItem(source, "water", count)) return fail("NO_SPACE");
+    if (!core.RemoveMoney(source, "cash", count * 5, "Water")) return fail("NOT_ENOUGH_MONEY");
+    core.AddItem(source, "water", count);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+aiLib.onClientCallback('my-shop:buyWater', function(source, count)
+    if math.type(count) ~= 'integer' or count < 1 or count > 10 then return aiLib.fail('INVALID') end
+    if not exports['ai-core']:CanCarryItem(source, 'water', count) then return aiLib.fail('NO_SPACE') end
+    if not exports['ai-core']:RemoveMoney(source, 'cash', count * 5, 'Water') then
+        return aiLib.fail('NOT_ENOUGH_MONEY')
+    end
+    exports['ai-core']:AddItem(source, 'water', count)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+Auf dem Client zeigt `callAction("my-shop:buyWater", [2], { fallback: "BUY_FAILED" })` (Lua `aiLib.callAction`) die Ablehnung für dich an. Siehe [Mit dem Server sprechen](/de/docs/developers/api/lib-client/server).
+
+### isActionOk
+
+Prüft, ob eine Antwort ein erfolgreiches `ActionResult` ist (`ok === true`). Nutze es, wenn du eine Antwort von Hand liest statt mit `callAction`.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+isActionOk(reply: unknown): reply is { ok: true } & Record<string, unknown>
+```
+
+**Lua:** kein Zwilling; prüfe `type(reply) == 'table' and reply.ok == true`.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Alles, was ein Callback geantwortet hat.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`true`, wenn `reply` ein Objekt mit `ok: true` ist. Die zusätzlichen Felder werden nicht geprüft: Parse die, die du liest.
+
+#### Beispiel
+
+```ts title="resource/client/index.ts"
+import { triggerServerCallback } from "@aicore-fivem/lib/client";
+import { isActionOk, readId } from "@aicore-fivem/lib/shared";
+
+/** Asks the server to create a garage; answers its new id, or null. */
+async function createGarage(name: string): Promise<number | null> {
+  const reply = await triggerServerCallback("my-garage:create", [name]).catch(() => null);
+  if (!isActionOk(reply)) return null;
+  return readId(reply.id); // ein zusätzliches Feld: prüfen wie jede andere Eingabe
+}
+```
+
+### replyError
+
+Der Sprachschlüssel einer abgelehnten Antwort: ihr `error`, oder `fallback`, wenn die Antwort fehlt oder fehlerhaft ist. `null`, wenn die Antwort ok ist.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+replyError(reply: unknown, fallback: string): string | null
+```
+
+**Lua:** kein Zwilling.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Alles, was ein Callback geantwortet hat (oder `null` nach einem Timeout).', required: true },
+    fallback: { type: 'string', description: 'Sprachschlüssel, der genutzt wird, wenn die Antwort kein brauchbares `error` hat (Timeout, Ablehnung durch das Gate, falsche Form).', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`null` bei einer ok-Antwort. Sonst das `error` der Antwort, wenn es ein nicht leerer String ist, sonst `fallback`.
+
+#### Beispiel
+
+```ts title="resource/client/index.ts"
+import { triggerServerCallback, notify, loadLocaleTexts } from "@aicore-fivem/lib/client";
+import { replyError } from "@aicore-fivem/lib/shared";
+
+const texts = loadLocaleTexts();
+
+async function buyWater(): Promise<boolean> {
+  const reply = await triggerServerCallback("my-shop:buy", ["water"]).catch(() => null);
+  const error = replyError(reply, "BUY_FAILED");
+  if (error !== null) notify(texts[error] ?? error, "error");
+  return error === null;
+}
+```
+
+## Strikte Leser
+
+### readFinite
+
+Eine endliche Zahl, sonst `null`. `NaN`, `Infinity`, Text und alles andere werden abgelehnt.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+readFinite(value: unknown): number | null
+```
+
+**Lua:** kein Zwilling; prüfe `type(value) == 'number' and value == value and value ~= math.huge and value ~= -math.huge`.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Der rohe Wert von einem Client.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+Die Zahl, oder `null`.
+
+#### Beispiel
+
+```ts
+import { readFinite } from "@aicore-fivem/lib/shared";
+
+readFinite(12.5);     // 12.5
+readFinite(NaN);      // null
+readFinite("12");     // null
+```
+
+### readInt
+
+Eine ganze Zahl zwischen `min` und `max` (beide eingeschlossen), sonst `null`. Brüche, `NaN`, `Infinity`, Text und Werte außerhalb des Bereichs werden abgelehnt. Nutze es für Anzahlen, Beträge, Slots, Indizes.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+readInt(value: unknown, min: number, max: number): number | null
+```
+
+**Lua:** kein Zwilling; prüfe `math.type(value) == 'integer' and value >= min and value <= max`.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Der rohe Wert von einem Client.', required: true },
+    min: { type: 'number', description: 'Niedrigster erlaubter Wert.', required: true },
+    max: { type: 'number', description: 'Höchster erlaubter Wert.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+Die Zahl, oder `null`.
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readInt, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const prices = new Map<string, number>([["water", 5], ["bread", 3]]);
+
+onClientCallback(
+  "my-shop:buy",
+  {
+    args: ([rawItem, rawCount]) => {
+      const item = readText(rawItem, 64);
+      const count = readInt(rawCount, 1, 50);
+      return item !== null && count !== null ? [item, count] : null;
+    },
+    lock: true,
+  },
+  (source, item, count) => {
+    const price = prices.get(item); // nur Items, die dieser Shop verkauft
+    if (price === undefined) return fail("UNKNOWN_ITEM");
+    if (!core.CanCarryItem(source, item, count)) return fail("NO_SPACE");
+    if (!core.RemoveMoney(source, "cash", price * count, "Shop")) return fail("NOT_ENOUGH_MONEY");
+    core.AddItem(source, item, count);
+    return { ok: true };
+  },
+);
+```
+
+### readId
+
+Eine positive 32-Bit-Ganzzahl (1 bis 2.147.483.647), sonst `null`. Nutze es für Eintrags-IDs, Tokens und Netzwerk-IDs, die ein Client sendet.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+readId(value: unknown): number | null
+```
+
+**Lua:** kein Zwilling; prüfe `math.type(value) == 'integer' and value > 0 and value <= 2147483647`.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Der rohe Wert von einem Client.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+Die ID, oder `null`.
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { onClientCallback, vehicleFromNet } from "@aicore-fivem/lib/server";
+import { oneArg, readId, fail } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-tow:attach", { args: oneArg(readId) }, (source, netId) => {
+  const vehicle = vehicleFromNet(netId);
+  if (vehicle === 0) return fail("NO_VEHICLE");
+  return { ok: true };
+});
+```
+
+<Callout type="warn">
+Eine gültige ID ist kein gültiges Ziel. Prüfe immer, dass der Eintrag oder die Entity existiert, dass der Spieler sie nutzen darf und dass er in ihrer Nähe ist.
+</Callout>
+
+### readText
+
+Ein getrimmter, nicht leerer String, auf `max` Zeichen gekürzt, sonst `null`. Nutze es für Namen, Item-Namen, Notizen, Suchtext.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+readText(value: unknown, max: number): string | null
+```
+
+**Lua:** kein Zwilling; prüfe `type(value) == 'string'`, dann trimme und kürze ihn (`value:sub(1, max)`).
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Der rohe Wert von einem Client.', required: true },
+    max: { type: 'number', description: 'Höchstzahl behaltener Zeichen. Längerer Text wird gekürzt, nicht abgelehnt.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+Der getrimmte Text (höchstens `max` Zeichen), oder `null`, wenn es kein String ist oder er nach dem Trimmen leer ist.
+
+#### Beispiel
+
+```ts
+import { readText } from "@aicore-fivem/lib/shared";
+
+readText("  Hello  ", 64);  // "Hello"
+readText("   ", 64);        // null
+readText(42, 64);           // null
+```
+
+### readVec3
+
+Ein Punkt aus Client- oder Export-Eingaben, jede Koordinate endlich, sonst `null`. Akzeptiert ein Objekt `{ x, y, z }` und einen Lua-Vektor, der in TypeScript als Array `[x, y, z]` ankommt.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+readVec3(value: unknown): { x: number; y: number; z: number } | null
+```
+
+**Lua:** kein Zwilling; Lua-Code liest `value.x`, `value.y`, `value.z` (funktioniert für Vektoren und Tabellen).
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Der rohe Wert: `{ x, y, z }` oder `[x, y, z]`.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+Ein neues [Vec3](/de/docs/developers/api/types#vec3)-Objekt, oder `null`.
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { registerExport } from "@aicore-fivem/lib/server";
+import { readVec3, type Vec3 } from "@aicore-fivem/lib/shared";
+
+const markers: Vec3[] = [];
+
+// Funktioniert für exports["my-markers"].AddMarker(vector3(1, 2, 3)) aus Lua und AddMarker({ x: 1, y: 2, z: 3 }) aus TypeScript.
+registerExport("AddMarker", (raw: unknown) => {
+  const point = readVec3(raw);
+  if (!point) return false;
+  markers.push(point);
+  return true;
+});
+```
+
+### readVec4
+
+Ein Punkt mit Heading, sonst `null`. Akzeptiert `{ x, y, z, heading }`, `{ x, y, z, w }` und einen Lua-`vector4` (`[x, y, z, w]`). Ein fehlendes Heading wird als `0` gelesen.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+readVec4(value: unknown): { x: number; y: number; z: number; heading: number } | null
+```
+
+**Lua:** kein Zwilling.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Der rohe Wert: ein Objekt mit `heading` oder `w`, oder ein Array.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+Ein neues [Vec4](/de/docs/developers/api/types#vec4)-Objekt (`heading` 0, wenn keins angegeben wurde), oder `null`, wenn eine Koordinate oder das angegebene Heading keine endliche Zahl ist.
+
+#### Beispiel
+
+```ts
+import { readVec4 } from "@aicore-fivem/lib/shared";
+
+readVec4({ x: 1, y: 2, z: 3, w: 90 });  // { x: 1, y: 2, z: 3, heading: 90 }
+readVec4([1, 2, 3]);                    // { x: 1, y: 2, z: 3, heading: 0 }
+readVec4({ x: 1, y: 2 });               // null
+```
+
+### oneArg
+
+Macht aus einem Leser einen `args`-Parser für einen Callback oder ein Event, das genau einen Wert nimmt: `{ args: oneArg(readId) }`.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+oneArg<T>(read: (value: unknown) => T | null): (args: unknown[]) => [T] | null
+```
+
+**Lua:** kein Zwilling.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    read: { type: '(value: unknown) => T | null', description: 'Ein Leser für das erste Argument (`readId`, oder dein eigener: `(v) => readInt(v, 1, 10)`).', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+Ein Parser, der `[value]` zurückgibt, oder `null` (lehnt den Aufruf ab), wenn `read` `null` zurückgegeben hat.
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { onClientCallback } from "@aicore-fivem/lib/server";
+import { oneArg, readText } from "@aicore-fivem/lib/shared";
+
+const notes = new Map<number, string>();
+
+onClientCallback("my-notes:save", { args: oneArg((v) => readText(v, 500)) }, (source, text) => {
+  notes.set(source, text);
+  return { ok: true };
+});
+```
+
+### asArgs
+
+Verpackt einen bereits geparsten Wert als `args`-Ergebnis: `[value]`, oder `null`, wenn der Wert `null` ist. Nutze es, wenn deine eigene Prüffunktion den Wert oder `null` zurückgibt.
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+asArgs<T>(value: T | null): [T] | null
+```
+
+**Lua:** kein Zwilling.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'T | null', description: 'Der geparste Wert, oder `null` für einen fehlerhaften.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`[value]`, oder `null`.
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { onClientCallback } from "@aicore-fivem/lib/server";
+import { asArgs, toVehicleSetup, type VehicleSetup } from "@aicore-fivem/lib/shared";
+
+const previews = new Map<number, VehicleSetup>();
+
+onClientCallback("my-shop:preview", { args: ([raw]) => asArgs(toVehicleSetup(raw)) }, (source, setup) => {
+  previews.set(source, setup);
+  return { ok: true };
+});
+```
+
+### isRecord
+
+Prüft, dass ein Wert ein einfaches Objekt ist (nicht `null`, kein Array).
+
+**Seite:** Client, Server und NUI · **Wartet:** nein
+
+```ts title="Signatur"
+isRecord(value: unknown): value is Record<string, unknown>
+```
+
+**Lua:** kein Zwilling; prüfe `type(value) == 'table'`.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Ein beliebiger Wert.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`true` für ein Objekt wie `{ a: 1 }`. `false` für `null`, Arrays, Zahlen, Strings.
+
+#### Beispiel
+
+```ts
+import { isRecord, readText } from "@aicore-fivem/lib/shared";
+
+function readNote(raw: unknown): { title: string } | null {
+  if (!isRecord(raw)) return null;
+  const title = readText(raw.title, 80);
+  return title === null ? null : { title };
+}
+```

@@ -1,0 +1,773 @@
+---
+title: Yerel oyuncu
+description: Önbellekteki ped, araç, koltuk ve silah, player nesnesi (konum, ışınlanma, animasyonlar), ekran kararmaları, diğer oyuncuların ped’leri ve en yakın oyuncu.
+icon: User
+---
+
+Bu bilgisayarın başında oturan oyuncuyla ilgili her şey. Döngülerde `PlayerPedId()` çağırmak yerine değerleri `cache`’ten oku: ai-core her resource için tek bir izleyici tutar ve değişiklikleri gönderir; bu yüzden hiçbir script onları yoklamaz.
+
+### cache
+
+Yerel oyuncunun en çok okunan değerleri; ai-core’un tek izleyicisi tarafından güncel tutulur. ox_lib’in `cache`’i gibi: `PlayerPedId()` çağırmak yerine `cache.ped`’i, her karede `GetVehiclePedIsIn` yerine `cache.vehicle`’ı oku. Bir anahtarı okumak düz bir bellek okumasıdır; döngülerde ve kare başı kodda güvenlidir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+const cache: PlayerCache // salt okunur
+```
+
+```lua title="Lua"
+local ped = aiLib.cache.ped
+```
+
+#### Anahtarlar
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Yerel ped handle’ı. Model değiştiğinde (yeni bir karakter, bir kıyafet modeli değişimi) değişir; onCache("ped") bunu sana söyler.' },
+    playerId: { type: 'number', description: 'Yerel oyuncu index’i (PlayerId()); oyuncu alan native’ler tarafından kullanılır.' },
+    serverId: { type: 'number', description: 'Yerel oyuncunun server id’si (server’ın gördüğü source).' },
+    vehicle: { type: 'number | false', description: 'Oyuncunun oturduğu araç; yayayken false.' },
+    seat: { type: 'number | false', description: 'Araçtaki koltuk: -1 sürücü, 0 ön yolcu, 1 ve üstü arka koltuklar. Yayayken false.' },
+    weapon: { type: 'number | false', description: 'Eldeki silah hash’i; silahsızken false.' },
+  }}
+/>
+
+Tipi [`PlayerCache`](/tr/docs/developers/api/types#playercache)’tir.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, every } from "@aicore-fivem/lib/client";
+
+// Sürerken gösterilen hız, 200 ms’de bir önbellekten okunur.
+every(200, () => {
+  if (cache.vehicle === false || cache.seat !== -1) return;
+  const kmh = GetEntitySpeed(cache.vehicle) * 3.6;
+  SendNUIMessage({ action: "speed", data: Math.round(kmh) });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local cache = aiLib.cache
+
+aiLib.every(200, function()
+    if not cache.vehicle or cache.seat ~= -1 then return end
+    local kmh = GetEntitySpeed(cache.vehicle) * 3.6
+    SendNUIMessage({ action = 'speed', data = math.floor(kmh + 0.5) })
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+`cache.ped` bir model değişikliğinin en fazla 100 ms gerisinden gelir. Modeli değiştirdikten hemen sonra (`SetPlayerModel`) bir kez `PlayerPedId()` çağır. Aşağıdaki `player` aksiyonları ped’i zaten taze okur.
+</Callout>
+
+### onCache
+
+Önbellekteki bir değer her değiştiğinde bir handler çalıştırır: oyuncu bir araca bindi ya da indi, koltuk değiştirdi, silah çekti ya da kaldırdı veya yeni bir ped aldı. Değeri bir zamanlayıcıyla kontrol etmek yerine bunu kullan.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+onCache<K extends keyof PlayerCache>(key: K, handler: (value: PlayerCache[K], old: PlayerCache[K]) => void): void
+```
+
+```lua title="Lua"
+aiLib.cache.onChange(key, function(value, old) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    key: { type: '"ped" | "playerId" | "serverId" | "vehicle" | "seat" | "weapon"', description: 'İzlenecek önbellek anahtarı.', required: true },
+    handler: { type: '(value, old) => void', description: 'Yeni değeri ve öncekini alır. cache yeni değeri tuttuktan sonra, her değişiklikte bir kez çalışır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. Handler’ı kaldırmanın bir yolu yoktur; dosyanın en üstünde özellik başına bir tane tut.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onCache, inventory, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+
+// canShow’u cache.vehicle’ı okuyan noktalar yeniden kontrol edilir.
+onCache("vehicle", () => points.refresh());
+
+// Eldeki silah eşyası, yalnızca silah değiştiğinde okunur.
+onCache("weapon", (weapon) => {
+  const item = weapon === false ? null : inventory.currentWeapon();
+  SendNUIMessage({ action: "weapon", data: item });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local points = aiLib.Points.new()
+
+aiLib.cache.onChange('vehicle', function()
+    points:refresh()
+end)
+
+aiLib.cache.onChange('weapon', function(weapon)
+    local item = weapon and aiLib.inventory.currentWeapon() or nil
+    SendNUIMessage({ action = 'weapon', data = item })
+end)
+```
+</Tab>
+</Tabs>
+
+### readPlayerState
+
+Önbellek olmadan, bir ped’in şu anki aracını, koltuğunu ve silahını okur. ai-core’un izleyicisi bunu kullanır; sana yalnızca yerel olmayan bir ped için ya da önbellekle elle karşılaştırmak için gerekir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+readPlayerState(ped: number): { vehicle: number | false; seat: number | false; weapon: number | false }
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Herhangi bir ped handle’ı.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`vehicle` (araç handle’ı, yayayken `false`), `seat` (-1 sürücü ve üstü, yayayken `false`) ve `weapon` (eldeki hash, silahsızken `false`) içeren bir nesne.
+
+#### Örnek
+
+```ts
+import { playerPed, readPlayerState } from "@aicore-fivem/lib/client";
+
+const ped = playerPed(12);
+if (ped !== 0 && readPlayerState(ped).seat === -1) console.log("player 12 is driving");
+```
+
+### readWeapon
+
+Bir ped’in şu an elindeki silah; silahsızken `false`.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+readWeapon(ped: number): number | false
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Herhangi bir ped handle’ı.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number | false`: silah hash’i ya da ped `WEAPON_UNARMED` tutuyorsa `false`.
+
+#### Örnek
+
+```ts
+import { nearestPlayer, playerPed, readWeapon } from "@aicore-fivem/lib/client";
+
+const id = nearestPlayer(5);
+if (id !== null && readWeapon(playerPed(id)) !== false) console.log("the player next to you is armed");
+```
+
+## player
+
+Yerel ped için tek bir nesne: nerede olduğu, onu hareket ettirmek, animasyonlar. Okumalar `cache.ped`’i kullanır; aksiyonlar ped’i taze okur, böylece bir model değişikliğinden hemen sonra da çalışırlar.
+
+### player.ped
+
+Yerel ped handle’ı (`cache.ped` ile aynı değer).
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+player.ped: number // salt okunur özellik
+```
+
+Lua karşılığı yok: `aiLib.cache.ped` kullan.
+
+#### Dönüş değeri
+
+`number`: ped handle’ı.
+
+#### Örnek
+
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+SetPedArmour(player.ped, 100);
+```
+
+### player.coords
+
+Ped’in şu anki konumu.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+player.coords(): Vec3
+```
+
+```lua title="Lua"
+local coords = aiLib.player.coords() -- vector3
+```
+
+#### Dönüş değeri
+
+TypeScript’te bir [`Vec3`](/tr/docs/developers/api/types#vec3) `{ x, y, z }` (z ped’in kök noktasıdır, zeminden yaklaşık 1 m yukarıda). Lua bir `vector3` döndürür.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { locationName, player } from "@aicore-fivem/lib/client";
+
+const here = player.coords();
+console.log(`${locationName(here).street} at ${here.x.toFixed(1)}, ${here.y.toFixed(1)}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local here = aiLib.player.coords()
+print(('%s at %.1f, %.1f'):format(aiLib.locationName(here).street, here.x, here.y))
+```
+</Tab>
+</Tabs>
+
+### player.heading
+
+Ped’in baktığı yön, derece cinsinden (0-360, 0 = kuzey).
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+player.heading(): number
+```
+
+```lua title="Lua"
+local heading = aiLib.player.heading()
+```
+
+#### Dönüş değeri
+
+`number`: derece cinsinden heading.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+// Bir panel kaydı için noktayı ve yönü kaydet.
+const spot = { ...player.coords(), heading: player.heading() };
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local c = aiLib.player.coords()
+local spot = vector4(c.x, c.y, c.z, aiLib.player.heading())
+```
+</Tab>
+</Tabs>
+
+### player.distanceTo
+
+Ped’den bir noktaya düz mesafe, metre cinsinden.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+player.distanceTo(point: Vec3): number
+```
+
+```lua title="Lua"
+local metres = aiLib.player.distanceTo(point) -- vector3 ya da { x, y, z }
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    point: { type: 'Vec3', description: 'Mesafenin ölçüleceği nokta: { x, y, z } (Lua bir vector3 de kabul eder).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number`: 3D olarak ölçülen metre.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, player } from "@aicore-fivem/lib/client";
+
+const counter = { x: 25.7, y: -1347.3, z: 29.5 };
+if (player.distanceTo(counter) > 3) notify("Walk to the counter first", "error");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local counter = vector3(25.7, -1347.3, 29.5)
+if aiLib.player.distanceTo(counter) > 3.0 then aiLib.notify('Walk to the counter first', 'error') end
+```
+</Tab>
+</Tabs>
+
+### player.freeze
+
+Ped’i yerinde dondurur ya da yeniden hareket etmesine izin verir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+player.freeze(state: boolean): void
+```
+
+```lua title="Lua"
+aiLib.player.freeze(frozen)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    state: { type: 'boolean', description: 'true ped’i dondurur, false hareket etmesine izin verir. Lua’da adı frozen.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+player.freeze(true);
+setTimeout(() => player.freeze(false), 5000);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.player.freeze(true)
+SetTimeout(5000, function() aiLib.player.freeze(false) end)
+```
+</Tab>
+</Tabs>
+
+### player.teleport
+
+Oyuncuyu taşır ve siyah bir ekran kararması arkasında yeni noktanın etrafındaki dünya yüklenene kadar bekler. `z` olmadan (ya da `ground: "find"` ile) x ve y altındaki zemini arar: harita waypoint’i için bunu kullan.
+
+**Taraf:** Client · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+player.teleport(to: { x: number; y: number; z?: number }, options?: TeleportOptions): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.player.teleport(to, options) -- bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    to: { type: '{ x: number; y: number; z?: number }', description: 'Nereye gidileceği. x / y altındaki zemine inmek için z’yi verme. Lua bir vector3 de kabul eder.', required: true },
+    options: { type: 'TeleportOptions', description: 'Heading, zemin işleme, kararma, araç. Alanlar aşağıda.', default: '{}' },
+  }}
+/>
+
+#### TeleportOptions
+
+<TypeTable
+  type={{
+    heading: { type: 'number', description: 'Taşındıktan sonra bakılacak yön, derece cinsinden. Verilmezse değişmez.' },
+    ground: { type: 'boolean | "find"', description: 'true: z zemindir (panelde seçilen bir nokta) ve ayaklar onun üzerinde durur. false: z, player.coords()’un verdiği gibi ped’in kök noktasıdır. "find": x / y altındaki zemini ara ve z’yi yok say.', default: 'true' },
+    fade: { type: 'boolean', description: 'Taşımadan önce ekranı siyaha karart ve sonra geri aç.', default: 'true' },
+    keepVehicle: { type: 'boolean', description: 'Oyuncunun oturduğu aracı da götür.', default: 'false' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Oyuncu yeni noktada durduğunda ve oradaki çarpışma yüklendiğinde (ya da yüklenmeden 5 saniye sonra) çözülen `Promise<void>`. Lua hiçbir şey döndürmez.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, player, waypoint } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "tpm",
+  async () => {
+    const target = waypoint();
+    if (!target) return notify("Set a waypoint first", "error");
+    await player.teleport(target, { keepVehicle: true }); // z yok: zemine iner
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('tpm', function()
+    local target = aiLib.waypoint()
+    if not target then return aiLib.notify('Set a waypoint first', 'error') end
+    aiLib.player.teleport(target, { keepVehicle = true })
+end, false)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+TypeScript zemin araması, donmuş ped’i artan yüksekliklerde durdurur, her birinde çarpışmayı bekler ve MLO ya da IPL iç mekânlarındaki yüzeyleri atlar; böylece asla bir çatıya ya da sokağın üstündeki bir binanın içine inmez. Lua sürümü bulduğu ilk zemini alır ve çarpışma için en fazla 3 saniye bekler.
+</Callout>
+
+### player.playAnim
+
+Ped üzerinde bir animasyon oynatır. Önce animasyon sözlüğünü yükler.
+
+**Taraf:** Client · **Bekler:** TypeScript’te evet (animasyon başladığında çözülür); Lua’da sözlük yüklenirken yield eder
+
+```ts title="Signature"
+player.playAnim(dict: string, clip: string, options?: AnimOptions): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.player.playAnim(dict, clip, options) -- bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    dict: { type: 'string', description: 'Animasyon sözlüğü (mini@repair).', required: true },
+    clip: { type: 'string', description: 'Sözlük içindeki animasyon adı (fixing_a_player).', required: true },
+    options: { type: 'AnimOptions', description: 'Nasıl oynatıldığı. Alanlar aşağıda.', default: '{}' },
+  }}
+/>
+
+#### AnimOptions
+
+<TypeTable
+  type={{
+    flag: { type: 'number', description: 'TaskPlayAnim bayrağı. 49 = yalnızca üst gövde, döngü, oyuncu yürüyebilir.', default: '49' },
+    duration: { type: 'number', description: 'Ne kadar oynatılacağı, milisaniye cinsinden. -1 durdurulana kadar oynatır.', default: '-1' },
+    blendIn: { type: 'number', description: 'Giriş geçiş hızı.', default: '8' },
+    blendOut: { type: 'number', description: 'Çıkış geçiş hızı.', default: '-8' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Animasyon başladığında çözülen `Promise<void>`. Sözlük yoksa ya da 10 saniyede yüklenmezse **reddedilir**. Lua hiçbir şey döndürmez ve sözlük yüklenmezse hiçbir şey yapmaz.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+export async function handOver(): Promise<void> {
+  await player.playAnim("mp_common", "givetake1_a", { flag: 48, duration: 1500 });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.player.playAnim('mp_common', 'givetake1_a', { flag = 48, duration = 1500 })
+end)
+```
+</Tab>
+</Tabs>
+
+### player.stopAnim
+
+Ped ne yapıyorsa onu durdurur (`ClearPedTasks`): animasyonlar ve senaryolar.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+player.stopAnim(): void
+```
+
+```lua title="Lua"
+aiLib.player.stopAnim()
+```
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+export async function readClipboard(): Promise<void> {
+  await player.playAnim("amb@world_human_clipboard@male@idle_a", "idle_c");
+  setTimeout(() => player.stopAnim(), 4000);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.player.playAnim('amb@world_human_clipboard@male@idle_a', 'idle_c')
+    Wait(4000)
+    aiLib.player.stopAnim()
+end)
+```
+</Tab>
+</Tabs>
+
+### player.holdAnim
+
+Bir animasyonu sen durdurana kadar oynatmaya devam eder; bir düşme ya da çarpma onu kestiğinde yeniden başlatır. Prop’larla birlikte [Ped’ler, blip’ler ve prop’lar](/tr/docs/developers/api/lib-client/world-objects#playerholdanim) sayfasında belgelenir.
+
+## Kararmalar ve diğer oyuncular
+
+### fadeOut
+
+Ekranı siyaha karartır ve tamamen siyah olana kadar bekler. Bir ışınlanmayı, bir model değişimini ya da bir sahne değişikliğini gizlemek için kullan.
+
+**Taraf:** Client · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+fadeOut(ms?: number): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.fadeOut(ms) -- bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Kararmanın uzunluğu, milisaniye cinsinden.', default: '300' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Ekran siyah olduğunda ya da en geç `ms` + 2 saniye sonra çözülen `Promise<void>`. Asla reddedilmez.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { fadeIn, fadeOut } from "@aicore-fivem/lib/client";
+
+export async function moveToSquare(): Promise<void> {
+  await fadeOut();
+  SetEntityCoords(PlayerPedId(), -269.4, -955.3, 31.2, false, false, false, false);
+  await fadeIn();
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.fadeOut()
+    SetEntityCoords(PlayerPedId(), -269.4, -955.3, 31.2, false, false, false, false)
+    aiLib.fadeIn()
+end)
+```
+</Tab>
+</Tabs>
+
+### fadeIn
+
+Ekranı yeniden açar ve netleşene kadar bekler. [`fadeOut`](#fadeout)’un eşi.
+
+**Taraf:** Client · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+fadeIn(ms?: number): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.fadeIn(ms) -- bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Açılmanın uzunluğu, milisaniye cinsinden.', default: '400' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Ekran netleştiğinde ya da en geç `ms` + 2 saniye sonra çözülen `Promise<void>`. Asla reddedilmez.
+
+#### Örnek
+
+Bkz. [`fadeOut`](#fadeout): ikisi her zaman birlikte kullanılır.
+
+### playerPed
+
+Server id’ye göre bir oyuncunun ped’i. Yerel oyuncu için `cache.ped` döndürür; başka bir oyuncu için, o oyuncu bu client’a stream edilecek kadar yakın değilse 0 döndürür.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+playerPed(serverId: number): number
+```
+
+```lua title="Lua"
+local ped = aiLib.playerPed(serverId)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    serverId: { type: 'number', description: 'Oyuncunun server id’si (server’ın kullandığı source).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number`: ped handle’ı ya da oyuncu bu client’ta menzilde değilse `0`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onServerEvent, playerPed } from "@aicore-fivem/lib/client";
+
+// Server yakındaki herkese bir oyuncunun kelepçelendiğini söyler.
+onServerEvent(
+  "myscript:cuffed",
+  { args: ([id]) => (typeof id === "number" ? [id] : null) },
+  (id) => {
+    const ped = playerPed(id);
+    if (ped !== 0) SetEnableHandcuffs(ped, true);
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onServerEvent('myscript:cuffed', function(id)
+    local ped = aiLib.playerPed(id)
+    if ped ~= 0 then SetEnableHandcuffs(ped, true) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+`GetPlayerPed(-1)` ya da `GetPlayerPed(GetPlayerFromServerId(id))`’yi asla elle kullanma: bilinmeyen bir id -1 verir ve `GetPlayerPed(-1)` yerel ped’dir; böylece aksiyon yanlış oyuncuya uygulanır.
+</Callout>
+
+### nearestPlayer
+
+Belirli bir mesafe içindeki en yakın diğer oyuncu, server id olarak. Yalnızca bu client’a stream edilen oyuncuları dolaşır. Verme, arama, kelepçeleme ya da yere yatırma aksiyonlarının hedefini seçmek için kullan, sonra o id’yi mesafeyi tekrar kontrol eden server’a gönder.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+nearestPlayer(metres: number, options?: { from?: Vec3; filter?: (serverId: number, ped: number) => boolean }): number | null
+```
+
+```lua title="Lua"
+local serverId = aiLib.nearestPlayer(metres, options) -- integer ya da nil
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    metres: { type: 'number', description: 'Metre cinsinden arama yarıçapı.', required: true },
+    options: { type: '{ from?, filter? }', description: 'İsteğe bağlı. Alanlar aşağıda.', default: '{}' },
+  }}
+/>
+
+#### Seçenekler
+
+<TypeTable
+  type={{
+    from: { type: 'Vec3', description: 'Yerel ped yerine bu noktadan ölç (yere yatırma için oyuncunun önündeki bir nokta). Lua bir vector3 de kabul eder.' },
+    filter: { type: '(serverId: number, ped: number) => boolean', description: 'false döndürdüğü oyuncuları atlar (ölü, araçta, zaten kelepçeli).' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number | null`: `filter`’dan geçen en yakın oyuncunun server id’si ya da `metres` içinde kimse yoksa `null` (Lua’da `nil`). Yerel oyuncu asla döndürülmez.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, nearestPlayer, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "givecash",
+  async (_src: number, args: string[]) => {
+    const target = nearestPlayer(3, { filter: (_id, ped) => !IsPedInAnyVehicle(ped, false) });
+    if (target === null) return notify("Nobody is close enough", "error");
+    await callAction("myscript:give", [target, Number(args[0])], { fallback: "GIVE_FAILED" });
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('givecash', function(_, args)
+    local target = aiLib.nearestPlayer(3.0, {
+        filter = function(_, ped) return not IsPedInAnyVehicle(ped, false) end,
+    })
+    if not target then return aiLib.notify('Nobody is close enough', 'error') end
+    aiLib.callAction('myscript:give', { target, tonumber(args[1]) }, { fallback = 'GIVE_FAILED' })
+end, false)
+```
+</Tab>
+</Tabs>

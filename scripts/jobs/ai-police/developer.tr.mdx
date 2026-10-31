@@ -1,0 +1,92 @@
+---
+title: Geliştiriciler için ai-police
+description: ai-police’in cuffed state bag’i, eylemlerinin AI Core üzerinden diğer script’lere nasıl ulaştığı ve özel event’leri.
+icon: Code
+---
+
+ai-police’in **hiç export’u yoktur**. Cezaları, kayıtları, hapis cezaları, ihbarları, üst aramaları ve araç çekmeleri AI Core’un katmanlarından geçer, bu yüzden başka bir script asla ai-police’i çağırmaz. Başka bir script’in okuyabildiği şey `cuffed` durumudur.
+
+## `cuffed` state bag’i
+
+ai-police oyuncuyu kelepçeli tuttuğu sürece oyuncunun state bag’inde `true`; aksi halde `false` (ya da hiç yok). Server yazar; her client okuyabilir. Anahtar adı `@aicore-fivem/shared` içindeki `PLAYER_BAGS.cuffed`.
+
+**Taraf:** Server ve client (okuma) · **Bekler:** hayır
+
+```ts title="Signature"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- server
+local cuffed = LocalPlayer.state.cuffed == true      -- client, yerel oyuncu
+```
+
+#### Dönüş değeri
+
+Kelepçeliyken `true`. Kelepçesi çözüldükten sonra `false`; oyuncu bu oturumda hiç kelepçelenmediyse `undefined` / `nil`.
+
+#### Örnek
+
+Oyuncu kelepçeliyken bir eşyayı reddet:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... telsizi aç
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... telsizi aç
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+`cuffed` değerini kendin ayarlama: ai-police kelepçeli oyuncuların ve eşlik edilenlerin listesini server’da kendisi tutar ve sadece state bag’e yansıtır. Başka bir script’in yazdığı değer gerçek bir kelepçe değildir ve bir sonraki kelepçe eyleminde üzerine yazılır.
+</Callout>
+
+## ai-police’in AI Core üzerinden gönderdikleri
+
+| Eylem | Kullandığı katman | Oraya ne düşer |
+| --- | --- | --- |
+| Ceza yazma | lib `billing.send` | Memurun mesaideki mesleğinden "Police fine" etiketli bir fatura. |
+| Ceza yazma | lib `mdt.record` | Tutarla birlikte bir `fine` kaydı. |
+| Hapse gönderme | lib `prison.jail` | `by` olarak memurla birlikte ceza. |
+| Hapse gönderme | lib `mdt.record` | Dakikalarla birlikte bir `arrest` kaydı. |
+| Ateş açıldı | lib `dispatch.alert` | Paneldeki polis mesleklerine, her 150 m’lik alan için 30 sn’de bir ihbar. |
+| Üst arama | lib `inventory.openInventory` | Hedefin envanteri memur için açılır. |
+| Araç çekme | lib `garages.impound` | Garaj script’i aracı alır; reddederse araç silinir. |
+
+Bunlardan birine tepki vermek için ai-police’i değil, katmanın tarafını dinle (fatura, MDT, hapishane ya da ihbar script’in).
+
+## Özel event’ler ve callback’ler
+
+Script’in kendi client-server sözleşmesi (`resource/common/police.ts`). Server her çağrıda mesaiyi, mesafeyi ve kelepçe durumunu kontrol eder. Sürümler arasında değişebilirler: başka resource’lardan tetikleme ya da dinleme.
+
+| Ad | Yön | Ne taşır |
+| --- | --- | --- |
+| `ai-police:act` | client callback’i | `(action, target, extra?)`: bir memur en yakın oyuncu (server id) ya da araç (net id) üzerinde işlem yapar. `{ ok }` ile cevap verir. |
+| `ai-police:duty` | client callback’i | `(stationId)`: bir karakolda mesaiye girip çıkar. `{ ok, onDuty }` ile cevap verir. |
+| `ai-police:shot` | client -> server | `(x, y, z)`: oyuncu bir silah ateşledi (hız sınırlı, sadece polis olmayanlar sayılır). |
+| `ai-police:client:cuffed` | server -> hedef | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | server -> hedef | `(officerNetId \| null)`: memura bağlan ya da bırakıl. |
+| `ai-police:client:seat` | server -> hedef | `(vehicleNetId \| null)`: bir aracın arkasına otur ya da in. |

@@ -1,0 +1,762 @@
+---
+title: Client-Eingaben
+description: "Clients sicher antworten: onClientCallback, onClientEvent, Guards, triggerClientCallback, vom Server geprüfte Fortschrittsbalken und Minispiele, PendingActions."
+icon: ShieldCheck
+---
+
+Alles, was ein Client sendet, kann ein Cheater fälschen. Jeder `ai-*`-Server hört Clients nur über das **Gate** zu: `onClientCallback` und `onClientEvent`. Bevor dein Handler läuft, prüft das Gate in dieser Reihenfolge:
+
+1. Ein echter, verbundener Spieler hat es gesendet (nicht eine andere Ressource, die denselben Namen auslöst).
+2. Das Ratenlimit (Callbacks 20 Aufrufe pro Sekunde und Spieler, Events 10, außer du setzt `rate`).
+3. Deine Guards (`hasCharacter()`, `near(...)`, `isAdmin()` oder eigene).
+4. Dein `args`-Parser, der die rohen Werte in geprüfte umwandelt oder den Aufruf ablehnt.
+5. Optional eine Sperre: ein Aufruf zur Zeit pro Spieler.
+
+Eine Ablehnung mit Grund wird mit dem Spielernamen und dem Eingabenamen in die Server-Konsole geschrieben, höchstens eine Zeile pro Spieler und Eingabe alle 10 Sekunden (die Zeilen dazwischen werden in die nächste mitgezählt).
+
+```ts title="TypeScript"
+import { onClientCallback, onClientEvent, hasCharacter, near, isAdmin } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId, readInt, readText } from "@aicore-fivem/lib/shared";
+```
+
+Die Eingabeleser (`readInt`, `readId`, `readText`, `oneArg`, `asArgs`) und `fail` sind auf [Lib: Shared und fivem](/de/docs/developers/api/lib-shared) dokumentiert. Eine Aktion antwortet mit einem [`ActionResult`](/de/docs/developers/api/types#actionresult): `{ ok: true, ... }` oder `fail("LANG_KEY")`.
+
+## Gate
+
+### onClientCallback
+
+Beantwortet ein `triggerServerCallback(name, ...)` (oder `callAction`) eines Clients und schickt den Rückgabewert des Handlers zurück. Nutze es für jede Anfrage, bei der der Client auf eine Antwort wartet: kaufen, benutzen, einen Bildschirm öffnen. Es hat zwei Formen: ohne Argumente `(name, handler, options?)` und mit Argumenten `(name, { args, ... }, handler)`, bei der die Optionen zuerst kommen, damit dein Handler immer nur geprüfte Werte sieht.
+
+**Seite:** Server · **Wartet:** nein (der Handler darf `async` sein; sein Promise wird abgewartet, bevor die Antwort gesendet wird)
+
+```ts title="Signatur"
+onClientCallback(name: string, handler: (source: number) => unknown, options?: ClientInputOptions): void
+onClientCallback<A>(name: string, options: ParsedInputOptions<A>, handler: (source: number, ...args: A) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onClientCallback(name, handler, options) -- handler(source, ...): any
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Callback-Name. Der Client ruft denselben Namen auf. Stelle ihm deine Ressource voran (`my-shop:buy`).", required: true },
+    handler: { type: "(source: number, ...args: A) => unknown", description: "Läuft, wenn der Aufruf das Gate passiert hat. `source` ist die Server-ID des Spielers. Sein Rückgabewert (oder das erfüllte Promise) ist die Antwort; `undefined` wird als `null` gesendet. Ein geworfener Fehler wird geloggt, und der Client bekommt einen Fehlschlag.", required: true },
+    options: { type: "ClientInputOptions | ParsedInputOptions<A>", description: "Rate, Guards, Sperre und `args` für die Form mit Argumenten. Felder unten.", required: false },
+  }}
+/>
+
+#### ClientInputOptions
+
+<TypeTable
+  type={{
+    guards: { type: "Guard[]", description: "Prüfungen, die der Reihe nach laufen. Die erste, die nicht besteht, lehnt den Aufruf ab. Siehe Guard unten.", default: "[]" },
+    rate: { type: "{ count: number; windowMs: number }", description: "Höchstens `count` Aufrufe pro Spieler innerhalb von `windowMs` Millisekunden. Zusätzliche Aufrufe werden abgelehnt und geloggt.", default: "20 pro 1000 ms (Callbacks), 10 pro 1000 ms (Events)" },
+    lock: { type: "boolean", description: "Ein Aufruf zur Zeit pro Spieler. Ein zweiter Aufruf, während der erste noch läuft, wird abgelehnt (Callbacks) oder verworfen (Events). Nutze es für jeden Handler, der wartet und dann schreibt (Items, Geld).", default: "false" },
+  }}
+/>
+
+#### ParsedInputOptions
+
+Alle Felder von `ClientInputOptions`, plus:
+
+<TypeTable
+  type={{
+    args: { type: "(raw: unknown[]) => A | null", description: "Bekommt die rohen Client-Werte als Array und gibt die geprüften Argumente als Tupel zurück, oder `null`, um den Aufruf abzulehnen (mit einer Vorschau der Werte geloggt). `oneArg(readId)` ist der Parser für eine einzelne ID.", required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`void`. Die Antwort, die der Client bekommt:
+
+- der Rückgabewert des Handlers, wenn er gelaufen ist;
+- ein Fehlschlag, wenn das Gate den Aufruf abgelehnt hat, die Sperre belegt war oder der Handler geworfen hat. In TypeScript wird das `triggerServerCallback`-Promise des Clients sofort abgelehnt (`callAction` zeigt seinen `fallback`-Text an); in Lua gibt `aiLib.triggerServerCallback` `nil, 'failed'` zurück.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, hasCharacter, near, inventory } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt } from "@aicore-fivem/lib/shared";
+
+const CRATE = { x: 120.5, y: -1050.2, z: 29.2 };
+
+// Client: callAction("my-crates:take", [2], { fallback: "TAKE_FAILED" })
+onClientCallback(
+  "my-crates:take",
+  {
+    args: oneArg((v) => readInt(v, 1, 5)),
+    guards: [hasCharacter(), near(CRATE, 3)],
+    lock: true,
+  },
+  (source, count) => {
+    if (!inventory.canCarryItem(source, "water", count)) return fail("CANNOT_CARRY");
+    inventory.addItem(source, "water", count);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local CRATE = vector3(120.5, -1050.2, 29.2)
+
+-- Client: aiLib.triggerServerCallback('my-crates:take', { 2 })
+aiLib.onClientCallback('my-crates:take', function(source, count)
+    if math.type(count) ~= 'integer' or count < 1 or count > 5 then return aiLib.fail('BAD_COUNT') end
+    if not aiLib.online.character(source) then return aiLib.fail('NO_CHARACTER') end
+    if #(GetEntityCoords(GetPlayerPed(source)) - CRATE) > 3.0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.canCarryItem(source, 'water', count) then return aiLib.fail('CANNOT_CARRY') end
+    aiLib.inventory.addItem(source, 'water', count)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Die Lua-Version hat keine `guards` und keine `args`: Sie nimmt `options = { rate?, lock?, ace? }` (`ace`: Der Spieler braucht diese ACE-Berechtigung, `ai.admin` für ai-core-Admins), und der Handler bekommt die rohen Werte. Prüfe jedes Argument selbst (Typ, Bereich, Besitz, Entfernung), bevor du es nutzt. In TypeScript liest du Client-Werte nie außerhalb von `args`.
+</Callout>
+
+### onClientEvent
+
+Hört über dasselbe Gate auf ein Net-Event, das ein Client sendet. Nutze es für Einweg-Nachrichten, bei denen der Client nicht auf eine Antwort wartet (einen Bildschirm schließen, eine gemeldete Zelle). Nutze für Client-Eingaben nie ein nacktes `onNet`. Dieselben zwei Formen wie `onClientCallback`.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+onClientEvent(name: string, handler: (source: number) => unknown, options?: ClientInputOptions): void
+onClientEvent<A>(name: string, options: ParsedInputOptions<A>, handler: (source: number, ...args: A) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onClientEvent(name, handler, options) -- handler(source, ...), options { rate?, ace? }
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Name des Net-Events. Der Client sendet es mit `emitNet(name, ...)` (Lua `TriggerServerEvent`).", required: true },
+    handler: { type: "(source: number, ...args: A) => unknown", description: "Läuft, wenn das Event das Gate passiert hat. Ein geworfener Fehler oder ein abgelehntes Promise wird geloggt; nichts wird zurückgeschickt.", required: true },
+    options: { type: "ClientInputOptions | ParsedInputOptions<A>", description: "Dieselben Felder wie bei `onClientCallback`. Standardrate: 10 Events pro Sekunde und Spieler. Mit `lock` wird ein Event verworfen, das ankommt, während das vorherige noch läuft.", required: false },
+  }}
+/>
+
+#### Rückgabewert
+
+`void`.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientEvent, PlayerMap } from "@aicore-fivem/lib/server";
+
+const openShops = new PlayerMap<string>();
+
+// Client: emitNet("my-shop:close")
+onClientEvent("my-shop:close", (source) => {
+  openShops.delete(source);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local openShops = {}
+
+AddEventHandler('playerDropped', function() openShops[source] = nil end)
+
+-- Client: TriggerServerEvent('my-shop:close')
+aiLib.onClientEvent('my-shop:close', function(source)
+    openShops[source] = nil
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Die Lua-Version nimmt `options = { rate?, ace? }` (kein `lock`, keine `guards`, keine `args`). Ein lokales `TriggerEvent` aus einer anderen Ressource trägt keinen Spieler und wird auf beiden Seiten ignoriert.
+</Callout>
+
+## Guards
+
+Ein Guard ist eine Funktion, die die Server-ID des Spielers bekommt und mit `true` (bestanden), `false` (still ablehnen) oder einem String antwortet (ablehnen und den String als Grund loggen).
+
+```ts title="Type"
+type Guard = (source: number) => boolean | string;
+```
+
+Schreibe einen eigenen Guard, wenn sich eine Prüfung über mehrere Eingaben wiederholt:
+
+```ts
+import type { Guard } from "@aicore-fivem/lib/server";
+import { online } from "@aicore-fivem/lib/server";
+
+const onDutyPolice: Guard = (source) => online.onDutyIn(source, ["police"]) || "not on duty";
+```
+
+### isAdmin
+
+Ein Guard, der besteht, wenn der Spieler eine ACE-Berechtigung hat: die Admin-Berechtigung `ai.admin` von ai-core, oder die, die du angibst.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+isAdmin(ace?: string): Guard
+```
+
+```lua title="Lua"
+local allowed = aiLib.isAdmin(source, ace) -- boolean, eine direkte Prüfung (kein Guard)
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    ace: { type: "string", description: "Die zu prüfende ACE-Berechtigung.", default: '"ai.admin"' },
+  }}
+/>
+
+#### Rückgabewert
+
+`Guard`: lehnt mit dem Grund `not allowed (<ace>)` ab. Der Lua-Zwilling gibt direkt `true` oder `false` zurück, und `false` für Source 0 oder darunter.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, isAdmin, medical } from "@aicore-fivem/lib/server";
+
+onClientCallback("my-admin:reviveSelf", (source) => ({ ok: medical.revive(source) }), {
+  guards: [isAdmin()],
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-admin:reviveSelf', function(source)
+    if not aiLib.isAdmin(source) then return aiLib.fail('NOT_ALLOWED') end
+    return { ok = true }
+end)
+
+-- oder das Gate prüfen lassen:
+aiLib.onClientCallback('my-admin:ping', function(source) return { ok = true } end, { ace = 'ai.admin' })
+```
+</Tab>
+</Tabs>
+
+### hasCharacter
+
+Ein Guard, der besteht, wenn der Spieler einen Charakter in der Welt hat (nicht auf dem Charakterbildschirm).
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+hasCharacter(): Guard
+```
+
+Kein Lua-Zwilling: Prüfe `aiLib.online.character(source) ~= nil`.
+
+#### Rückgabewert
+
+`Guard`: lehnt mit dem Grund `no character loaded` ab.
+
+#### Beispiel
+
+```ts
+import { onClientCallback, hasCharacter, online } from "@aicore-fivem/lib/server";
+
+onClientCallback("my-id:name", (source) => ({ ok: true, name: online.name(source) }), {
+  guards: [hasCharacter()],
+});
+```
+
+### near
+
+Ein Guard, der besteht, wenn der Ped des Spielers innerhalb von `metres` um einen Punkt ist, gemessen auf dem Server (der Client kann dabei nicht lügen).
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+near(point: Vec3 | ((source: number) => Vec3 | null), metres: number): Guard
+```
+
+Kein Lua-Zwilling: Vergleiche `#(GetEntityCoords(GetPlayerPed(source)) - point)` selbst.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    point: { type: "Vec3 | ((source: number) => Vec3 | null)", typeDescriptionLink: "/de/docs/developers/api/types#vec3", description: "Ein fester Punkt, oder eine Funktion, die den Punkt für diesen Spieler zurückgibt (den Shop, den er offen hat). Eine Funktion, die `null` zurückgibt, lehnt mit `no target point` ab.", required: true },
+    metres: { type: "number", description: "Größte erlaubte Entfernung in Metern (3D).", required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`Guard`: lehnt mit dem Grund `too far (<metres> m)` ab.
+
+#### Beispiel
+
+```ts
+import { onClientCallback, near, PlayerMap } from "@aicore-fivem/lib/server";
+import type { Vec3 } from "@aicore-fivem/lib/shared";
+
+const openAt = new PlayerMap<Vec3>();
+
+onClientCallback("my-shop:list", (source) => ({ ok: true, items: [] }), {
+  guards: [near((source) => openAt.get(source) ?? null, 4)],
+});
+```
+
+### eventSource
+
+Die Server-ID des Spielers, der das gerade behandelte Net-Event gesendet hat. In `onClientCallback` und `onClientEvent` bekommst du `source` als erstes Argument, daher brauchst du das nur in einem rohen FiveM-Handler `onNet` oder `on`.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+eventSource(): number
+```
+
+Kein Lua-Zwilling: Lua liest die globale Variable `source`.
+
+#### Rückgabewert
+
+`number`: die Server-ID des Spielers (das globale `source` von FiveM).
+
+#### Beispiel
+
+```ts
+import { eventSource } from "@aicore-fivem/lib/server";
+
+on("my-script:serverOnly", () => {
+  const source = eventSource(); // zuerst lesen
+  console.log(`event from ${source}`);
+});
+```
+
+<Callout type="warn">
+Lies es vor dem ersten `await`. FiveM setzt die globale Variable zurück, nachdem der Handler pausiert, daher liefert ein späterer Lesezugriff den falschen Spieler.
+</Callout>
+
+## Den Client fragen
+
+### triggerClientCallback
+
+Stellt dem Client eines Spielers eine Frage und wartet auf die Antwort. Der Client antwortet mit `onServerCallback(name, handler)` ([Lib: Client](/de/docs/developers/api/lib-client)). Nur der gefragte Spieler kann antworten.
+
+**Seite:** Server · **Wartet:** ja (Promise in TypeScript, hält in Lua den Thread an)
+
+```ts title="Signatur"
+triggerClientCallback(name: string, source: number, args?: unknown[], timeoutMs?: number): Promise<unknown>
+```
+
+```lua title="Lua"
+local result, err = aiLib.triggerClientCallback(name, source, args, timeout) -- innerhalb eines Threads aufrufen
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Callback-Name, den der Client mit `onServerCallback` registriert hat.", required: true },
+    source: { type: "number", description: "Server-ID des zu fragenden Spielers.", required: true },
+    args: { type: "unknown[]", description: "Werte, die der Reihe nach an den Client-Handler gesendet werden.", default: "[]" },
+    timeoutMs: { type: "number", description: "Wie lange auf die Antwort gewartet wird, in Millisekunden.", default: "30000" },
+  }}
+/>
+
+#### Rückgabewert
+
+`Promise<unknown>`: wird mit der Antwort des Clients erfüllt. Wird mit einem `Error` abgelehnt, wenn die Antwort nicht rechtzeitig kam oder der Client-Handler fehlgeschlagen ist. Die Antwort kommt von einem Client: Parse sie, bevor du sie nutzt.
+
+Lua gibt die Antwort zurück, oder `nil` und `'timeout'` / `'failed'`.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, triggerClientCallback, notify } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+// Client: onServerCallback("my-admin:street", () => locationName().street)
+addCommand(
+  "street",
+  { help: "Shows the street a player stands on", restricted: true, params: [{ name: "id", type: "playerId" }] },
+  async (source, { id }) => {
+    const answer = await triggerClientCallback("my-admin:street", id, [], 5000).catch(() => null);
+    const street = readText(answer, 100);
+    if (source > 0) notify(source, street ?? "No answer", street ? "info" : "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Client: aiLib.onServerCallback('my-admin:street', function() return aiLib.locationName().street end)
+aiLib.addCommand('street', {
+    help = 'Shows the street a player stands on',
+    restricted = true,
+    params = { { name = 'id', type = 'playerId' } },
+}, function(source, args)
+    CreateThread(function()
+        local street, err = aiLib.triggerClientCallback('my-admin:street', args.id, {}, 5000)
+        if source > 0 then
+            if type(street) == 'string' then aiLib.notify(source, street) else aiLib.notify(source, err, 'error') end
+        end
+    end)
+end)
+```
+</Tab>
+</Tabs>
+
+## Zeitgesteuerte Aktionen, denen der Server vertraut
+
+### progressFor
+
+Zeigt den Fortschrittsbalken von ai-lib auf dem Bildschirm des Spielers und wartet, bis er fertig ist. Nutze es für jede zeitgesteuerte Aktion, der der Server vertrauen muss (ein Item benutzen, reparieren, ausrauben): Es antwortet nur mit `true`, wenn der Balken auf dem Client abgelaufen ist **und** auf dem Server genug Zeit vergangen ist, sodass ein Cheater ihn nicht überspringen kann. Du schreibst keinen Client-Code: ai-lib antwortet für jede Ressource.
+
+**Seite:** Server · **Wartet:** ja (Promise in TypeScript, hält in Lua den Thread an)
+
+```ts title="Signatur"
+progressFor(source: number, options: ProgressForOptions): Promise<boolean>
+```
+
+```lua title="Lua"
+local finished = aiLib.progressFor(source, options) -- boolean, innerhalb eines Threads aufrufen
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Server-ID des Spielers, der den Balken sieht.", required: true },
+    options: { type: "ProgressForOptions", description: "Was der Balken zeigt und was der Spieler währenddessen tun darf. Felder unten.", required: true },
+  }}
+/>
+
+#### ProgressForOptions
+
+<TypeTable
+  type={{
+    label: { type: "string", description: "Text auf dem Balken, bereits übersetzt (`Locale(\"REPAIRING\")`). Auf 80 Zeichen gekürzt.", required: true },
+    duration: { type: "number", description: "Wie lange der Balken läuft, in Millisekunden (0 bis 600000). Ein längerer Wert lässt den Client ablehnen, was `false` ergibt.", required: true },
+    anim: { type: "{ dict: string; clip: string; flag?: number }", description: "Animation, die während des Balkens läuft. `flag` ist standardmäßig 49 (Oberkörper, Schleife, der Spieler kann sich noch bewegen).", required: false },
+    scenario: { type: "string", description: "Ein Szenario, das an Ort und Stelle abgespielt wird (`WORLD_HUMAN_HAMMERING`), wenn es keine `anim` gibt.", required: false },
+    face: { type: "{ x: number; y: number; z: number }", description: "Der Spieler dreht sich zu diesem Punkt, bevor der Balken startet (eine Zapfsäule, eine Theke, ein Fahrzeug). Lua nimmt auch einen `vector3`.", required: false },
+    allowVehicle: { type: "boolean", description: "Bei false bricht das Einsteigen in ein Fahrzeug den Balken ab.", default: "false" },
+    canCancel: { type: "boolean", description: "Lässt den Spieler mit der Abbruchtaste von ai-lib abbrechen.", default: "false" },
+    freeze: { type: "boolean", description: "Hält den Spieler fest, während der Balken läuft.", default: "false" },
+    disable: { type: "{ move?: boolean; car?: boolean; mouse?: boolean; combat?: boolean }", description: "Steuerungen, die während des Balkens gesperrt sind: gehen, fahren, umsehen, kämpfen.", required: false },
+    minRatio: { type: "number", description: "Anteil von `duration` (0 bis 1), der auf dem Server vergehen muss. Eine schnellere Antwort zählt als abgebrochen.", default: "0.8" },
+  }}
+/>
+
+#### Rückgabewert
+
+`Promise<boolean>`: `true`, wenn der Balken fertig wurde. `false`, wenn der Spieler abgebrochen hat, gestorben ist, in ein Fahrzeug gestiegen ist (ohne `allowVehicle`), gegangen ist, den Charakter gewechselt hat, zu schnell geantwortet hat oder innerhalb von `duration` plus 15 Sekunden keine Antwort kam.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, progressFor, inventory, vehicleNearPlayer, createLocale } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+
+const Locale = createLocale();
+
+onClientCallback(
+  "my-mechanic:repair",
+  { args: oneArg(readId), lock: true },
+  async (source, netId) => {
+    if (!vehicleNearPlayer(source, netId, { metres: 4 })) return fail("TOO_FAR");
+    if (!inventory.hasItem(source, "repairkit")) return fail("NO_KIT");
+    const done = await progressFor(source, {
+      label: Locale("REPAIRING"),
+      duration: 8000,
+      anim: { dict: "mini@repair", clip: "fixing_a_player" },
+      canCancel: true,
+    });
+    if (!done) return fail("CANCELLED");
+    // Die Welt kann sich während des Balkens geändert haben: erneut prüfen.
+    const vehicle = vehicleNearPlayer(source, netId, { metres: 4 });
+    if (!vehicle) return fail("TOO_FAR");
+    if (!inventory.removeItem(source, "repairkit")) return fail("NO_KIT");
+    // Die Fahrzeuggesundheit wird auf dem Client gesetzt, dem die Entity gehört.
+    emitNet("my-mechanic:applyRepair", NetworkGetEntityOwner(vehicle), netId);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('my-mechanic:repair', function(source, netId)
+    if aiLib.vehicleNearPlayer(source, netId, { metres = 4 }) == 0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.hasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+    local done = aiLib.progressFor(source, {
+        label = Locale('REPAIRING'),
+        duration = 8000,
+        anim = { dict = 'mini@repair', clip = 'fixing_a_player' },
+        canCancel = true,
+    })
+    if not done then return aiLib.fail('CANCELLED') end
+    local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 4 })
+    if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.removeItem(source, 'repairkit', 1) then return aiLib.fail('NO_KIT') end
+    -- Die Fahrzeuggesundheit wird auf dem Client gesetzt, dem die Entity gehört.
+    TriggerClientEvent('my-mechanic:applyRepair', NetworkGetEntityOwner(vehicle), netId)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Ein zweites `progressFor` für denselben Spieler beendet das erste mit `false`. Prüfe Entfernung und Bestand nach dem Await erneut: Die Welt kann sich während des Balkens geändert haben. In Lua werden ein Verbindungsabbruch oder Charakterwechsel nicht früh erkannt: Der Aufruf antwortet mit `false`, wenn das Timeout (`duration` + 15 s) abläuft.
+</Callout>
+
+### minigameFor
+
+Spielt eines der Minispiele von ai-lib (einen Skill-Check oder Schlossknacken) auf dem Bildschirm des Spielers für einen Server-Ablauf und wartet auf das Ergebnis. Nutze es zum Knacken eines Türschlosses, eines Tresors, zum Kurzschließen. Das Ergebnis ist das Wort des Clients, daher entscheidet der Server weiterhin, was ein Sieg bringt (ein Zufallswurf, ein `progressFor`, eigene Prüfungen).
+
+**Seite:** Server · **Wartet:** ja (Promise in TypeScript, hält in Lua den Thread an)
+
+```ts title="Signatur"
+minigameFor(source: number, options: MinigameForOptions): Promise<MinigameOutcome>
+```
+
+```lua title="Lua"
+local outcome = aiLib.minigameFor(source, options) -- 'won' | 'lost' | 'broken', innerhalb eines Threads aufrufen
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Server-ID des Spielers, der spielt.", required: true },
+    options: { type: "MinigameForOptions", description: "Welches Spiel und wie schwer. Felder unten.", required: true },
+  }}
+/>
+
+#### MinigameForOptions
+
+<TypeTable
+  type={{
+    game: { type: '"skillCheck" | "lockpick"', description: "Der Skill-Check (die Taste drücken, wenn die Nadel im grünen Bogen ist) oder das Schlossknacken.", required: true },
+    difficulty: { type: '"easy" | "medium" | "hard"', description: "Größe und Geschwindigkeit des Ziels. Skill-Check: grüner Bogen 50 / 40 / 25, Geschwindigkeit 0.6 / 0.85 / 1. Schlossknacken: Sweet Spot 18 / 11 / 6.", default: '"medium"' },
+    rounds: { type: "number", description: "Nur Skill-Check: wie viele Ringe der Spieler treffen muss (1 bis 10).", default: "2" },
+    keys: { type: "string[]", description: "Nur Skill-Check: die Tasten, die der Spieler drückt.", default: '["e"]' },
+    pins: { type: "number", description: "Nur Schlossknacken: Anzahl der Stifte (1 bis 6).", default: "1" },
+    picks: { type: "number", description: "Nur Schlossknacken: Dietriche, die der Spieler zerbrechen darf, bevor das Spiel verloren ist (1 bis 10).", default: "1" },
+    minMs: { type: "number", description: "Ein Sieg, der früher als so viele Millisekunden nach der Anfrage gemeldet wird, zählt als verloren (der Client hat das Spiel übersprungen). Setze es für alles, was etwas einbringt, auf das schnellste echte Spiel deines Minispiels.", default: "0" },
+  }}
+/>
+
+#### Rückgabewert
+
+`Promise<MinigameOutcome>` mit `MinigameOutcome = "won" | "lost" | "broken"`:
+
+- `"won"`: Der Spieler hat gewonnen (und nicht schneller als `minMs`).
+- `"lost"`: Der Spieler hat verfehlt, aufgegeben, zu schnell gewonnen oder nicht innerhalb von 120 Sekunden geantwortet.
+- `"broken"`: nur Schlossknacken, der letzte Dietrich ist zerbrochen. Nimm das Dietrich-Item weg.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, minigameFor, inventory, hasCharacter, near, isNear } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const SAFE = { x: 28.2, y: -1339.2, z: 29.5 };
+
+onClientCallback(
+  "my-heist:pickSafe",
+  async (source) => {
+    if (!inventory.hasItem(source, "lockpick")) return fail("NO_LOCKPICK");
+    const outcome = await minigameFor(source, { game: "lockpick", difficulty: "hard", pins: 3, picks: 2, minMs: 1500 });
+    if (outcome === "broken") inventory.removeItem(source, "lockpick");
+    if (outcome !== "won") return fail("LOCKPICK_FAILED");
+    if (!isNear(source, SAFE, 2)) return fail("TOO_FAR");
+    inventory.addItem(source, "money_bag");
+    return { ok: true };
+  },
+  { guards: [hasCharacter(), near(SAFE, 2)], lock: true },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local SAFE = vector3(28.2, -1339.2, 29.5)
+
+aiLib.onClientCallback('my-heist:pickSafe', function(source)
+    if #(GetEntityCoords(GetPlayerPed(source)) - SAFE) > 2.0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.hasItem(source, 'lockpick') then return aiLib.fail('NO_LOCKPICK') end
+    local outcome = aiLib.minigameFor(source, { game = 'lockpick', difficulty = 'hard', pins = 3, picks = 2, minMs = 1500 })
+    if outcome == 'broken' then aiLib.inventory.removeItem(source, 'lockpick', 1) end
+    if outcome ~= 'won' then return aiLib.fail('LOCKPICK_FAILED') end
+    if #(GetEntityCoords(GetPlayerPed(source)) - SAFE) > 2.0 then return aiLib.fail('TOO_FAR') end
+    aiLib.inventory.addItem(source, 'money_bag', 1)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Schreibe für einen Server-Ablauf nie einen eigenen Client-Minispiel-Callback: Nutze `minigameFor`. Ohne `minMs` kann ein modifizierter Client sofort "won" antworten. Die `1500` oben sind ein Beispiel: Miss das schnellste ehrliche Spiel mit deinen Einstellungen.
+</Callout>
+
+### PendingActions
+
+Hält eine wartende Aktion pro Spieler für Abläufe, bei denen der Client einen Dialog öffnet und später das Ergebnis sendet (eine Notiz schreiben, eine Option wählen), ohne zeitgesteuerten Balken. `start` gibt ein Token aus, das der Client zurückschickt; `take` beendet die Aktion nur, wenn dieses Token passt. Einträge werden freigegeben, wenn der Spieler geht oder den Charakter loslässt (ein Wechsel zahlt die Aktion des alten Charakters nie an den neuen aus). Erstelle eins auf Modulebene.
+
+**Seite:** Server · **Wartet:** nein
+
+Kein Lua-Zwilling: Halte eine Lua-Tabelle mit Tokens pro Spieler.
+
+```ts title="Signatur"
+new PendingActions<T>(options?: { minRatio?: number })
+```
+
+#### Konstruktor-Parameter
+
+<TypeTable
+  type={{
+    "options.minRatio": { type: "number", description: "`take` lehnt eine Antwort ab, die vor diesem Anteil (0 bis 1) der Aktionsdauer kommt. Nutze `0` für Dialoge ohne Mindestzeit.", default: "0.8" },
+  }}
+/>
+
+#### PendingActions.start
+
+Startet die Aktion des Spielers, ersetzt eine noch laufende, und gibt ihr Token zurück.
+
+```ts title="Signatur"
+start(source: number, data: T, durationMs: number): number
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Server-ID des Spielers.", required: true },
+    data: { type: "T", description: "Was du zurückbrauchst, wenn die Aktion endet (das Item, das Ziel).", required: true },
+    durationMs: { type: "number", description: "Erwartete Dauer in Millisekunden; `take` verlangt, dass `durationMs * minRatio` vergangen ist. Es ist kein Ablauf: Die Aktion wartet bis zu `take`, `cancel`, einem Verbindungsabbruch oder einem Charakterwechsel.", required: true },
+  }}
+/>
+
+**Rückgabewert:** `number`: das Token, eine ganze Zahl von 1 bis 2147483647. Sende es an den Client; lies es mit `readId` zurück.
+
+#### PendingActions.take
+
+Beendet die Aktion und gibt ihre Daten zurück, wenn `token` das laufende ist und genug Zeit vergangen ist.
+
+```ts title="Signatur"
+take(source: number, token: number): T | null
+```
+
+**Rückgabewert:** `T | null`: die Daten, oder `null`, wenn keine Aktion läuft, das Token nicht passt oder die Antwort zu früh kam. Ein falsches Token lässt die laufende Aktion in Ruhe (ein veraltetes oder gefälschtes Token bricht sie nie ab); ein passendes beendet sie, auch wenn es zu früh war.
+
+#### PendingActions.peek
+
+```ts title="Signatur"
+peek(source: number): T | null
+```
+
+**Rückgabewert:** die Daten der laufenden Aktion, ohne sie zu beenden, oder `null`.
+
+#### PendingActions.cancel
+
+```ts title="Signatur"
+cancel(source: number): void
+```
+
+Beendet die Aktion des Spielers ohne Ergebnis.
+
+#### PendingActions.size
+
+```ts title="Signatur"
+readonly size: number
+```
+
+Wie viele Aktionen gerade laufen.
+
+#### Beispiel
+
+```ts
+import { onClientCallback, PendingActions, inventory, hasCharacter } from "@aicore-fivem/lib/server";
+import { fail, readId, readText } from "@aicore-fivem/lib/shared";
+
+const notes = new PendingActions<{ item: string }>({ minRatio: 0 });
+
+// Schritt 1: Der Client will schreiben; der Server antwortet mit einem Token.
+onClientCallback(
+  "my-notes:start",
+  (source) => {
+    if (!inventory.hasItem(source, "paper")) return fail("NO_PAPER");
+    const token = notes.start(source, { item: "paper" }, 60_000);
+    return { ok: true, token };
+  },
+  { guards: [hasCharacter()] },
+);
+
+// Schritt 2: Der Client sendet das Token und den Text.
+onClientCallback(
+  "my-notes:finish",
+  {
+    args: ([token, text]) => {
+      const id = readId(token);
+      const body = readText(text, 200);
+      return id !== null && body !== null ? [id, body] : null;
+    },
+    lock: true,
+  },
+  (source, token, text) => {
+    const action = notes.take(source, token);
+    if (!action) return fail("NOTE_EXPIRED");
+    if (!inventory.removeItem(source, action.item)) return fail("NO_PAPER");
+    inventory.addItem(source, "note", 1, { text });
+    return { ok: true };
+  },
+);
+```
+
+## Fortgeschritten
+
+### ClientGate
+
+Die Klasse hinter `onClientCallback` und `onClientEvent`. Du brauchst sie nur, wenn du deine eigene Art von Eingabe auf einem rohen Event aufbaust; Skripte nutzen die zwei Funktionen oben.
+
+**Seite:** Server · **Wartet:** nein
+
+Kein Lua-Zwilling.
+
+```ts title="Signatur"
+new ClientGate<A>(name: string, options: ClientInputOptions & { args?: (raw: unknown[]) => A | null }, defaultRate: number)
+check(source: number, raw: unknown[]): A | null
+run<T, B>(source: number, busy: B, task: () => Promise<T> | T): Promise<T | B>
+release(source: number): void
+```
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Name, der in den Log-Zeilen bei Ablehnungen verwendet wird.", required: true },
+    options: { type: "ClientInputOptions & { args? }", description: "Guards, Rate, Sperre und ein optionaler Parser, wie bei `onClientCallback`.", required: true },
+    defaultRate: { type: "number", description: "Aufrufe pro Sekunde und Spieler, wenn `options.rate` nicht gesetzt ist.", required: true },
+  }}
+/>
+
+- `check` gibt die geprüften Argumente zurück (ein leeres Array ohne `args`) oder `null`, wenn der Aufruf nicht laufen darf (kein echter Spieler, Rate, Guard, Parser).
+- `run` führt `task` unter der Sperre pro Spieler aus, wenn `lock` an ist, und gibt stattdessen `busy` zurück, wenn noch ein anderer Aufruf dieses Spielers läuft.
+- `release` gibt die Raten- und Sperreinträge des Spielers frei. Jedes Gate wird bei `playerDropped` von selbst freigegeben.

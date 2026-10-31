@@ -1,0 +1,516 @@
+---
+title: Aksiyonlar ve client girdisi
+description: "fail, isActionOk, replyError ve katı okuyucular readInt, readFinite, readId, readText, readVec3, readVec4, oneArg, asArgs, isRecord."
+icon: ShieldCheck
+---
+
+Bir client’ın gönderdiği her şey bir hileci tarafından taklit edilebilir: negatif bir miktar, tam sayı beklediğin yerde kesirli bir sayı, 10 MB’lık bir string, sayı yerine bir nesne. Bu sayfadaki **katı okuyucular** tek bir ham değeri kontrol edilmiş bir değere çevirir ya da reddetmek için `null` döndürür. Hatalı bir değeri asla bir varsayılanla değiştirmezler (bunu sunucu sahibinin düzenlediği dosyalar için [panel verisi okuyucuları](/tr/docs/developers/api/lib-shared/panel-data) yapar).
+
+Her server aksiyonu bir [ActionResult](/tr/docs/developers/api/types#actionresult) ile cevap verir: `{ ok: true }` ya da bir lang anahtarıyla bir reddetme.
+
+```ts title="TypeScript"
+import { fail, isActionOk, replyError, readInt, readFinite, readId, readText, readVec3, readVec4, oneArg, asArgs, isRecord } from "@aicore-fivem/lib/shared";
+```
+
+Okuyucuların gittiği yer: `onClientCallback` ve `onClientEvent`’in `args` seçeneği (bkz. [Client girdisi](/tr/docs/developers/api/lib-server/client-input)). Ayrıştırıcı ham argümanları bir dizi olarak alır ve kontrol edilmiş olanları bir dizi olarak döndürür ya da handler’ın çalışmadan önce çağrıyı reddetmek için `null` döndürür.
+
+## Aksiyon sonuçları
+
+### fail
+
+Bir reddetme kurar: `{ ok: false, error }`. Onu bir aksiyon handler’ından döndür; client’ın `callAction`’ı `error`’un çevrilmiş metnini bir hata bildirimi olarak gösterir.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+fail(error: string): { ok: false; error: string }
+```
+
+```lua title="Lua"
+return aiLib.fail('NOT_ENOUGH_MONEY') -- { ok = false, error = 'NOT_ENOUGH_MONEY' }
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    error: { type: 'string', description: 'Resource’unun `locales/en.json` dosyasından bir anahtar (`"NOT_ENOUGH_MONEY"`). Client onu kendi dil dosyasında arar; eksik bir anahtar, anahtarın kendisi olarak gösterilir.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Herhangi bir `ActionResult`’a uyan `{ ok: false, error: string }`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt, type ActionResult } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "my-shop:buyWater",
+  { args: oneArg((v) => readInt(v, 1, 10)), lock: true },
+  (source, count): ActionResult => {
+    if (!core.CanCarryItem(source, "water", count)) return fail("NO_SPACE");
+    if (!core.RemoveMoney(source, "cash", count * 5, "Water")) return fail("NOT_ENOUGH_MONEY");
+    core.AddItem(source, "water", count);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+aiLib.onClientCallback('my-shop:buyWater', function(source, count)
+    if math.type(count) ~= 'integer' or count < 1 or count > 10 then return aiLib.fail('INVALID') end
+    if not exports['ai-core']:CanCarryItem(source, 'water', count) then return aiLib.fail('NO_SPACE') end
+    if not exports['ai-core']:RemoveMoney(source, 'cash', count * 5, 'Water') then
+        return aiLib.fail('NOT_ENOUGH_MONEY')
+    end
+    exports['ai-core']:AddItem(source, 'water', count)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+Client’ta `callAction("my-shop:buyWater", [2], { fallback: "BUY_FAILED" })` (Lua’da `aiLib.callAction`) reddi senin için gösterir. Bkz. [Server ile konuşmak](/tr/docs/developers/api/lib-client/server).
+
+### isActionOk
+
+Bir cevabın başarılı bir `ActionResult` olup olmadığını kontrol eder (`ok === true`). Bir cevabı `callAction` yerine elle okuduğunda kullan.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+isActionOk(reply: unknown): reply is { ok: true } & Record<string, unknown>
+```
+
+**Lua:** karşılığı yok; `type(reply) == 'table' and reply.ok == true` kontrol et.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Bir callback’in cevapladığı herhangi bir şey.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`reply`, `ok: true` içeren bir nesneyse `true`. Ek alanlar kontrol edilmez: okuduklarını ayrıştır.
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { triggerServerCallback } from "@aicore-fivem/lib/client";
+import { isActionOk, readId } from "@aicore-fivem/lib/shared";
+
+/** Server’dan bir garaj oluşturmasını ister; yeni id’sini ya da null döndürür. */
+async function createGarage(name: string): Promise<number | null> {
+  const reply = await triggerServerCallback("my-garage:create", [name]).catch(() => null);
+  if (!isActionOk(reply)) return null;
+  return readId(reply.id); // ek bir alan: onu diğer her girdi gibi kontrol et
+}
+```
+
+### replyError
+
+Reddedilmiş bir cevabın lang anahtarı: `error`’u ya da cevap yoksa veya bozuksa `fallback`. Cevap ok ise `null`.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+replyError(reply: unknown, fallback: string): string | null
+```
+
+**Lua:** karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Bir callback’in cevapladığı herhangi bir şey (ya da bir zaman aşımından sonra `null`).', required: true },
+    fallback: { type: 'string', description: 'Cevapta kullanılabilir bir `error` yoksa (zaman aşımı, kapı reddi, yanlış biçim) kullanılacak lang anahtarı.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Ok bir cevap için `null`. Aksi halde boş olmayan bir string ise cevabın `error`’u, değilse `fallback`.
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { triggerServerCallback, notify, loadLocaleTexts } from "@aicore-fivem/lib/client";
+import { replyError } from "@aicore-fivem/lib/shared";
+
+const texts = loadLocaleTexts();
+
+async function buyWater(): Promise<boolean> {
+  const reply = await triggerServerCallback("my-shop:buy", ["water"]).catch(() => null);
+  const error = replyError(reply, "BUY_FAILED");
+  if (error !== null) notify(texts[error] ?? error, "error");
+  return error === null;
+}
+```
+
+## Katı okuyucular
+
+### readFinite
+
+Sonlu bir sayı, yoksa `null`. `NaN`, `Infinity`, metin ve başka her şey reddedilir.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readFinite(value: unknown): number | null
+```
+
+**Lua:** karşılığı yok; `type(value) == 'number' and value == value and value ~= math.huge and value ~= -math.huge` kontrol et.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Bir client’tan gelen ham değer.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Sayı ya da `null`.
+
+#### Örnek
+
+```ts
+import { readFinite } from "@aicore-fivem/lib/shared";
+
+readFinite(12.5);     // 12.5
+readFinite(NaN);      // null
+readFinite("12");     // null
+```
+
+### readInt
+
+`min` ile `max` arasında (ikisi de dahil) bir tam sayı, yoksa `null`. Kesirli sayılar, `NaN`, `Infinity`, metin ve aralık dışı değerler reddedilir. Sayılar, miktarlar, slotlar, index’ler için kullan.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readInt(value: unknown, min: number, max: number): number | null
+```
+
+**Lua:** karşılığı yok; `math.type(value) == 'integer' and value >= min and value <= max` kontrol et.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Bir client’tan gelen ham değer.', required: true },
+    min: { type: 'number', description: 'İzin verilen en düşük değer.', required: true },
+    max: { type: 'number', description: 'İzin verilen en yüksek değer.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Sayı ya da `null`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readInt, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const prices = new Map<string, number>([["water", 5], ["bread", 3]]);
+
+onClientCallback(
+  "my-shop:buy",
+  {
+    args: ([rawItem, rawCount]) => {
+      const item = readText(rawItem, 64);
+      const count = readInt(rawCount, 1, 50);
+      return item !== null && count !== null ? [item, count] : null;
+    },
+    lock: true,
+  },
+  (source, item, count) => {
+    const price = prices.get(item); // yalnızca bu marketin sattığı eşyalar
+    if (price === undefined) return fail("UNKNOWN_ITEM");
+    if (!core.CanCarryItem(source, item, count)) return fail("NO_SPACE");
+    if (!core.RemoveMoney(source, "cash", price * count, "Shop")) return fail("NOT_ENOUGH_MONEY");
+    core.AddItem(source, item, count);
+    return { ok: true };
+  },
+);
+```
+
+### readId
+
+Pozitif 32 bit bir tam sayı (1 ile 2.147.483.647 arası), yoksa `null`. Bir client’ın gönderdiği kayıt id’leri, token’lar ve network id’ler için kullan.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readId(value: unknown): number | null
+```
+
+**Lua:** karşılığı yok; `math.type(value) == 'integer' and value > 0 and value <= 2147483647` kontrol et.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Bir client’tan gelen ham değer.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+id ya da `null`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { onClientCallback, vehicleFromNet } from "@aicore-fivem/lib/server";
+import { oneArg, readId, fail } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-tow:attach", { args: oneArg(readId) }, (source, netId) => {
+  const vehicle = vehicleFromNet(netId);
+  if (vehicle === 0) return fail("NO_VEHICLE");
+  return { ok: true };
+});
+```
+
+<Callout type="warn">
+Geçerli bir id geçerli bir hedef değildir. Kaydın ya da entity’nin var olduğunu, oyuncunun onu kullanabildiğini ve ona yakın olduğunu her zaman kontrol et.
+</Callout>
+
+### readText
+
+`max` karaktere kesilmiş, kırpılmış, boş olmayan bir string, yoksa `null`. Adlar, eşya adları, notlar, arama metni için kullan.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readText(value: unknown, max: number): string | null
+```
+
+**Lua:** karşılığı yok; `type(value) == 'string'` kontrol et, sonra kırp ve kes (`value:sub(1, max)`).
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Bir client’tan gelen ham değer.', required: true },
+    max: { type: 'number', description: 'Tutulan en fazla karakter. Daha uzun metin reddedilmez, kesilir.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Kırpılmış metin (en fazla `max` karakter) ya da bir string değilse veya kırpıldıktan sonra boşsa `null`.
+
+#### Örnek
+
+```ts
+import { readText } from "@aicore-fivem/lib/shared";
+
+readText("  Hello  ", 64);  // "Hello"
+readText("   ", 64);        // null
+readText(42, 64);           // null
+```
+
+### readVec3
+
+Client ya da export girdisinden bir nokta, her koordinat sonlu, yoksa `null`. Bir `{ x, y, z }` nesnesini ve TypeScript’e bir `[x, y, z]` dizisi olarak ulaşan bir Lua vektörünü kabul eder.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readVec3(value: unknown): { x: number; y: number; z: number } | null
+```
+
+**Lua:** karşılığı yok; Lua kodu `value.x`, `value.y`, `value.z`’yi okur (vektörler ve tablolar için çalışır).
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Ham değer: `{ x, y, z }` ya da `[x, y, z]`.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Yeni bir [Vec3](/tr/docs/developers/api/types#vec3) nesnesi ya da `null`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { registerExport } from "@aicore-fivem/lib/server";
+import { readVec3, type Vec3 } from "@aicore-fivem/lib/shared";
+
+const markers: Vec3[] = [];
+
+// Lua’dan exports["my-markers"].AddMarker(vector3(1, 2, 3)) ve TypeScript’ten AddMarker({ x: 1, y: 2, z: 3 }) için çalışır.
+registerExport("AddMarker", (raw: unknown) => {
+  const point = readVec3(raw);
+  if (!point) return false;
+  markers.push(point);
+  return true;
+});
+```
+
+### readVec4
+
+Heading’li bir nokta, yoksa `null`. `{ x, y, z, heading }`, `{ x, y, z, w }` ve bir Lua `vector4`’ünü (`[x, y, z, w]`) kabul eder. Eksik bir heading `0` olarak okunur.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+readVec4(value: unknown): { x: number; y: number; z: number; heading: number } | null
+```
+
+**Lua:** karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Ham değer: `heading` ya da `w` içeren bir nesne veya bir dizi.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Yeni bir [Vec4](/tr/docs/developers/api/types#vec4) nesnesi (heading verilmediyse `heading` 0) ya da bir koordinat veya verilen heading sonlu bir sayı değilse `null`.
+
+#### Örnek
+
+```ts
+import { readVec4 } from "@aicore-fivem/lib/shared";
+
+readVec4({ x: 1, y: 2, z: 3, w: 90 });  // { x: 1, y: 2, z: 3, heading: 90 }
+readVec4([1, 2, 3]);                    // { x: 1, y: 2, z: 3, heading: 0 }
+readVec4({ x: 1, y: 2 });               // null
+```
+
+### oneArg
+
+Bir okuyucuyu, tam olarak tek bir değer alan bir callback ya da event için bir `args` ayrıştırıcısına çevirir: `{ args: oneArg(readId) }`.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+oneArg<T>(read: (value: unknown) => T | null): (args: unknown[]) => [T] | null
+```
+
+**Lua:** karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    read: { type: '(value: unknown) => T | null', description: 'İlk argüman için bir okuyucu (`readId` ya da kendi okuyucun: `(v) => readInt(v, 1, 10)`).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`[value]` ya da `read` `null` döndürdüyse `null` (çağrıyı reddeder) döndüren bir ayrıştırıcı.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { onClientCallback } from "@aicore-fivem/lib/server";
+import { oneArg, readText } from "@aicore-fivem/lib/shared";
+
+const notes = new Map<number, string>();
+
+onClientCallback("my-notes:save", { args: oneArg((v) => readText(v, 500)) }, (source, text) => {
+  notes.set(source, text);
+  return { ok: true };
+});
+```
+
+### asArgs
+
+Zaten ayrıştırılmış tek bir değeri bir `args` sonucu olarak sarar: `[value]` ya da değer `null` ise `null`. Kendi kontrol fonksiyonun değeri ya da `null` döndürdüğünde kullan.
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+asArgs<T>(value: T | null): [T] | null
+```
+
+**Lua:** karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'T | null', description: 'Ayrıştırılmış değer ya da hatalı biri için `null`.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`[value]` ya da `null`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { onClientCallback } from "@aicore-fivem/lib/server";
+import { asArgs, toVehicleSetup, type VehicleSetup } from "@aicore-fivem/lib/shared";
+
+const previews = new Map<number, VehicleSetup>();
+
+onClientCallback("my-shop:preview", { args: ([raw]) => asArgs(toVehicleSetup(raw)) }, (source, setup) => {
+  previews.set(source, setup);
+  return { ok: true };
+});
+```
+
+### isRecord
+
+Bir değerin düz bir nesne olup olmadığını kontrol eder (`null` değil, dizi değil).
+
+**Taraf:** Client, server ve NUI · **Bekler:** hayır
+
+```ts title="Signature"
+isRecord(value: unknown): value is Record<string, unknown>
+```
+
+**Lua:** karşılığı yok; `type(value) == 'table'` kontrol et.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Herhangi bir değer.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`{ a: 1 }` gibi bir nesne için `true`. `null`, diziler, sayılar, string’ler için `false`.
+
+#### Örnek
+
+```ts
+import { isRecord, readText } from "@aicore-fivem/lib/shared";
+
+function readNote(raw: unknown): { title: string } | null {
+  if (!isRecord(raw)) return null;
+  const title = readText(raw.title, 80);
+  return title === null ? null : { title };
+}
+```

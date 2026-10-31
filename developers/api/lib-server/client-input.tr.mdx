@@ -1,0 +1,762 @@
+---
+title: Client girdisi
+description: "Client’lara güvenli cevap ver: onClientCallback, onClientEvent, korumalar (guard), triggerClientCallback, server’ın doğruladığı ilerleme çubukları ve minigame’ler, PendingActions."
+icon: ShieldCheck
+---
+
+Bir client’ın gönderdiği her şey bir hileci tarafından taklit edilebilir. Her `ai-*` server’ı client’ları yalnızca **kapı** üzerinden dinler: `onClientCallback` ve `onClientEvent`. Handler’ın çalışmadan önce kapı şunları bu sırayla kontrol eder:
+
+1. Onu gerçek, bağlı bir oyuncu gönderdi (aynı adı tetikleyen başka bir resource değil).
+2. Hız sınırı (sen `rate` vermezsen oyuncu başına saniyede 20 callback, 10 event).
+3. Korumaların (`hasCharacter()`, `near(...)`, `isAdmin()` ya da kendi yazdıkların).
+4. Ham değerleri kontrol edilmiş değerlere çeviren ya da çağrıyı reddeden `args` ayrıştırıcın.
+5. İsteğe bağlı bir kilit: oyuncu başına aynı anda tek çağrı.
+
+Sebebi olan bir reddetme, oyuncu adı ve girdi adıyla server konsoluna yazılır; oyuncu ve girdi başına 10 saniyede en fazla bir satır (aradaki satırlar bir sonrakine sayı olarak eklenir).
+
+```ts title="TypeScript"
+import { onClientCallback, onClientEvent, hasCharacter, near, isAdmin } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId, readInt, readText } from "@aicore-fivem/lib/shared";
+```
+
+Girdi okuyucular (`readInt`, `readId`, `readText`, `oneArg`, `asArgs`) ve `fail`, [Lib: shared ve fivem](/tr/docs/developers/api/lib-shared) sayfasında belgelenir. Bir aksiyon [`ActionResult`](/tr/docs/developers/api/types#actionresult) ile cevap verir: `{ ok: true, ... }` ya da `fail("LANG_KEY")`.
+
+## Kapı
+
+### onClientCallback
+
+Bir client’ın `triggerServerCallback(name, ...)` (ya da `callAction`) çağrısına cevap verir ve handler’ın dönüş değerini geri gönderir. Client’ın cevap beklediği her istek için kullan: satın alma, kullanma, bir ekran açma. İki biçimi vardır: argümansız `(name, handler, options?)` ve argümanlı `(name, { args, ... }, handler)`; ikincisinde ayarlar önce gelir, böylece handler’ın yalnızca kontrol edilmiş değerleri görür.
+
+**Taraf:** Server · **Bekler:** hayır (handler `async` olabilir; cevap gönderilmeden önce promise’i beklenir)
+
+```ts title="Signature"
+onClientCallback(name: string, handler: (source: number) => unknown, options?: ClientInputOptions): void
+onClientCallback<A>(name: string, options: ParsedInputOptions<A>, handler: (source: number, ...args: A) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onClientCallback(name, handler, options) -- handler(source, ...): any
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Callback adı. Client aynı adı çağırır. Başına resource’unun adını koy (`my-shop:buy`).", required: true },
+    handler: { type: "(source: number, ...args: A) => unknown", description: "Çağrı kapıdan geçince çalışır. `source` oyuncunun server id’sidir. Dönüş değeri (ya da çözülen promise) cevaptır; `undefined` `null` olarak gönderilir. Fırlatılan bir hata loglanır ve client bir başarısızlık alır.", required: true },
+    options: { type: "ClientInputOptions | ParsedInputOptions<A>", description: "Hız, korumalar, kilit ve argümanlı biçim için `args`. Alanlar aşağıda.", required: false },
+  }}
+/>
+
+#### ClientInputOptions
+
+<TypeTable
+  type={{
+    guards: { type: "Guard[]", description: "Sırayla çalışan kontroller. Geçmeyen ilk kontrol çağrıyı reddeder. Aşağıdaki Guard’a bak.", default: "[]" },
+    rate: { type: "{ count: number; windowMs: number }", description: "Oyuncu başına `windowMs` milisaniye içinde en fazla `count` çağrı. Fazla çağrılar reddedilir ve loglanır.", default: "1000 ms’de 20 (callback’ler), 1000 ms’de 10 (event’ler)" },
+    lock: { type: "boolean", description: "Oyuncu başına aynı anda tek çağrı. İlki hâlâ çalışırken gelen ikinci çağrı reddedilir (callback’ler) ya da atılır (event’ler). Bekleyip sonra yazan her handler’da (eşyalar, para) kullan.", default: "false" },
+  }}
+/>
+
+#### ParsedInputOptions
+
+`ClientInputOptions`’ın tüm alanları, artı:
+
+<TypeTable
+  type={{
+    args: { type: "(raw: unknown[]) => A | null", description: "Ham client değerlerini dizi olarak alır ve kontrol edilmiş argümanları tuple olarak döndürür ya da çağrıyı reddetmek için `null` döndürür (değerlerin bir önizlemesiyle loglanır). Tek bir id için ayrıştırıcı `oneArg(readId)`’dir.", required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. Client’ın aldığı cevap:
+
+- handler çalıştıysa handler’ın dönüş değeri;
+- kapı çağrıyı reddettiyse, kilit doluysa ya da handler hata fırlattıysa bir başarısızlık. TypeScript’te client’ın `triggerServerCallback` promise’i hemen reddedilir (`callAction` kendi `fallback` metnini gösterir); Lua’da `aiLib.triggerServerCallback` `nil, 'failed'` döndürür.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, hasCharacter, near, inventory } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt } from "@aicore-fivem/lib/shared";
+
+const CRATE = { x: 120.5, y: -1050.2, z: 29.2 };
+
+// Client: callAction("my-crates:take", [2], { fallback: "TAKE_FAILED" })
+onClientCallback(
+  "my-crates:take",
+  {
+    args: oneArg((v) => readInt(v, 1, 5)),
+    guards: [hasCharacter(), near(CRATE, 3)],
+    lock: true,
+  },
+  (source, count) => {
+    if (!inventory.canCarryItem(source, "water", count)) return fail("CANNOT_CARRY");
+    inventory.addItem(source, "water", count);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local CRATE = vector3(120.5, -1050.2, 29.2)
+
+-- Client: aiLib.triggerServerCallback('my-crates:take', { 2 })
+aiLib.onClientCallback('my-crates:take', function(source, count)
+    if math.type(count) ~= 'integer' or count < 1 or count > 5 then return aiLib.fail('BAD_COUNT') end
+    if not aiLib.online.character(source) then return aiLib.fail('NO_CHARACTER') end
+    if #(GetEntityCoords(GetPlayerPed(source)) - CRATE) > 3.0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.canCarryItem(source, 'water', count) then return aiLib.fail('CANNOT_CARRY') end
+    aiLib.inventory.addItem(source, 'water', count)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Lua sürümünde `guards` ve `args` yoktur: `options = { rate?, lock?, ace? }` alır (`ace`: oyuncunun bu ACE yetkisine sahip olması gerekir, ai-core admin’leri için `ai.admin`) ve handler ham değerleri alır. Her argümanı kullanmadan önce kendin kontrol et (tip, aralık, sahiplik, mesafe). TypeScript’te client değerlerini asla `args` dışında okuma.
+</Callout>
+
+### onClientEvent
+
+Bir client’ın gönderdiği net event’i aynı kapı üzerinden dinler. Client’ın cevap beklemediği tek yönlü mesajlar için kullan (bir ekranı kapatmak, bildirilen bir hücre). Client girdisi için asla çıplak bir `onNet` kullanma. `onClientCallback` ile aynı iki biçime sahiptir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+onClientEvent(name: string, handler: (source: number) => unknown, options?: ClientInputOptions): void
+onClientEvent<A>(name: string, options: ParsedInputOptions<A>, handler: (source: number, ...args: A) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onClientEvent(name, handler, options) -- handler(source, ...), options { rate?, ace? }
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Net event adı. Client onu `emitNet(name, ...)` ile gönderir (Lua’da `TriggerServerEvent`).", required: true },
+    handler: { type: "(source: number, ...args: A) => unknown", description: "Event kapıdan geçince çalışır. Fırlatılan bir hata ya da reddedilen bir promise loglanır; geri hiçbir şey gönderilmez.", required: true },
+    options: { type: "ClientInputOptions | ParsedInputOptions<A>", description: "`onClientCallback` ile aynı alanlar. Varsayılan hız: oyuncu başına saniyede 10 event. `lock` ile, öncekisi hâlâ çalışırken gelen event atılır.", required: false },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientEvent, PlayerMap } from "@aicore-fivem/lib/server";
+
+const openShops = new PlayerMap<string>();
+
+// Client: emitNet("my-shop:close")
+onClientEvent("my-shop:close", (source) => {
+  openShops.delete(source);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local openShops = {}
+
+AddEventHandler('playerDropped', function() openShops[source] = nil end)
+
+-- Client: TriggerServerEvent('my-shop:close')
+aiLib.onClientEvent('my-shop:close', function(source)
+    openShops[source] = nil
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Lua sürümü `options = { rate?, ace? }` alır (`lock`, `guards` ve `args` yok). Başka bir resource’tan gelen yerel bir `TriggerEvent` hiçbir oyuncu taşımaz ve iki tarafta da yok sayılır.
+</Callout>
+
+## Korumalar
+
+Koruma (guard), oyuncunun server id’sini alıp `true` (geç), `false` (sessizce reddet) ya da bir string (reddet ve string’i sebep olarak logla) döndüren bir fonksiyondur.
+
+```ts title="Type"
+type Guard = (source: number) => boolean | string;
+```
+
+Bir kontrol birkaç girdide tekrarlanıyorsa kendi korumanı yaz:
+
+```ts
+import type { Guard } from "@aicore-fivem/lib/server";
+import { online } from "@aicore-fivem/lib/server";
+
+const onDutyPolice: Guard = (source) => online.onDutyIn(source, ["police"]) || "not on duty";
+```
+
+### isAdmin
+
+Oyuncunun bir ACE yetkisi varsa geçen bir koruma: ai-core’un admin yetkisi `ai.admin` ya da senin verdiğin yetki.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+isAdmin(ace?: string): Guard
+```
+
+```lua title="Lua"
+local allowed = aiLib.isAdmin(source, ace) -- boolean, doğrudan bir kontrol (koruma değil)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ace: { type: "string", description: "Kontrol edilecek ACE yetkisi.", default: '"ai.admin"' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Guard`: `not allowed (<ace>)` sebebiyle reddeder. Lua karşılığı doğrudan `true` ya da `false` döndürür; source 0 ya da altı için `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, isAdmin, medical } from "@aicore-fivem/lib/server";
+
+onClientCallback("my-admin:reviveSelf", (source) => ({ ok: medical.revive(source) }), {
+  guards: [isAdmin()],
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-admin:reviveSelf', function(source)
+    if not aiLib.isAdmin(source) then return aiLib.fail('NOT_ALLOWED') end
+    return { ok = true }
+end)
+
+-- ya da kontrolü kapıya bırak:
+aiLib.onClientCallback('my-admin:ping', function(source) return { ok = true } end, { ace = 'ai.admin' })
+```
+</Tab>
+</Tabs>
+
+### hasCharacter
+
+Oyuncunun dünyada bir karakteri varsa (karakter ekranında değilse) geçen bir koruma.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+hasCharacter(): Guard
+```
+
+Lua karşılığı yok: `aiLib.online.character(source) ~= nil` kontrol et.
+
+#### Dönüş değeri
+
+`Guard`: `no character loaded` sebebiyle reddeder.
+
+#### Örnek
+
+```ts
+import { onClientCallback, hasCharacter, online } from "@aicore-fivem/lib/server";
+
+onClientCallback("my-id:name", (source) => ({ ok: true, name: online.name(source) }), {
+  guards: [hasCharacter()],
+});
+```
+
+### near
+
+Oyuncunun ped’i bir noktaya `metres` kadar yakınsa geçen bir koruma; mesafe server’da ölçülür (client bu konuda yalan söyleyemez).
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+near(point: Vec3 | ((source: number) => Vec3 | null), metres: number): Guard
+```
+
+Lua karşılığı yok: `#(GetEntityCoords(GetPlayerPed(source)) - point)` değerini kendin karşılaştır.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    point: { type: "Vec3 | ((source: number) => Vec3 | null)", typeDescriptionLink: "/tr/docs/developers/api/types#vec3", description: "Sabit bir nokta ya da bu oyuncu için noktayı döndüren bir fonksiyon (açık olan marketi). `null` döndüren bir fonksiyon `no target point` ile reddeder.", required: true },
+    metres: { type: "number", description: "İzin verilen en büyük mesafe, metre cinsinden (3D).", required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Guard`: `too far (<metres> m)` sebebiyle reddeder.
+
+#### Örnek
+
+```ts
+import { onClientCallback, near, PlayerMap } from "@aicore-fivem/lib/server";
+import type { Vec3 } from "@aicore-fivem/lib/shared";
+
+const openAt = new PlayerMap<Vec3>();
+
+onClientCallback("my-shop:list", (source) => ({ ok: true, items: [] }), {
+  guards: [near((source) => openAt.get(source) ?? null, 4)],
+});
+```
+
+### eventSource
+
+İşlenen net event’i gönderen oyuncunun server id’si. `onClientCallback` ve `onClientEvent` içinde `source`’u ilk argüman olarak alırsın; bu yüzden buna yalnızca ham bir FiveM `onNet` ya da `on` handler’ında ihtiyacın olur.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+eventSource(): number
+```
+
+Lua karşılığı yok: Lua global `source`’u okur.
+
+#### Dönüş değeri
+
+`number`: oyuncunun server id’si (FiveM’in global `source`’u).
+
+#### Örnek
+
+```ts
+import { eventSource } from "@aicore-fivem/lib/server";
+
+on("my-script:serverOnly", () => {
+  const source = eventSource(); // önce bunu oku
+  console.log(`event from ${source}`);
+});
+```
+
+<Callout type="warn">
+Onu ilk `await`’ten önce oku. FiveM, handler yield ettikten sonra global’i sıfırlar; daha sonraki bir okuma yanlış oyuncuyu verir.
+</Callout>
+
+## Client’a sormak
+
+### triggerClientCallback
+
+Bir oyuncunun client’ına bir soru sorar ve cevabı bekler. Client `onServerCallback(name, handler)` ile cevap verir ([Lib: client](/tr/docs/developers/api/lib-client)). Yalnızca sorduğun oyuncu cevap verebilir.
+
+**Taraf:** Server · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+triggerClientCallback(name: string, source: number, args?: unknown[], timeoutMs?: number): Promise<unknown>
+```
+
+```lua title="Lua"
+local result, err = aiLib.triggerClientCallback(name, source, args, timeout) -- bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Client’ın `onServerCallback` ile kaydettiği callback adı.", required: true },
+    source: { type: "number", description: "Sorulacak oyuncunun server id’si.", required: true },
+    args: { type: "unknown[]", description: "Client handler’ına sırayla gönderilen değerler.", default: "[]" },
+    timeoutMs: { type: "number", description: "Cevabın ne kadar bekleneceği, milisaniye cinsinden.", default: "30000" },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Promise<unknown>`: client’ın cevabıyla çözülür. Cevap zamanında gelmediyse ya da client handler’ı başarısız olduysa bir `Error` ile reddedilir. Cevap bir client’tan gelir: kullanmadan önce ayrıştır.
+
+Lua cevabı ya da `nil` ve `'timeout'` / `'failed'` döndürür.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, triggerClientCallback, notify } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+// Client: onServerCallback("my-admin:street", () => locationName().street)
+addCommand(
+  "street",
+  { help: "Shows the street a player stands on", restricted: true, params: [{ name: "id", type: "playerId" }] },
+  async (source, { id }) => {
+    const answer = await triggerClientCallback("my-admin:street", id, [], 5000).catch(() => null);
+    const street = readText(answer, 100);
+    if (source > 0) notify(source, street ?? "No answer", street ? "info" : "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Client: aiLib.onServerCallback('my-admin:street', function() return aiLib.locationName().street end)
+aiLib.addCommand('street', {
+    help = 'Shows the street a player stands on',
+    restricted = true,
+    params = { { name = 'id', type = 'playerId' } },
+}, function(source, args)
+    CreateThread(function()
+        local street, err = aiLib.triggerClientCallback('my-admin:street', args.id, {}, 5000)
+        if source > 0 then
+            if type(street) == 'string' then aiLib.notify(source, street) else aiLib.notify(source, err, 'error') end
+        end
+    end)
+end)
+```
+</Tab>
+</Tabs>
+
+## Server’ın güvendiği zamanlı aksiyonlar
+
+### progressFor
+
+ai-lib’in ilerleme çubuğunu oyuncunun ekranında çalıştırır ve bitene kadar bekler. Server’ın güvenmesi gereken her zamanlı aksiyon için kullan (eşya kullanmak, tamir etmek, soymak): yalnızca çubuk client’ta bittiğinde **ve** server’da yeterli zaman geçtiğinde `true` cevabını verir; böylece bir hileci onu atlayamaz. Hiç client kodu yazmazsın: ai-lib her resource için cevap verir.
+
+**Taraf:** Server · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+progressFor(source: number, options: ProgressForOptions): Promise<boolean>
+```
+
+```lua title="Lua"
+local finished = aiLib.progressFor(source, options) -- boolean, bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Çubuğu gören oyuncunun server id’si.", required: true },
+    options: { type: "ProgressForOptions", description: "Çubuğun ne gösterdiği ve oyuncunun bu sırada ne yapabileceği. Alanlar aşağıda.", required: true },
+  }}
+/>
+
+#### ProgressForOptions
+
+<TypeTable
+  type={{
+    label: { type: "string", description: "Çubuktaki metin, zaten çevrilmiş halde (`Locale(\"REPAIRING\")`). 80 karaktere kesilir.", required: true },
+    duration: { type: "number", description: "Çubuğun ne kadar süreceği, milisaniye cinsinden (0 ile 600000 arası). Daha uzun bir değer client’ın reddetmesine yol açar, bu da `false` cevabını verir.", required: true },
+    anim: { type: "{ dict: string; clip: string; flag?: number }", description: "Çubuk çalışırken oynatılan animasyon. `flag` varsayılan olarak 49’dur (üst gövde, döngü, oyuncu hâlâ hareket edebilir).", required: false },
+    scenario: { type: "string", description: "`anim` yokken yerinde oynatılan bir senaryo (`WORLD_HUMAN_HAMMERING`).", required: false },
+    face: { type: "{ x: number; y: number; z: number }", description: "Oyuncu, çubuk başlamadan önce bu noktaya döner (bir pompa, bir tezgah, bir araç). Lua bir `vector3` de kabul eder.", required: false },
+    allowVehicle: { type: "boolean", description: "False iken araca binmek çubuğu iptal eder.", default: "false" },
+    canCancel: { type: "boolean", description: "Oyuncunun ai-lib’in iptal tuşuyla iptal etmesine izin verir.", default: "false" },
+    freeze: { type: "boolean", description: "Çubuk çalışırken oyuncuyu yerinde tutar.", default: "false" },
+    disable: { type: "{ move?: boolean; car?: boolean; mouse?: boolean; combat?: boolean }", description: "Çubuk çalışırken engellenen kontroller: yürümek, sürmek, etrafa bakmak, dövüşmek.", required: false },
+    minRatio: { type: "number", description: "Server’da geçmesi gereken `duration` payı (0 ile 1 arası). Daha hızlı bir cevap iptal edilmiş sayılır.", default: "0.8" },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Promise<boolean>`: çubuk bittiyse `true`. Oyuncu iptal ettiyse, öldüyse, araca bindiyse (`allowVehicle` olmadan), oyundan çıktıysa, karakter değiştirdiyse, çok hızlı cevap verdiyse ya da `duration` artı 15 saniye içinde cevap gelmediyse `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, progressFor, inventory, vehicleNearPlayer, createLocale } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+
+const Locale = createLocale();
+
+onClientCallback(
+  "my-mechanic:repair",
+  { args: oneArg(readId), lock: true },
+  async (source, netId) => {
+    if (!vehicleNearPlayer(source, netId, { metres: 4 })) return fail("TOO_FAR");
+    if (!inventory.hasItem(source, "repairkit")) return fail("NO_KIT");
+    const done = await progressFor(source, {
+      label: Locale("REPAIRING"),
+      duration: 8000,
+      anim: { dict: "mini@repair", clip: "fixing_a_player" },
+      canCancel: true,
+    });
+    if (!done) return fail("CANCELLED");
+    // Çubuk çalışırken dünya değişmiş olabilir: tekrar kontrol et.
+    const vehicle = vehicleNearPlayer(source, netId, { metres: 4 });
+    if (!vehicle) return fail("TOO_FAR");
+    if (!inventory.removeItem(source, "repairkit")) return fail("NO_KIT");
+    // Araç sağlığı, entity’nin sahibi olan client’ta ayarlanır.
+    emitNet("my-mechanic:applyRepair", NetworkGetEntityOwner(vehicle), netId);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('my-mechanic:repair', function(source, netId)
+    if aiLib.vehicleNearPlayer(source, netId, { metres = 4 }) == 0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.hasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+    local done = aiLib.progressFor(source, {
+        label = Locale('REPAIRING'),
+        duration = 8000,
+        anim = { dict = 'mini@repair', clip = 'fixing_a_player' },
+        canCancel = true,
+    })
+    if not done then return aiLib.fail('CANCELLED') end
+    local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 4 })
+    if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.removeItem(source, 'repairkit', 1) then return aiLib.fail('NO_KIT') end
+    -- Araç sağlığı, entity’nin sahibi olan client’ta ayarlanır.
+    TriggerClientEvent('my-mechanic:applyRepair', NetworkGetEntityOwner(vehicle), netId)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Aynı oyuncu için ikinci bir `progressFor` ilkini `false` ile bitirir. Await’ten sonra mesafeyi ve stoğu tekrar kontrol et: çubuk çalışırken dünya değişmiş olabilir. Lua’da oyundan çıkma ya da karakter değiştirme erken algılanmaz: çağrı, zaman aşımı (`duration` + 15 sn) dolduğunda `false` cevabını verir.
+</Callout>
+
+### minigameFor
+
+ai-lib’in minigame’lerinden birini (skill check ya da maymuncuk) bir server akışı için oyuncunun ekranında oynatır ve sonucu bekler. Kapı maymuncuklamak, kasa kırmak, düz kontak yapmak için kullan. Sonuç client’ın sözüdür; bu yüzden kazanmanın ne getireceğine yine server karar verir (bir şans zarı, bir `progressFor`, kendi kontrolleri).
+
+**Taraf:** Server · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+minigameFor(source: number, options: MinigameForOptions): Promise<MinigameOutcome>
+```
+
+```lua title="Lua"
+local outcome = aiLib.minigameFor(source, options) -- 'won' | 'lost' | 'broken', bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oynayan oyuncunun server id’si.", required: true },
+    options: { type: "MinigameForOptions", description: "Hangi oyun ve ne kadar zor. Alanlar aşağıda.", required: true },
+  }}
+/>
+
+#### MinigameForOptions
+
+<TypeTable
+  type={{
+    game: { type: '"skillCheck" | "lockpick"', description: "Skill check (ibre yeşil yaydayken tuşa bas) ya da maymuncuk.", required: true },
+    difficulty: { type: '"easy" | "medium" | "hard"', description: "Hedefin boyutu ve hızı. Skill check: yeşil yay 50 / 40 / 25, hız 0.6 / 0.85 / 1. Maymuncuk: doğru nokta 18 / 11 / 6.", default: '"medium"' },
+    rounds: { type: "number", description: "Yalnızca skill check: oyuncunun tutturması gereken halka sayısı (1 ile 10 arası).", default: "2" },
+    keys: { type: "string[]", description: "Yalnızca skill check: oyuncunun bastığı tuşlar.", default: '["e"]' },
+    pins: { type: "number", description: "Yalnızca maymuncuk: pim sayısı (1 ile 6 arası).", default: "1" },
+    picks: { type: "number", description: "Yalnızca maymuncuk: oyun kaybedilmeden önce oyuncunun kırabileceği maymuncuk sayısı (1 ile 10 arası).", default: "1" },
+    minMs: { type: "number", description: "İstekten sonra bu kadar milisaniyeden önce gelen bir kazanma kaybedilmiş sayılır (client oyunu atlamıştır). Para getiren her şeyde bunu oyununun en hızlı gerçek oynanışına ayarla.", default: "0" },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Promise<MinigameOutcome>`, burada `MinigameOutcome = "won" | "lost" | "broken"`:
+
+- `"won"`: oyuncu kazandı (ve `minMs`’ten hızlı değil).
+- `"lost"`: oyuncu ıskaladı, vazgeçti, çok hızlı kazandı ya da 120 saniye içinde cevap vermedi.
+- `"broken"`: yalnızca maymuncuk, son maymuncuk kırıldı. Maymuncuk eşyasını al.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, minigameFor, inventory, hasCharacter, near, isNear } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const SAFE = { x: 28.2, y: -1339.2, z: 29.5 };
+
+onClientCallback(
+  "my-heist:pickSafe",
+  async (source) => {
+    if (!inventory.hasItem(source, "lockpick")) return fail("NO_LOCKPICK");
+    const outcome = await minigameFor(source, { game: "lockpick", difficulty: "hard", pins: 3, picks: 2, minMs: 1500 });
+    if (outcome === "broken") inventory.removeItem(source, "lockpick");
+    if (outcome !== "won") return fail("LOCKPICK_FAILED");
+    if (!isNear(source, SAFE, 2)) return fail("TOO_FAR");
+    inventory.addItem(source, "money_bag");
+    return { ok: true };
+  },
+  { guards: [hasCharacter(), near(SAFE, 2)], lock: true },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local SAFE = vector3(28.2, -1339.2, 29.5)
+
+aiLib.onClientCallback('my-heist:pickSafe', function(source)
+    if #(GetEntityCoords(GetPlayerPed(source)) - SAFE) > 2.0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.hasItem(source, 'lockpick') then return aiLib.fail('NO_LOCKPICK') end
+    local outcome = aiLib.minigameFor(source, { game = 'lockpick', difficulty = 'hard', pins = 3, picks = 2, minMs = 1500 })
+    if outcome == 'broken' then aiLib.inventory.removeItem(source, 'lockpick', 1) end
+    if outcome ~= 'won' then return aiLib.fail('LOCKPICK_FAILED') end
+    if #(GetEntityCoords(GetPlayerPed(source)) - SAFE) > 2.0 then return aiLib.fail('TOO_FAR') end
+    aiLib.inventory.addItem(source, 'money_bag', 1)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bir server akışı için asla kendi client minigame callback’ini yazma: `minigameFor` kullan. `minMs` olmadan, değiştirilmiş bir client hemen "won" cevabı verebilir. Yukarıdaki `1500` bir örnektir: kendi ayarlarının en hızlı dürüst oynanışını ölç.
+</Callout>
+
+### PendingActions
+
+Client’ın bir pencere açıp sonucu daha sonra gönderdiği (not yazmak, bir seçenek seçmek), zamanlı çubuğu olmayan akışlar için oyuncu başına bekleyen tek bir aksiyon tutar. `start`, client’ın geri gönderdiği bir token verir; `take` aksiyonu yalnızca o token eşleşirse bitirir. Oyuncu oyundan çıktığında ya da karakteri bıraktığında girdiler serbest bırakılır (bir karakter değişimi eski karakterin aksiyonunu asla yenisine ödemez). Modül seviyesinde bir tane oluştur.
+
+**Taraf:** Server · **Bekler:** hayır
+
+Lua karşılığı yok: oyuncu başına token’ların olduğu bir Lua tablosu tut.
+
+```ts title="Signature"
+new PendingActions<T>(options?: { minRatio?: number })
+```
+
+#### Constructor parametreleri
+
+<TypeTable
+  type={{
+    "options.minRatio": { type: "number", description: "`take`, aksiyon süresinin bu payından (0 ile 1 arası) önce gelen bir cevabı reddeder. Minimum süresi olmayan pencereler için `0` kullan.", default: "0.8" },
+  }}
+/>
+
+#### PendingActions.start
+
+Oyuncunun aksiyonunu başlatır (hâlâ çalışan bir aksiyon varsa onun yerine geçer) ve token’ını döndürür.
+
+```ts title="Signature"
+start(source: number, data: T, durationMs: number): number
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    data: { type: "T", description: "Aksiyon bittiğinde geri ihtiyacın olan şey (eşya, hedef).", required: true },
+    durationMs: { type: "number", description: "Beklenen süre, milisaniye cinsinden; `take` için `durationMs * minRatio` kadar zaman geçmiş olmalıdır. Bir son kullanma süresi değildir: aksiyon `take`, `cancel`, oyundan çıkma ya da karakter değişimine kadar bekler.", required: true },
+  }}
+/>
+
+**Dönüş değeri** `number`: token, 1 ile 2147483647 arasında bir tam sayı. Onu client’a gönder; geri `readId` ile oku.
+
+#### PendingActions.take
+
+`token` çalışan aksiyonun token’ıysa ve yeterli zaman geçtiyse aksiyonu bitirir ve verisini döndürür.
+
+```ts title="Signature"
+take(source: number, token: number): T | null
+```
+
+**Dönüş değeri** `T | null`: veri ya da hiçbir aksiyon çalışmıyorsa, token eşleşmiyorsa veya cevap çok erken geldiyse `null`. Yanlış bir token çalışan aksiyona dokunmaz (eski ya da sahte bir token onu asla iptal etmez); eşleşen bir token ise çok erken olsa bile onu bitirir.
+
+#### PendingActions.peek
+
+```ts title="Signature"
+peek(source: number): T | null
+```
+
+**Dönüş değeri**: çalışan aksiyonun verisi (aksiyonu bitirmeden) ya da `null`.
+
+#### PendingActions.cancel
+
+```ts title="Signature"
+cancel(source: number): void
+```
+
+Oyuncunun aksiyonunu sonuçsuz bitirir.
+
+#### PendingActions.size
+
+```ts title="Signature"
+readonly size: number
+```
+
+Şu an kaç aksiyon çalışıyor.
+
+#### Örnek
+
+```ts
+import { onClientCallback, PendingActions, inventory, hasCharacter } from "@aicore-fivem/lib/server";
+import { fail, readId, readText } from "@aicore-fivem/lib/shared";
+
+const notes = new PendingActions<{ item: string }>({ minRatio: 0 });
+
+// Adım 1: client yazmak ister; server bir token ile cevap verir.
+onClientCallback(
+  "my-notes:start",
+  (source) => {
+    if (!inventory.hasItem(source, "paper")) return fail("NO_PAPER");
+    const token = notes.start(source, { item: "paper" }, 60_000);
+    return { ok: true, token };
+  },
+  { guards: [hasCharacter()] },
+);
+
+// Adım 2: client token’ı ve metni gönderir.
+onClientCallback(
+  "my-notes:finish",
+  {
+    args: ([token, text]) => {
+      const id = readId(token);
+      const body = readText(text, 200);
+      return id !== null && body !== null ? [id, body] : null;
+    },
+    lock: true,
+  },
+  (source, token, text) => {
+    const action = notes.take(source, token);
+    if (!action) return fail("NOTE_EXPIRED");
+    if (!inventory.removeItem(source, action.item)) return fail("NO_PAPER");
+    inventory.addItem(source, "note", 1, { text });
+    return { ok: true };
+  },
+);
+```
+
+## İleri seviye
+
+### ClientGate
+
+`onClientCallback` ve `onClientEvent`’in arkasındaki sınıf. Ona yalnızca ham bir event üzerine kendi girdi türünü kurarken ihtiyacın olur; script’ler yukarıdaki iki fonksiyonu kullanır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+Lua karşılığı yok.
+
+```ts title="Signature"
+new ClientGate<A>(name: string, options: ClientInputOptions & { args?: (raw: unknown[]) => A | null }, defaultRate: number)
+check(source: number, raw: unknown[]): A | null
+run<T, B>(source: number, busy: B, task: () => Promise<T> | T): Promise<T | B>
+release(source: number): void
+```
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Reddetme log satırlarında kullanılan ad.", required: true },
+    options: { type: "ClientInputOptions & { args? }", description: "`onClientCallback`’teki gibi korumalar, hız, kilit ve isteğe bağlı bir ayrıştırıcı.", required: true },
+    defaultRate: { type: "number", description: "`options.rate` verilmediğinde oyuncu başına saniyedeki çağrı sayısı.", required: true },
+  }}
+/>
+
+- `check`, kontrol edilmiş argümanları (`args` yoksa boş bir dizi) ya da çağrının çalışmaması gerekiyorsa `null` döndürür (gerçek oyuncu değil, hız, koruma, ayrıştırıcı).
+- `run`, `lock` açıksa `task`’ı oyuncu başına kilit altında çalıştırır; o oyuncunun başka bir çağrısı hâlâ çalışıyorsa bunun yerine `busy` döndürür.
+- `release`, oyuncunun hız ve kilit girdilerini serbest bırakır. Her kapı `playerDropped`’ta kendiliğinden serbest bırakılır.

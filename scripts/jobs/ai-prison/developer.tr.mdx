@@ -1,0 +1,225 @@
+---
+title: Geliştiriciler için ai-prison
+description: AI Core’un hapishane katmanı üzerinden hapse atma, tahliye ve kalan süre, ai-prison’ın server export’ları ve tuttuğu karakter metadata’sı.
+icon: Code
+---
+
+<Callout type="info">
+Script’inden hapse atmak için lib’in `prison.jail`, `prison.release` ve `prison.timeLeft` fonksiyonlarını (TypeScript) ya da `aiLib.prison.*` (Lua) kullan. Bunlar AI Core’un hapishane katmanından geçer ve hangi hapishane script’i çalışıyorsa ona ulaşır (ai-prison, qb-prison, rcore_prison, xt-prison, tgiann-policejob). Aşağıdaki export’lar, ai-prison çalışırken bu katmanın çağırdıklarıdır.
+</Callout>
+
+## Lib fonksiyonları (önerilen)
+
+### prison.jail
+
+Yüklü bir oyuncuyu birkaç dakikalığına hapse gönderir. ai-prison ile: oyuncu bir hücreye gider, eşyaları alınır (panel anahtarı), ceza **Longest sentence** değerine kısaltılır ve bir `jail` MDT kaydı yazılır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+prison.jail(source: number, minutes: number, by?: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.prison.jail(source, minutes, by)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Hapse atılacak oyuncunun server id’si. Yüklü bir karakter gerekir.', required: true },
+    minutes: { type: 'number', description: 'Dakika cinsinden ceza süresi. ai-prison onu aşağı yuvarlar, en az 1’e çıkarır ve paneldeki Longest sentence değerine kısaltır.', required: true },
+    by: { type: 'number', description: 'Onu gönderenin (memurun) server id’si, log ve MDT kaydı için. 0 = kimse.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hapishane script’i cezayı aldıysa `true`. Hiçbir hapishane script’i çalışmıyorsa ya da oyuncunun yüklü bir karakteri yoksa `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, notify, prison } from "@aicore-fivem/lib/server";
+
+// /judge <id> <minutes>: judge principal’ı olan oyuncular için.
+addCommand(
+  "judge",
+  {
+    help: "Sentence a player",
+    restricted: "ai.job.judge",
+    params: [
+      { name: "id", type: "playerId" },
+      { name: "minutes", type: "number" },
+    ] as const,
+  },
+  (source, { id, minutes }) => {
+    if (!prison.jail(id, minutes, source))
+      notify(source, "No prison is running", "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.addCommand('judge', {
+  help = 'Sentence a player',
+  restricted = 'ai.job.judge',
+  params = {
+    { name = 'id', type = 'playerId' },
+    { name = 'minutes', type = 'number' },
+  },
+}, function(source, args)
+  if not aiLib.prison.jail(args.id, args.minutes, source) then
+    aiLib.notify(source, 'No prison is running', 'error')
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Zaten hapisteki bir oyuncuyu hapse atmak cezayı yeni süreye **ayarlar** (üstüne eklemez). Hapishane script’i tgiann-policejob ise dakikalar bunun yerine eklenir.
+</Callout>
+
+### prison.release
+
+Hapisteki bir oyuncuyu hemen serbest bırakır. ai-prison ile: tahliye noktasına gider ve alınan eşyalarını geri alır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+prison.release(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.prison.release(source)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Hapisteki oyuncunun server id’si.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Oyuncu hapisteydi ve şimdi serbestse `true`. Hapiste değildiyse ya da hiçbir hapishane script’i çalışmıyorsa `false`.
+
+### prison.timeLeft
+
+Cezadan kalan dakika.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+prison.timeLeft(source: number): number
+```
+
+```lua title="Lua"
+local minutes = aiLib.prison.timeLeft(source)
+```
+
+#### Dönüş değeri
+
+Kalan dakika; oyuncu serbestse ya da hiçbir hapishane script’i çalışmıyorsa `0`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, prison } from "@aicore-fivem/lib/server";
+
+inventory.registerUsableItem("phone", (source: number) => {
+  if (prison.timeLeft(source) > 0) {
+    notify(source, "No phones in prison", "error");
+    return;
+  }
+  // ... telefonu aç
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.inventory.registerUsableItem('phone', function(source)
+  if aiLib.prison.timeLeft(source) > 0 then
+    aiLib.notify(source, 'No phones in prison', 'error')
+    return
+  end
+  -- ... telefonu aç
+end)
+```
+</Tab>
+</Tabs>
+
+## Server export’ları
+
+ai-prison çalışırken hapishane katmanı bunları çağırır. `@aicore-fivem/shared` içinde tipleri yoktur: TypeScript’te `callExport("ai-prison", name, ...args)` ile çağır. Her export küçük harfli ikiziyle de cevap verir (`jailPlayer`).
+
+### JailPlayer
+
+```ts title="Signature"
+JailPlayer(source: number, minutes: number, by?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-prison']:JailPlayer(source, minutes, by)
+```
+
+`prison.jail` ile aynı davranış ve dönüş değeri. `source` ya da `minutes` bir sayı değilse `false` ile cevap verir.
+
+### ReleasePlayer
+
+```ts title="Signature"
+ReleasePlayer(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-prison']:ReleasePlayer(source)
+```
+
+Oyuncu hapisteydi ve şimdi tahliye edildiyse `true`; aksi halde `false`.
+
+### GetJailTime
+
+```ts title="Signature"
+GetJailTime(source: number): number
+```
+
+```lua title="Lua"
+local minutes = exports['ai-prison']:GetJailTime(source)
+```
+
+Kalan dakika; serbestse `0`.
+
+## Karakter metadata’sı
+
+ai-prison durumunu ai-core karakter metadata’sında tutar (ai-core’un export’larından `GetMeta(source, key)` ile ya da QB köprüsü üzerinden `PlayerData.metadata` ile okunur).
+
+| Anahtar | Tip | Ne tutar |
+| --- | --- | --- |
+| `injail` | `number` | Kalan dakika (QBCore’un anahtarı). Başka bir script’ten 0’dan büyük bir sayı yazmak bir ceza başlatır; 0 yazmak tahliye eder. |
+| `jailitems` | `{ name: string; count: number; metadata?: object }[] \| null` | Kapıda alınan, tahliyede geri verilen eşyalar. |
+| `ai:jailLeftAt` | `number \| null` | Oyuncunun hapisteyken çıktığı zaman (1970’ten beri ms); sadece **Count time offline** açıkken ayarlanır. |
+
+<Callout type="warn">
+`injail` yazmak yerine `prison.jail` kullan: o her hapishane script’iyle çalışır, `injail` ise sadece ai-prison ve QB tarzı hapishaneler tarafından okunur.
+</Callout>
+
+## Özel event’ler ve callback’ler
+
+Script’in kendi sözleşmesi (`resource/common/prison.ts`). Sürümler arasında değişebilirler: başka resource’lardan tetikleme ya da dinleme.
+
+| Ad | Yön | Ne taşır |
+| --- | --- | --- |
+| `ai-prison:client:state` | server -> hapisteki oyuncu | `(minutes)`: kalan dakika, serbestse 0 (yüklenirken, her dakika, tahliyede). |
+| `ai-prison:client:move` | server -> hapisteki oyuncu | `(point)`: bir hücreye, firardan sonra tekrar içeri ya da tahliyede dışarı ışınla. |
+| `ai-prison:workStart` | client callback’i | `(taskId)`: bir noktada çalış; server ilerleme çubuğunu çalıştırır, sonra dakika düşer. |
+| `ai-prison:canteen` | client callback’i | `()`: kantinden bir yemek. |

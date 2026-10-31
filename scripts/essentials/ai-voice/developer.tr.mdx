@@ -1,0 +1,353 @@
+---
+title: Geliştiriciler için ai-voice
+description: ai-voice’un server ve client export’ları (pma-voice sözleşmesi ve kendi export’ları), state bag’leri ve event’leri.
+icon: Code
+---
+
+ai-voice pma-voice 7.x’i cevaplar: aşağıdaki export’lardan pma-voice’ta da olan her biri `exports['pma-voice']` altında da cevap verir. Tüm ses durumu (mesafe, frekanslar, görüşmeler, hoparlörler, susturmalar) server’a aittir ve oyuncu state bag’lerini server yazar; client’lar sadece ister. Export’ların hiçbiri beklemez. `@aicore-fivem/shared` içinde tiplenmemişlerdir: TypeScript’ten lib `callExport("ai-voice", name, ...args)` kullan.
+
+## Server export’ları
+
+### setPlayerRadio
+
+Bir oyuncuyu bir telsiz frekansına koyar ve onu aktif frekansı (konuştuğu frekans) yapar. pma-voice adı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+setPlayerRadio(source: number, channel: number | string): void
+```
+
+```lua title="Lua"
+exports['pma-voice']:setPlayerRadio(source, 5)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    channel: { type: 'number | string', description: 'Frekans, 0.01 ile 1,000,000 arası (sayısal bir string de olur). `0` tüm frekanslardan çıkar.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `channel` sayı değilse hata fırlatır. Panelde telsiz kapalıysa hiçbir şey yapmaz. Oyuncunun katılamayacağı bir frekans (bir meslek frekansı ya da hayır diyen bir `addChannelCheck`) "You cannot join this frequency" bildirimiyle reddedilir. Yeni bir frekansa katılmak önceki aktif frekanstan çıkarır; oyuncunun sadece dinlediği frekanslar kalır.
+
+### setPlayerCall
+
+Bir oyuncuyu bir telefon görüşmesine sokar veya çıkarır. pma-voice adı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+setPlayerCall(source: number, callId: number | string): void
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    callId: { type: 'number | string', description: 'Görüşme id’si (telefon script’inin seçtiği herhangi bir sayı, iki oyuncu da aynısını alır). `0` görüşmeyi kapatır.', required: true },
+  }}
+/>
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+let nextCall = 1000;
+
+/** İki oyuncuyu bağlar; daha sonra bitirmek için görüşme id’sini döner. */
+export function connect(caller: number, target: number): number {
+  const id = nextCall++;
+  callExport("ai-voice", "setPlayerCall", caller, id);
+  callExport("ai-voice", "setPlayerCall", target, id);
+  return id;
+}
+
+export function hangUp(...players: number[]): void {
+  for (const p of players) callExport("ai-voice", "setPlayerCall", p, 0);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local nextCall = 1000
+
+local function connect(caller, target)
+    nextCall = nextCall + 1
+    exports['pma-voice']:setPlayerCall(caller, nextCall)
+    exports['pma-voice']:setPlayerCall(target, nextCall)
+    return nextCall
+end
+
+local function hangUp(a, b)
+    exports['pma-voice']:setPlayerCall(a, 0)
+    exports['pma-voice']:setPlayerCall(b, 0)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bir telefon script’i `addCallCheck` ile izin vermedikçe ya da sunucu sahibi **Let players' games join calls** ayarını açmadıkça, oyuncunun kendi oyunu bir görüşmeye kendi başına katılamaz (client `setCallChannel`). Oyuncuları görüşmelere server’dan sok.
+</Callout>
+
+### getPlayersInRadioChannel
+
+Bir frekansın üyeleri. `GetPlayersInRadioChannel` olarak da cevap verir. pma-voice adı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+getPlayersInRadioChannel(channel: number | string): Record<string, boolean>
+```
+
+#### Dönüş değeri
+
+Anahtarı server id (string olarak) olan bir tablo; o üye konuşurken değer `true`, değilse `false`. Boş bir frekans veya hatalı bir değer için `{}`.
+
+### addChannelCheck
+
+Bir frekans için kendi kuralını ekler: kimin katılabileceğine senin fonksiyonun karar verir. Resource’un durduğunda kaldırılır. pma-voice adı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+addChannelCheck(channel: number, check: (source: number) => boolean): void
+```
+
+```lua title="Lua"
+exports['pma-voice']:addChannelCheck(911, function(source)
+    return exports['ai-core']:GetDutyJob(source) == 'ambulance'
+end)
+```
+
+Önce panelin frekans kuralları kontrol edilir; sonra fonksiyonunun truthy bir değer dönmesi gerekir. `check` fonksiyon değilse hata fırlatır.
+
+### overrideRadioNameGetter
+
+Telsiz üyelerinin birbiri için gördüğü adı değiştirir (**Send names to radio members** açıkken). pma-voice adı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+overrideRadioNameGetter(channel: unknown, getter: (source: number) => string): void
+```
+
+İlk argüman yok sayılır (pma-voice uyumluluğu); getter her frekans için kullanılır.
+
+### isValidPlayer
+
+```ts title="Signature"
+isValidPlayer(source: number): boolean
+```
+
+ai-voice oyuncuyu tanıyorsa (katılmış ve hazırlanmış) `true`.
+
+### setPlayerProximityMode
+
+Bir oyuncuyu panelin mesafelerinden birine geçirir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+setPlayerProximityMode(source: number, index: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    index: { type: 'number', description: 'Panelin **Ranges** listesindeki sıra, 1’den başlar.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: geçirildiyse `true`. Oyuncu bilinmiyorsa, `index` listenin dışındaysa veya bir `addProximityCheck` reddettiyse `false`.
+
+### setPlayerRange
+
+Bir oyuncuya kendi belirlediğin bir mesafe verir (megafon, sahnedeki mikrofon) ya da oyuncunun seçtiği mesafeyi geri verir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+setPlayerRange(source: number, metres: number | null): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    metres: { type: 'number | null', description: 'Mesafe, 0.5 ile 100 m arası. `null` oyuncunun seçtiği mesafeye geri döner.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: ayarlandıysa `true`. Oyuncu bilinmiyorsa, `metres` 0.5-100 dışındaysa veya bir `addProximityCheck` reddettiyse `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport, onClientEvent } from "@aicore-fivem/lib/server";
+
+// Bir megafon eşyası: tutulurken 30 m.
+onClientEvent("myscript:megaphone", { args: ([on]) => (typeof on === "boolean" ? [on] : null) }, (source, on) => {
+  callExport("ai-voice", "setPlayerRange", source, on ? 30 : null);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:megaphone', function(on)
+    local src = source
+    exports['ai-voice']:setPlayerRange(src, on == true and 30.0 or nil)
+end)
+```
+</Tab>
+</Tabs>
+
+### getPlayerProximity
+
+```ts title="Signature"
+getPlayerProximity(source: number): { index: number; distance: number; mode: string } | null
+```
+
+Oyuncunun mevcut mesafesi: `index` (listedeki sıra), metre cinsinden `distance`, `mode` (mesafenin adı). Bilinmeyen bir oyuncu için `null`.
+
+### toggleMute
+
+Bir oyuncuyu susturur ya da susturulmuş birinin susturmasını kaldırır. `/muteply` ile aynı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+toggleMute(source: number, seconds?: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    seconds: { type: 'number', description: 'Susturmanın ne kadar süreceği (en fazla bir yıl). Susturma kaldırılırken yok sayılır.', default: '900' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: susturma değiştirildiyse `true`, bilinmeyen bir oyuncu için `false`. Oyuncu bir bildirim alır; `pma-voice:playerMuted` server event’i tetiklenir. Susturmalar license’a göre tutulur, bu yüzden yeniden bağlanınca da devam eder.
+
+### addProximityCheck
+
+Mesafe değişiklikleri için bir kural ekler. Fonksiyonun `(source, index, distance)` alır; `false` dönmek değişikliği reddeder (hem oyuncunun tuşu hem export’lar için). Resource’un durduğunda kaldırılır.
+
+```ts title="Signature"
+addProximityCheck(check: (source: number, index: number, distance: number) => boolean | void): void
+```
+
+### Birden fazla frekans
+
+| Export | Dönüş | Ne yapar |
+| --- | --- | --- |
+| `addPlayerRadioListen(source, channel)` | `boolean` | Oyuncunun bir frekansı daha, onda konuşmadan duymasını sağlar. Panelin **Frequencies at once** sınırında, izin yoksa veya telsiz kapalıysa `false`. Oyuncunun aktif frekansı yoksa aktif olur. |
+| `removePlayerRadioListen(source, channel)` | `boolean` | Bir frekanstan çıkar. Oyuncu o frekansta değilse `false`. |
+| `setPlayerRadioActive(source, channel)` | `boolean` | Oyuncunun frekanslarından birini konuştuğu frekans yapar. O frekansta değilse `false`. |
+| `getPlayerRadioChannels(source)` | `{ active: number, channels: number[] } \| null` | Aktif frekans (0 = yok) ve oyuncunun duyduğu her frekans. |
+
+### Telefon ekleri
+
+| Export | Dönüş | Ne yapar |
+| --- | --- | --- |
+| `addCallCheck(check: (source, callId) => boolean)` | hiçbir şey | Bir telefon script’inin oyuncunun oyunundan gelen katılımlara izin vermesini sağlar: `true` dönmek o oyuncuyu o görüşmeye alır. Resource’un durduğunda kaldırılır. |
+| `setPlayerCallSpeaker(source, on)` | `boolean` | Oyuncunun görüşmesinin hoparlörünü açar veya kapatır. |
+| `getPlayerCallSpeaker(source)` | `boolean` | Hoparlörün açık olup olmadığı. |
+
+### Diğerleri
+
+| Export | Dönüş | Ne yapar |
+| --- | --- | --- |
+| `setPlayerSubmix(source, name \| null)` | hiçbir şey | Bir oyuncunun sesine kalıcı bir efekt: client’ların kaydettiği bir submix’in adı (pma-voice’un `submix` bag’i). `null` kaldırır. |
+| `getBackend()` | `"mumble" \| "enhanced"` | Kullanılan ses sistemi. |
+
+## Client export’ları
+
+pma-voice’un client export’ları (hepsi `exports['pma-voice']` altında da):
+
+| Export | Ne yapar |
+| --- | --- |
+| `setRadioChannel(channel)`, `SetRadioChannel`, `addPlayerToRadio` | Server’dan aktif frekansı ister (0 tüm frekanslardan çıkar). Meslek frekansları server’da kontrol edilir. |
+| `removePlayerFromRadio()` | Tüm frekanslardan çıkar. |
+| `setCallChannel(callId)`, `SetCallChannel`, `addPlayerToCall` | Bir görüşmeye katılmak ister. Bir telefon script’inin `addCallCheck`’i izin vermedikçe ya da **Let players' games join calls** açık olmadıkça reddedilir. |
+| `removePlayerFromCall()` | Görüşmeyi kapatır (her zaman izinli). |
+| `setRadioVolume(percent)` / `getRadioVolume()`, `setCallVolume(percent)` / `getCallVolume()` | Oyuncunun kendi ses seviyeleri, kendi bilgisayarında tutulur. |
+| `setVoiceProperty(name, value)`, `SetMumbleProperty`, `SetTokoProperty` | `radioEnabled`, `micClicks`. |
+| `overrideProximityRange(metres, disableCycle)` / `clearProximityOverride()` | Client’tan bir mesafe. Enhanced’de reddedilir. |
+| `setAllowProximityCycleState(blocked)` | Mesafe tuşunu engeller veya izin verir. |
+| `overrideProximityCheck(fn)` / `resetProximityCheck()`, `setVoiceState(mode, channel)` | Sadece Legacy (Mumble). |
+| `toggleMutePlayer(serverId)` | Başka bir oyuncuyu sadece bu oyuncu için susturur. |
+| `toggleRadioAnim()` / `getRadioAnimState()` | Oyuncunun telsiz animasyonu anahtarı. |
+| `addRadioDisableBit(bit)` / `removeRadioDisableBit(bit)` | Herhangi bir bit ayarlıyken telsizde konuşmayı engeller (telsizi bir süreliğine devre dışı bırakan bir script). |
+| `registerCustomSubmix(...)`, `setEffectSubmix(...)` | pma-voice’un özel submix’leri, ai-voice’un submix kaydına. |
+
+ai-voice’un kendi client export’ları:
+
+| Export | Ne yapar |
+| --- | --- |
+| `addRadioChannel(channel)` / `removeRadioChannel(channel)` / `setActiveRadioChannel(channel)` | Client tarafından birden fazla frekans (server’da kontrol edilir). |
+| `getRadioChannels()` | Aktif frekans ve liste. |
+| `setCallSpeaker(on)` / `getCallSpeaker()` | Oyuncunun görüşmesinin hoparlörü. |
+| `setRadioAnimDisabled(disabled)` | Bu oyuncu için telsiz animasyonunu kapatır. |
+| `createSubmix(name, spec)` / `getSubmix(name)` / `editSubmix(name, spec)` / `listSubmixes()` | Ses efektleri. Bir ad her oyun oturumunda bir kez oluşturulur ve yeniden kullanılır; oyunun kendi sesiyle paylaşılan sadece 40 yuvası vardır. |
+| `cycleProximity()` | Tuş gibi bir sonraki mesafeye geçer. |
+| `getBackend()` | `"mumble"` veya `"enhanced"`. |
+| `isRadioTalking()` | Telsiz tuşunun basılı olup olmadığı. |
+
+## State bag’ler
+
+Server tarafından her oyuncuya yazılır (`Player(source).state`, client’ta `LocalPlayer.state`). Onları oku; asla yazma.
+
+| Bag | Değer |
+| --- | --- |
+| `proximity` | `{ index: number, distance: number, mode: string }`: mevcut mesafe. |
+| `radioChannel` | `number`: aktif frekans, yoksa 0. |
+| `callChannel` | `number`: görüşme id’si, yoksa 0. |
+| `callSpeaker` | `boolean`: görüşmenin hoparlörü açık. |
+| `muted` | `boolean`: bir admin tarafından susturulmuş. |
+| `submix` | `string`: `setPlayerSubmix` ile ayarlanan kalıcı bir ses efekti. |
+
+GlobalState: `ai-voice:backend` (`"mumble"` veya `"enhanced"`), `ai-voice:takeover` (kendi telsiz veya telefon efektini getiren script’ler). ai-voice AI Core’un `dead` bag’ini ve pma-voice’un `isDead` bag’ini okur.
+
+## Event’ler
+
+| Event | Taraf | Argümanlar | Ne zaman tetiklenir |
+| --- | --- | --- | --- |
+| `pma-voice:setTalkingMode` | Client (yerel) | `index: number` | Oyuncunun mesafesi değişti. |
+| `pma-voice:radioActive` | Client (yerel) | `talking: boolean` | Oyuncu telsizde konuşmaya başladı veya bıraktı. |
+| `pma-voice:toggleRadioAnim` | Client (yerel) | | Telsiz animasyonu anahtarı değişti. |
+| `pma-voice:playerMuted` | Server (yerel) | `target: number, by: number, muted: boolean, seconds: number` | Bir oyuncu susturuldu veya susturması kaldırıldı (export için `by` 0’dır). |
+
+pma-voice’un net event’leri (`pma-voice:syncRadioData`, `addPlayerToRadio`, `removePlayerFromRadio`, `setTalkingOnRadio`, `clSetPlayerRadio`, `syncCallData`, `addPlayerToCall`, `removePlayerFromCall`, `clSetPlayerCall`), onları dinleyen telsiz arayüzleri için adlarını ve içeriklerini korur. Telsiz event’leri frekansı ek bir son argüman olarak taşır; üye tablolarının anahtarları string’dir.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Client: oyuncu telsizde konuşurken bir "yayında" simgesi göster.
+on("pma-voice:radioActive", (talking: boolean) => {
+  SendNUIMessage({ action: "radio", data: talking });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('pma-voice:radioActive', function(talking)
+    SendNUIMessage({ action = 'radio', data = talking })
+end)
+```
+</Tab>
+</Tabs>

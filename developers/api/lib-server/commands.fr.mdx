@@ -1,0 +1,144 @@
+---
+title: Commandes
+description: "addCommand : des commandes de chat avec arguments analysés, permissions ACE, suggestions de chat et une ligne dans le panneau d’administration d’ai-core."
+icon: SquareTerminal
+---
+
+```ts title="TypeScript"
+import { addCommand } from "@aicore-fivem/lib/server";
+```
+
+### addCommand
+
+Enregistre une commande de chat (et de console). Les arguments sont analysés et vérifiés avant que votre gestionnaire ne s’exécute, la permission est vérifiée avec ACE, les suggestions de chat ne vont qu’aux joueurs autorisés à utiliser la commande, et le panneau d’administration d’ai-core la liste dans son onglet Commands. Utilisez-la pour chaque commande serveur au lieu d’un simple `RegisterCommand`.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+addCommand<P extends readonly CommandParam[]>(
+  name: string | string[],
+  options: CommandOptions<P>,
+  handler: (source: number, args: CommandArgs<P>, raw: string) => unknown,
+): void
+```
+
+```lua title="Lua"
+aiLib.addCommand(name, options, handler) -- handler(source, args, raw)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    name: { type: "string | string[]", description: "Le nom de la commande sans `/`. Une liste ajoute des alias : le premier est le nom, les autres fonctionnent de la même façon. Les noms sont mis en minuscules. Cherchez (grep) dans `resources/` avant d’en choisir un : les noms de commande FiveM ne sont pas sensibles à la casse et une seconde ressource avec le même nom la récupère.", required: true },
+    options: { type: "CommandOptions<P>", description: "Texte d’aide, arguments et permission. Champs ci-dessous.", required: true },
+    handler: { type: "(source: number, args: CommandArgs<P>, raw: string) => unknown", description: "S’exécute quand la permission et chaque argument sont validés. `source` est l’id serveur du joueur, ou `0` pour la console du serveur. `args` contient une valeur par paramètre, par nom. `raw` est la ligne tapée en entier. Une erreur levée ou une promesse rejetée est journalisée.", required: true },
+  }}
+/>
+
+#### CommandOptions
+
+<TypeTable
+  type={{
+    help: { type: "string", description: "Ce que fait la commande, déjà traduit. Affiché dans la suggestion de chat et dans le panneau d’administration.", default: '""' },
+    params: { type: "CommandParam[]", typeDescriptionLink: "/fr/docs/developers/api/types#commandparam", description: "Les arguments dans l’ordre. Champs ci-dessous.", default: "[]" },
+    restricted: { type: "boolean | string | string[]", description: "Qui peut l’utiliser. `false` : tout le monde. `true` : les admins ai-core (ACE `ai.admin`). Une chaîne ou une liste : les joueurs qui ont l’une de ces permissions ACE ou l’un de ces principals (`group.admin`, `ai.job.police`). La console peut toujours. `command.<name>` autorise aussi toujours, donc les permissions de server.cfg et de txAdmin continuent de fonctionner.", default: "false" },
+  }}
+/>
+
+#### CommandParam
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Nom dans la ligne d’utilisation, la suggestion de chat et `args`.", required: true },
+    type: { type: '"number" | "playerId" | "string" | "longString"', description: "`number` : n’importe quel nombre. `playerId` : l’id serveur d’un joueur en ligne. `string` : un seul mot. `longString` : le reste de la ligne, il doit donc être le dernier paramètre.", required: true },
+    help: { type: "string", description: "Texte traduit affiché pour cet argument dans la suggestion de chat.", required: false },
+    optional: { type: "boolean", description: "Le joueur peut l’omettre ; sa valeur est alors `undefined` (Lua `nil`).", default: "false" },
+  }}
+/>
+
+#### Ce que voit le joueur en cas de saisie incorrecte
+
+Avant que le gestionnaire ne s’exécute, la lib répond par une notification ai-core (ou une ligne de console pour la source 0) avec les textes d’ai-core :
+
+| Cas | Texte (anglais) |
+| --- | --- |
+| Pas de permission | You are not allowed to use this command. |
+| Un argument obligatoire manque | `<name>` is missing. |
+| `number` / `playerId` n’est pas un nombre | `<name>` must be a number. |
+| `playerId` n’est pas un joueur en ligne | No player is online with id `<value>`. |
+| Après toute erreur d’argument | Usage: `/name <required> [optional]` |
+
+#### Retour
+
+`void`. Lève une erreur en TypeScript quand `name` est une liste vide.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, medical, notify, createLocale } from "@aicore-fivem/lib/server";
+
+const Locale = createLocale();
+
+addCommand(
+  ["heal", "h"],
+  {
+    help: Locale("CMD_HEAL"),
+    params: [{ name: "id", type: "playerId", help: Locale("CMD_P_ID"), optional: true }],
+    restricted: true,
+  },
+  (source, args) => {
+    const target = args.id ?? source; // args.id est number | undefined
+    if (target === 0) return; // la console doit nommer un joueur
+    if (medical.heal(target) && source > 0) notify(source, Locale("HEALED"), "success");
+  },
+);
+
+addCommand(
+  "announce",
+  {
+    help: "Sends a message to everyone",
+    params: [{ name: "text", type: "longString" }],
+    restricted: ["group.admin", "ai.admin"],
+  },
+  (_source, { text }) => {
+    for (const player of getPlayers()) notify(Number(player), text, "info", 8000);
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.addCommand({ 'heal', 'h' }, {
+    help = Locale('CMD_HEAL'),
+    params = { { name = 'id', type = 'playerId', help = Locale('CMD_P_ID'), optional = true } },
+    restricted = true,
+}, function(source, args)
+    local target = args.id or source
+    if target == 0 then return end
+    -- Pas d'équivalent Lua de `medical` : appelez l'export d'ai-core.
+    if exports['ai-core']:HealPlayer(target) and source > 0 then aiLib.notify(source, Locale('HEALED'), 'success') end
+end)
+
+aiLib.addCommand('announce', {
+    help = 'Sends a message to everyone',
+    params = { { name = 'text', type = 'longString' } },
+    restricted = { 'group.admin', 'ai.admin' },
+}, function(_, args)
+    for _, player in ipairs(GetPlayers()) do aiLib.notify(tonumber(player), args.text, 'info', 8000) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Ne vérifiez jamais les permissions à la main dans le gestionnaire : `restricted` s’en charge, et les suggestions de chat le suivent. Pour une liste de principals, ai-core accorde `command.<name>` à chacun d’eux, ce qui nécessite `add_ace resource.ai-core command.add_ace allow` et `add_ace resource.ai-core command.remove_ace allow` dans `permission.cfg`. Les grades de métier et de gang sont des principals (`ai.job.police`), donc les suggestions se mettent à jour quand le métier ou le gang d’un joueur change.
+</Callout>
+
+<Callout type="info">
+En TypeScript, `args` est typé à partir de `params` : `args.id` est `number`, ou `number | undefined` quand il est facultatif. Une liste de paramètres partagée par plusieurs commandes doit être déclarée `as const`, sinon les noms et les types s’élargissent et `args` les perd.
+</Callout>

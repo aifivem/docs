@@ -1,0 +1,271 @@
+---
+title: Geliştiriciler için ai-death
+description: AI Core’un tıbbi katmanı üzerinden diriltme, iyileştirme ve yere düşme durumu, ai-death’in server export’ları, dead state bag’i ve QB diriltme event’i.
+icon: Code
+---
+
+<Callout type="info">
+Script’inden yerdeki bir oyuncuyu diriltmek, iyileştirmek ya da kontrol etmek için lib’in `medical` modülünü (TypeScript) ya da ai-core’un `RevivePlayer` / `HealPlayer` / `IsPlayerDead` export’larını (Lua) kullan. Bunlar AI Core’un tıbbi katmanı üzerinden gider ve hangi ölüm script’i çalışıyorsa onunla çalışır (ai-death, qbx_medical, qb-ambulancejob, esx_ambulancejob, wasabi_ambulance...). Aşağıdaki ai-death export’ları, ai-death çalışırken bu katmanın çağırdıklarıdır.
+</Callout>
+
+## Lib fonksiyonları (önerilen)
+
+### medical.revive
+
+Yerdeki bir oyuncuyu yattığı yerde ayağa kaldırır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+medical.revive(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RevivePlayer(source)
+```
+
+Lua’da `aiLib.medical` yoktur: yukarıdaki gibi ai-core’un export’unu çağır.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Yerdeki oyuncunun server id’si.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Oyuncu yerdeydi ve şimdi ayaktaysa `true`. Yerde değildiyse ya da hiçbir ölüm script’i çalışmıyorsa `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, medical, notify } from "@aicore-fivem/lib/server";
+
+// ai-core adminleri için /revive <id>.
+addCommand(
+  "revive",
+  { help: "Revive a player", restricted: true, params: [{ name: "id", type: "playerId" }] as const },
+  (source, { id }) => {
+    if (!medical.revive(id) && source > 0) notify(source, "That player is not down", "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.addCommand('revive', {
+  help = 'Revive a player',
+  restricted = true,
+  params = { { name = 'id', type = 'playerId' } },
+}, function(source, args)
+  if not exports['ai-core']:RevivePlayer(args.id) and source > 0 then
+    aiLib.notify(source, 'That player is not down', 'error')
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+### medical.heal
+
+Yerde **olmayan** bir oyuncuya tam can verir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+medical.heal(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:HealPlayer(source)
+```
+
+#### Dönüş değeri
+
+Bir ölüm script’i çağrıyı aldıysa `true`. Hiçbir ölüm script’i çalışmıyorsa `false`.
+
+<Callout type="warn">
+ai-death ile yerdeki bir oyuncuyu iyileştirmek ped’i ayağa kaldırır ama yere düşme durumunu korur. Önce `medical.isDead(source)` ile kontrol et ve `medical.revive` çağır.
+</Callout>
+
+### medical.isDead
+
+Bir oyuncunun yerde olup olmadığı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+medical.isDead(source: number): boolean
+```
+
+```lua title="Lua"
+local down = exports['ai-core']:IsPlayerDead(source)
+```
+
+#### Dönüş değeri
+
+Oyuncu yerdeyken `true`. Ayaktaysa ya da hiçbir ölüm script’i çalışmıyorsa `false`.
+
+### medical.provider
+
+Tıbbi katmanın kullandığı ölüm script’i.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+medical.provider(): string | null
+```
+
+```lua title="Lua"
+local name = exports['ai-core']:GetMedicalSystem() -- 'ai-death', 'qbx_medical'... ya da nil
+```
+
+#### Dönüş değeri
+
+Resource adı; desteklenen hiçbir ölüm script’i çalışmıyorsa `null` / `nil`.
+
+### medical.isDead (client)
+
+Yerel oyuncunun yere düşme durumu, client’ta, hangi ölüm script’i çalışırsa çalışsın. Ölüm script’leri yerdeki ped’i animasyon oynatmak için canlı tutar, bu yüzden tek başına `IsEntityDead` yetmez.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+medical.isDead(): boolean
+medical.onChange(fn: (dead: boolean) => void): void
+```
+
+```lua title="Lua"
+local down = exports['ai-core']:IsDead()
+```
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { medical, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand("emote", () => {
+  if (medical.isDead()) return notify("Not while down", "error");
+  // ... emote’u oynat
+}, false);
+
+medical.onChange((dead) => {
+  if (dead) SendNUIMessage({ action: "close" }); // oyuncu yere düşünce ekranını kapat
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- client.lua
+RegisterCommand('emote', function()
+  if exports['ai-core']:IsDead() then return end
+  -- ... emote’u oynat
+end, false)
+```
+</Tab>
+</Tabs>
+
+## Server export’ları
+
+ai-death çalışırken tıbbi katman bunları çağırır. `@aicore-fivem/shared` içinde `AiDeathServerExports` olarak tiplidir, bu yüzden `resourceExport("ai-death")` onları tanır. `Revive` ve `IsDead` ayrıca `exports.qbx_medical:Revive` / `IsDead` olarak da cevap verir. Her export küçük harfli ikiziyle de cevap verir (`revive`).
+
+### Revive
+
+```ts title="Signature"
+Revive(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-death']:Revive(source)
+```
+
+Yerdeki bir oyuncuyu yattığı yerde ayağa kaldırır. Yerdeyse `true`, değilse `false`.
+
+### IsDead
+
+```ts title="Signature"
+IsDead(source: number): boolean
+```
+
+```lua title="Lua"
+local down = exports['ai-death']:IsDead(source)
+```
+
+Oyuncu yerdeyken `true`.
+
+### Heal
+
+```ts title="Signature"
+Heal(source: number): void
+```
+
+```lua title="Lua"
+exports['ai-death']:Heal(source)
+```
+
+Yerde olmayan bir oyuncuya tam can verir. Hiçbir şey döndürmez. Yerdeki bir oyuncuda ped’i ayağa kaldırır ama yere düşme durumu kalır: önce `Revive` çağır.
+
+## `dead` state bag’i
+
+ai-death oyuncuyu yerde tuttuğu sürece oyuncunun state bag’inde `true`; server yazar. Anahtar `@aicore-fivem/shared` içindeki `PLAYER_BAGS.dead`.
+
+```lua title="Lua"
+local down = Player(source).state.dead == true   -- server
+local down = LocalPlayer.state.dead == true      -- client, yerel oyuncu
+```
+
+```ts title="TypeScript"
+import { PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const dead = new PlayerState(PLAYER_BAGS.dead, stateBoolean);
+const down = dead.get(source) === true;
+```
+
+Sadece ai-death’in çalıştığını bildiğinde oku; `medical.isDead` her ölüm script’iyle çalışır.
+
+## `isdead` karakter metadata’sı
+
+Yerdeyken `true`, karakterde saklanır (QBCore’un anahtarı); böylece yerdeyken yeniden bağlanan oyuncu yerde olarak geri gelir. Buna yazma: ai-death oyuncu yere düşünce ayarlar, ayağa kalkınca temizler.
+
+## `hospital:client:Revive` client event’i
+
+QBCore’un diriltme event’i. Server bunu bir oyuncuya gönderdiğinde ai-death onu durduğu yerde diriltir (QB script’leri ve admin menüleri kullanır).
+
+**Taraf:** Server -> client · **Argümanlar:** yok
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+emitNet("hospital:client:Revive", target);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+TriggerClientEvent('hospital:client:Revive', target)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bu event, server’daki yere düşme durumunu `medical.revive` gibi temizlemez. Yeni kodda `medical.revive(source)` kullan.
+</Callout>
+
+## Özel event’ler ve callback’ler
+
+Script’in kendi sözleşmesi (`resource/common/death.ts`). Sürümler arasında değişebilirler: başka resource’lardan tetikleme ya da dinleme.
+
+| Ad | Yön | Ne taşır |
+| --- | --- | --- |
+| `ai-death:client:down` | server -> player | `(seconds, medics, callSeconds)`: oyuncu yerde; yeniden doğma `seconds` sonra açılır, şu an `medics` kadar sağlıkçı boşta, `callSeconds` sonra tekrar doktor çağrılabilir. |
+| `ai-death:client:revive` | server -> player | `(point \| null)`: bir hastanede ya da yattığı yerde tekrar ayakta. |
+| `ai-death:respawn` | client callback’i | `()`: süre dolduktan sonra en yakın hastanede yeniden doğ (ücreti öder). |
+| `ai-death:treat` | client callback’i | `(hospitalId)`: bir kayıt noktasında ücretli tedavi. |
+| `ai-death:distress` | client callback’i | `()`: doktor çağır; `{ ok, seconds }` ile cevap verir. |

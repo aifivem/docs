@@ -1,0 +1,170 @@
+---
+title: Lua için lib
+description: "aiLib: bir Lua resource’unun ai-lib’i nasıl yüklediği, ne zaman thread kullanılacağı, Lua vektörlerinin ve tablolarının TypeScript’e nasıl geçtiği ve her fonksiyonun nerede belgelendiği."
+icon: FileCode
+---
+
+`aiLib`, `@aicore-fivem/lib`’in Lua sürümüdür. **ai-lib** resource’uyla gelir ve ox_lib gibi yüklenir: manifest’inde tek bir satır, sonra Lua dosyalarının herhangi bir yerinde `aiLib.<name>`. Lua’da yazılmış bir port’tur (JavaScript lib’inin etrafında bir sarmalayıcı değil) ve TypeScript lib’iyle aynı ağ biçimlerini konuşur; böylece bir Lua client’ı ve bir TypeScript server’ı (ya da tersi) birbirlerinin callback’lerine cevap verir.
+
+## Kurulum
+
+<Steps>
+<Step>
+### ai-lib’i manifest’ine ekle
+
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+`shared_script` onu iki tarafta da yükler. `dependency`, ai-lib’in resource’undan önce başlamasını sağlar.
+</Step>
+<Step>
+### ai-lib’in önce başladığından emin ol
+
+Server config’inde ai-core’u ve ai-lib’i (ai-core’un server şablonunun kullandığı sırayla) resource’undan önce başlat. ai-core, onun üzerinden giden yardımcılar (oyuncular, para, eşyalar...) için gereklidir:
+
+```ini title="server.cfg"
+ensure ai-core
+ensure ai-lib
+ensure my-resource
+```
+</Step>
+<Step>
+### aiLib’i çağır
+
+```lua title="client.lua"
+RegisterCommand('hello', function()
+    aiLib.notify('Hello from aiLib', 'success')
+end, false)
+```
+
+```lua title="server.lua"
+aiLib.addCommand('hello', { help = 'Says hello' }, function(source)
+    aiLib.notify(source, 'Hello from aiLib', 'success')
+end)
+```
+</Step>
+</Steps>
+
+### Modüller nasıl yüklenir
+
+`aiLib` neredeyse boş başlar. `aiLib.notify`’ı (ya da başka herhangi bir adı) ilk okuduğunda ai-lib o modülü `lua/<side>/<name>.lua`’dan, yoksa `lua/shared/<name>.lua`’dan yükler ve tutar. Senin tarafında var olmayan bir ad `ai-lib has no "<name>" on the client` (ya da `server`) hatasını verir.
+
+Modül **senin resource’unun içinde** çalışır. Onunla oluşturduğun her şey (noktalar, bölgeler, keybind’ler, komutlar, callback’ler, blip’ler) senin resource’una aittir ve resource’un durduğunda kaldırılır. Temizlenecek bir kayıt defteri yoktur.
+
+### aiLib.side
+
+Kodun hangi tarafta çalıştığı.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```lua title="Lua"
+aiLib.side -- 'client' ya da 'server'
+```
+
+**TypeScript:** karşılığı yok (bir TypeScript dosyası tek bir taraf için paketlenir; `IsDuplicityVersion()` server’ı söyler).
+
+#### Dönüş değeri
+
+`'client'` ya da `'server'`.
+
+#### Örnek
+
+```lua title="shared.lua"
+if aiLib.side == 'server' then
+    print('loaded on the server')
+end
+```
+
+## Bekleyen fonksiyonlar
+
+Bazı fonksiyonlar bir cevap bekler: server, oyuncu ya da oyun. Lua’da cevap gelene kadar kodunu duraklatırlar (TypeScript bunun yerine bir Promise döndürür). Duraklatma yalnızca **bir thread içinde** çalışır:
+
+| Client’ta bekleyenler | Server’da bekleyenler |
+| --- | --- |
+| `triggerServerCallback`, `callAction`, `progress`, `menu.show`, `input`, `itemPicker`, `skillCheck`, `lockpick`, `fadeOut`, `fadeIn`, `player.teleport`, `waitForEntity`, `waitFor`, `request*` yükleyicileri, `pedHeadshot` | `triggerClientCallback`, `progressFor`, `minigameFor`, `spawnVehicle`, `billing.unpaid`, `appearance.get`, `waitFor` |
+
+Komut handler’ları ve net event handler’ları zaten kendi thread’lerinde çalışır. Başka her yerde (bir noktanın `onPressed`’i, bir keybind, bir menü dinleyicisi, bir dosyanın ana bölümü) bir tane başlat:
+
+```lua title="client.lua"
+local points = aiLib.Points.new()
+points:add('shop', {
+    coords = vector3(25.7, -1347.3, 29.5),
+    label = 'Open shop',
+    icon = 'basket-shopping',
+    onPressed = function()
+        CreateThread(function()
+            local pick = aiLib.menu.show({ title = 'Shop', items = { { id = 'water', label = 'Water ($5)' } } })
+            if pick then aiLib.callAction('myshop:buy', { pick }, { fallback = 'BUY_FAILED' }) end
+        end)
+    end,
+})
+```
+
+<Callout type="error">
+Bir `aiLib.every` görevi içinde asla bekleme: resource’unun tüm görevleri tek bir thread’i paylaşır; bu yüzden oradaki bir `Wait` diğer her görevi bekletir. Bunun yerine görevden bir thread başlat.
+</Callout>
+
+## Lua vektörleri ve tabloları
+
+Lua’nın gerçek vektör tipleri (`vector3(x, y, z)`, `vector4(x, y, z, w)`) ve düz tabloları (`{ x = 1.0, y = 2.0, z = 3.0 }`) vardır. İkisinde de `.x`, `.y`, `.z` bulunur; bu yüzden yalnızca bu alanları okuyan kod ikisiyle de çalışır.
+
+- **aiLib fonksiyonları ikisini de kabul eder.** Bir sayfa `Vec3` dediği her yerde bir `vector3` ya da `x`, `y`, `z` içeren bir tablo geçir. Bir `Vec4`, bir `vector4` (heading `w`’de) ya da `x`, `y`, `z` ve `heading` (veya `w`) içeren bir tablodur.
+- **aiLib, Lua’nın beklediği yerlerde vektör döndürür**: `aiLib.player.coords()` ve `aiLib.raycast(...)` `vector3` verir; böylece `#(a - b)` onlar üzerinde çalışır.
+- **TypeScript’e geçerken bir vektör bir diziye dönüşür.** Bir TypeScript resource’unun bir export’una ya da callback’ine gönderilen bir `vector3`, `[x, y, z]` olarak gelir. Yalnızca bunun için yazılmış okuyucular (lib’in `readVec3` / `readVec4`’ü) onu kabul eder. ai-core’un ya da başka bir `ai-*` script’inin bir export’unu bir noktayla çağırdığında düz bir tablo geçir: `{ x = pos.x, y = pos.y, z = pos.z }`. aiLib bir noktayı devrettiği yerlerde (`progressFor`’un `face`’i) bu dönüşümü kendisi yapar.
+
+```lua title="Lua"
+local pos = GetEntityCoords(PlayerPedId())          -- vector3
+local point = { x = pos.x, y = pos.y, z = pos.z }  -- her export ya da callback için güvenli
+```
+
+TypeScript sayfalarından diğer farklar:
+
+| TypeScript | Lua |
+| --- | --- |
+| `null`, `undefined` | `nil` |
+| Dizi `["a", "b"]` (0’dan başlayan index) | Liste `{ 'a', 'b' }` (1’den başlayan index) |
+| `options.timeout` | `options.timeout` (aynı alan adları) |
+| Metot `points.add(...)` | İki nokta üst üste ile metot: `points:add(...)` |
+| Sınıf `new Points()` | `aiLib.Points.new()` |
+| `Promise<T>` | Bir thread içinde değerin kendisi |
+| `callback args: unknown[]` | Bir liste: `{ id, count }`. Ortadaki bir `nil` listeyi keser; bu yüzden isteğe bağlı değerleri sona koy. |
+
+## Diller arası callback’ler
+
+`aiLib.triggerServerCallback` / `aiLib.onClientCallback` (ve ters çift) TypeScript lib’iyle aynı event adlarını ve payload’ı kullanır. Bir Lua client’ı bir TypeScript server’ının `onClientCallback`’ini çağırabilir ve bir TypeScript client’ı bir Lua server’ının `aiLib.onClientCallback`’ini çağırabilir. Server aksiyonları aynı [ActionResult](/tr/docs/developers/api/types#actionresult) ile cevap verir (`{ ok = true }` ya da `aiLib.fail('KEY')`); `aiLib.callAction` bunu senin için gösterir.
+
+## Bundler’sız JavaScript
+
+Düz bir JavaScript resource’u (build adımı yok), TypeScript lib’inin `/shared` yardımcıları artı `/client` ya da `/server` yardımcılarıyla aynı global `aiLib`’i alır:
+
+```lua title="fxmanifest.lua"
+dependency 'ai-lib'
+client_script '@ai-lib/dist/client.js'
+server_script '@ai-lib/dist/server.js'
+```
+
+```js title="client.js"
+aiLib.notify("Hello from JavaScript", "success");
+```
+
+Bu fonksiyonlar TypeScript sayfalarıyla tam olarak eşleşir (Promise’ler, `null`, diziler).
+
+## Lua tarafında olmayanlar
+
+Bu TypeScript yardımcılarının Lua karşılığı yoktur: admin paneli (`AdminPanel`, `AdminWorld`, `RecordObjects`), `PendingActions`, `PlayerMap`, `Cooldowns`, `KeyedCooldowns` (bunu bir Lua tablosu yapar), katı girdi okuyucuları (`type()` ve `math.type()` ile kontrol et), konum yardımcıları (Lua’da vektör matematiği var), state bag sınıfları (Lua `Entity(e).state`’i kendisi okur; server yazar), araç props okuyucuları ve veritabanı yardımcıları (Lua resource’ları ai-mysql’in oxmysql API’sini kullanır).
+
+## Sayfalar
+
+<Cards>
+  <Card title="Yalnızca Lua’ya özgü yardımcılar" href="/tr/docs/developers/api/lua/reference" description="aiLib.playerData, aiLib.online, aiLib.isAdmin ve aiLib.menu tablosu: Lua biçimi TypeScript’ten farklı olan fonksiyonlar." />
+  <Card title="Tüm aiLib fonksiyonları" href="/tr/docs/developers/api/lua/functions" description="Taraf, bekleyip beklemediği ve onu belgeleyen sayfayla tam liste." />
+</Cards>

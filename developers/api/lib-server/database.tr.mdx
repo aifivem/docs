@@ -1,0 +1,128 @@
+---
+title: Veritabanı
+description: "createDatabaseTables açılışta sql/main.sql dosyanı kurar; WriteQueue veritabanı yazmalarını birbiri ardına çalıştırır."
+icon: HardDrive
+---
+
+```ts title="TypeScript"
+import { createDatabaseTables, WriteQueue } from "@aicore-fivem/lib/server";
+import { mysql } from "@aicore-fivem/mysql";
+```
+
+Sorguların kendisi `@aicore-fivem/mysql` üzerinden gider (`mysql.query`, `single`, `scalar`, `insert`, `update`, `prepare`, `transaction`): bkz. [Veritabanı](/tr/docs/developers/database). Bu sayfa onun etrafındaki iki lib yardımcısını anlatır.
+
+Lua karşılıkları yok: Lua resource’ları ai-mysql’in oxmysql API’sini (`MySQL.query.await`, ...) kullanır ve tablolarını kendileri kurar.
+
+### createDatabaseTables
+
+Resource’unun SQL dosyasından eksik tabloları oluşturur ve eksik sütunları ekler. Açılışta, tablolara ihtiyaç duyan ilk sorgudan önce bir kez çağır. Önce veritabanı bağlantısını bekler.
+
+**Taraf:** Server · **Bekler:** evet (Promise)
+
+```ts title="Signature"
+createDatabaseTables(resource: string, file: string): Promise<void>
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    resource: { type: "string", description: "Resource’unun adı (`GetCurrentResourceName()`).", required: true },
+    file: { type: "string", description: "SQL dosyasının resource içindeki yolu. Şablon `sql/main.sql` kullanır.", required: true },
+  }}
+/>
+
+#### Neyi uygular
+
+- Yalnızca `CREATE TABLE IF NOT EXISTS` ifadeleri; başka herhangi bir ifade bir uyarıyla atlanır. İfadeler satır sonundaki `;` ile biter; `--` ve `/* */` yorumları yok sayılır.
+- Var olmayan bir tablo tam ifadeyle (sütunlar ve anahtarlar) oluşturulur.
+- Var olan bir tabloya eksik her sütun `ALTER TABLE ... ADD COLUMN` ile eklenir.
+- Hiçbir zaman bir sütunu silmez, yeniden adlandırmaz ya da değiştirmez ve zaten var olan bir tabloya asla anahtar veya index eklemez: index’lerini ilk sürümden önce planla.
+
+#### Dönüş değeri
+
+`Promise<void>`: her ifade uygulandığında çözülür. Dosya yoksa (`<resource>/<file> not found`) ya da bir sorgu başarısız olursa reddedilir.
+
+#### Örnek
+
+```sql title="sql/main.sql"
+CREATE TABLE IF NOT EXISTS `ai_myshop_purchases` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `char_id` INT UNSIGNED NOT NULL,
+  `item` VARCHAR(64) NOT NULL,
+  `price` INT UNSIGNED NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `char_id` (`char_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+```ts title="resource/server/repo.ts"
+import { createDatabaseTables } from "@aicore-fivem/lib/server";
+import { createLogger } from "@aicore-fivem/lib/shared";
+import { mysql } from "@aicore-fivem/mysql";
+
+const resource = GetCurrentResourceName();
+const log = createLogger(resource);
+
+/** Okumalar ve yazmalar bunu bekler. */
+export const tablesReady: Promise<void> = createDatabaseTables(resource, "sql/main.sql").catch((error: unknown) =>
+  log.error("database setup failed", error),
+);
+
+export async function addPurchase(charId: number, item: string, price: number) {
+  await tablesReady;
+  await mysql.insert("INSERT INTO ai_myshop_purchases (char_id, item, price) VALUES (?, ?, ?)", [charId, item, price]);
+}
+```
+
+<Callout type="info">
+Tablolarının başına resource’un adını koy (`ai_<name>_...`) ve şablonun `sql/main.sql` dosyasındaki gibi her tabloyu `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci` ile bitir.
+</Callout>
+
+### WriteQueue
+
+Veritabanı yazmalarını, onları eklediğin sırayla birbiri ardına çalıştırır. Kalıp şu: doğru olan server belleğidir, tablo onu sırayla takip eder. Başarısız bir yazma hata handler’ına bildirilir ve ondan sonrakileri durdurmaz.
+
+**Taraf:** Server · **Bekler:** hayır (`idle()` bir Promise döndürür)
+
+```ts title="Signature"
+new WriteQueue(onError: (label: string, error: unknown) => void)
+push(label: string, task: () => Promise<unknown>): void
+idle(): Promise<void>
+```
+
+<TypeTable
+  type={{
+    onError: { type: "(label: string, error: unknown) => void", description: "Başarısız her görev için etiketiyle çağrılır. Onu logla.", required: true },
+    label: { type: "string", description: "`push`: yazma için kısa bir ad, `onError`’a geçirilir (`save:12`).", required: true },
+    task: { type: "() => Promise<unknown>", description: "`push`: yazmanın kendisi. Kendisinden önce eklenen her görev sonuçlandıktan sonra başlar.", required: true },
+  }}
+/>
+
+**Dönüş değeri** `push`: `void`. `idle()`: o ana kadar sıraya alınan her yazma bittiğinde çözülen bir Promise (resource durmadan önce ya da onlara ihtiyaç duyan bir okumadan önce onu bekle).
+
+#### Örnek
+
+```ts
+import { WriteQueue, onCharacter, PlayerMap } from "@aicore-fivem/lib/server";
+import { createLogger } from "@aicore-fivem/lib/shared";
+import { mysql } from "@aicore-fivem/mysql";
+
+const log = createLogger(GetCurrentResourceName());
+const writes = new WriteQueue((label, error) => log.error(`database write failed (${label})`, error));
+
+const xp = new PlayerMap<{ charId: number; points: number }>();
+
+export function addXp(source: number, amount: number) {
+  const entry = xp.get(source);
+  if (!entry) return;
+  entry.points += amount; // önce bellek
+  const { charId, points } = entry;
+  writes.push(`xp:${charId}`, () => mysql.update("UPDATE ai_myjob_xp SET points = ? WHERE char_id = ?", [points, charId]));
+}
+
+onCharacter({
+  loaded: (source, character) => xp.set(source, { charId: character.id, points: 0 }),
+});
+```

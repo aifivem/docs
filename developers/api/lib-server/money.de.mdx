@@ -1,0 +1,297 @@
+---
+title: Geld und Banking
+description: "money.transfer zwischen zwei Konten, das Banking-Skript über ai-core und Rechnungen über das jeweils laufende Rechnungs-Skript."
+icon: Wallet
+---
+
+```ts title="TypeScript"
+import { money, banking, billing } from "@aicore-fivem/lib/server";
+```
+
+Änderungen an einem einzelnen Konto eines Spielers (hinzufügen, abziehen, Kontostand lesen) sind Exports von ai-core (`AddMoney`, `RemoveMoney`, `GetMoney`; siehe [Server-Exports von ai-core](/de/docs/developers/api/core-server)). Die Lib ergänzt, was mehr als eine Kontoänderung braucht, sowie die Banking- und Rechnungs-Ebenen.
+
+## money
+
+### money.transfer
+
+Bewegt Geld in einer einzigen Datenbanktransaktion von einem Konto auf ein anderes, mit einer Buchungszeile auf beiden Seiten. Nutze es für alles, bei dem Geld nicht auf halbem Weg auftauchen oder verschwinden darf: einen anderen Spieler bezahlen, ein Job zahlt einen Bonus, eine Gebühr.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+Kein Lua-Zwilling: Rufe den Export von ai-core auf, `exports['ai-core']:TransferMoney(from, to, amount, reason, fee)`.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    from: { type: "MoneyRef", typeDescriptionLink: "/de/docs/developers/api/types#moneyref", description: "Das zahlende Konto: das `{ source, account }` eines Spielers (`account`: `cash`, `bank`...) oder das `{ owner: \"job\" | \"gang\", id, account }` eines Jobs / einer Gang.", required: true },
+    to: { type: "MoneyRef", typeDescriptionLink: "/de/docs/developers/api/types#moneyref", description: "Das empfangende Konto, gleiche Form.", required: true },
+    amount: { type: "number", description: "Wie viel `to` erhält: eine ganze Zahl, 1 oder mehr.", required: true },
+    reason: { type: "string", description: "Wird in beide Buchungszeilen geschrieben (`rent:apartment_3`).", required: false },
+    fee: { type: "number", description: "Zusätzlicher ganzer Betrag, den `from` ebenfalls zahlt. Er verlässt die Wirtschaft (niemand erhält ihn).", default: "0" },
+  }}
+/>
+
+#### Rückgabewert
+
+`boolean`: `true`, wenn beide Zeilen geschrieben wurden. `false`, wenn ein Betrag keine ganze Zahl ist, ein Konto fehlt, beide gleich sind oder `from` `amount` plus `fee` nicht zahlen kann.
+
+#### Beispiel
+
+```ts
+import { onClientCallback, money, nearestPlayerTo, notify } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-cash:give", { args: oneArg((v) => readInt(v, 1, 100_000)), lock: true }, (source, amount) => {
+  const target = nearestPlayerTo(source, 2);
+  if (target === null) return fail("NOBODY_NEAR");
+  if (!money.transfer({ source, account: "cash" }, { source: target, account: "cash" }, amount, "give:cash"))
+    return fail("NOT_ENOUGH_CASH");
+  notify(target, `You received $${amount}`, "success");
+  return { ok: true };
+});
+```
+
+## banking
+
+`banking` spricht über die Banking-Ebene von ai-core mit dem Banking-Skript. Job-Geld selbst bewegt sich immer über `money` oder die Exports von ai-core.
+
+### banking.open
+
+Öffnet den Bildschirm des Banking-Skripts für einen Spieler.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+banking.open(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.banking.open(source)
+```
+
+**Rückgabewert:** `true`, wenn geöffnet. `false`, wenn das Skript nicht von außen geöffnet werden kann oder keins läuft.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onClientCallback("my-atm:open", (source) => (banking.open(source) ? { ok: true } : fail("BANK_UNAVAILABLE")));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-atm:open', function(source)
+    if not aiLib.banking.open(source) then return aiLib.fail('BANK_UNAVAILABLE') end
+    return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### banking.societyBalance
+
+Der Society-Kontostand eines Jobs, zur Anzeige. Im `core`-Kontomodus von ai-core ist es das Job-Konto von ai-core; im `own`-Modus das eigene des Banking-Skripts.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+banking.societyBalance(job: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.banking.societyBalance(job) -- number oder nil
+```
+
+**Rückgabewert:** der Kontostand, oder `null` (Lua `nil`), wenn keins läuft oder das Skript keinen führt.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const balance = banking.societyBalance("mechanic") ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local balance = aiLib.banking.societyBalance('mechanic') or 0
+```
+</Tab>
+</Tabs>
+
+### banking.provider
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+banking.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.banking.provider()
+```
+
+**Rückgabewert:** das Banking-Skript, das die Ebene nutzt, oder `null`.
+
+```ts
+console.log(`banking through ${banking.provider() ?? "nothing"}`);
+```
+
+## billing
+
+`billing` sendet Rechnungen über das jeweils laufende Rechnungs-Skript; ohne eines die eigenen Rechnungen von ai-core (der Spieler zahlt aus einer Liste auf dem Bildschirm, das Geld bewegt sich, wenn er zahlt). Texte sind bereits übersetzt.
+
+### billing.send
+
+Sendet eine Rechnung von einem Job (Bußgelder, Servicegebühren) oder von einem Spieler.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+billing.send(bill: BillRequest): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.send(bill)
+```
+
+#### BillRequest
+
+<TypeTable
+  type={{
+    to: { type: "number", description: "Server-ID des Spielers, der sie bekommt. Gib `to` oder `toCitizenid` an.", required: false },
+    toCitizenid: { type: "string", description: "Der Charakter, der sie bekommt, per Citizen-ID, online oder offline. Ein Offline-Charakter bekommt sie nur über die eigenen Rechnungen von ai-core; ein Rechnungs-Skript braucht den Spieler online.", required: false },
+    amount: { type: "number", description: "Ganze Dollar.", required: true },
+    label: { type: "string", description: "Wofür sie ist (`Speeding`).", required: true },
+    from: { type: "number", description: "Server-ID des ausstellenden Spielers (Polizist, Mechaniker). Eine Rechnung ohne `job` zahlt an diesen Spieler.", required: false },
+    job: { type: "string", description: "Der Job, dessen Konto die Zahlung bekommt. Ohne ihn ist die Rechnung persönlich und `from` ist Pflicht.", required: false },
+  }}
+/>
+
+#### Rückgabewert
+
+`boolean`: `true`, wenn gesendet, `false`, wenn ungültig oder abgelehnt.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { billing, nearestPlayerTo, online } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+function fine(officer: number, amount: number) {
+  if (!online.onDutyIn(officer, ["police"])) return fail("NOT_ON_DUTY");
+  const target = nearestPlayerTo(officer, 3);
+  if (target === null) return fail("NOBODY_NEAR");
+  return billing.send({ to: target, amount, label: "Speeding", from: officer, job: "police" })
+    ? { ok: true }
+    : fail("BILL_FAILED");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function fine(officer, amount)
+    if aiLib.online.dutyJob(officer) ~= 'police' then return aiLib.fail('NOT_ON_DUTY') end
+    local target = aiLib.nearestPlayerTo(officer, 3.0)
+    if not target then return aiLib.fail('NOBODY_NEAR') end
+    if not aiLib.billing.send({ to = target, amount = amount, label = 'Speeding', from = officer, job = 'police' }) then
+        return aiLib.fail('BILL_FAILED')
+    end
+    return { ok = true }
+end
+```
+</Tab>
+</Tabs>
+
+### billing.unpaid
+
+Die offenen Rechnungen des Spielers.
+
+**Seite:** Server · **Wartet:** ja (Promise in TypeScript, hält in Lua den Thread an)
+
+```ts title="Signatur"
+billing.unpaid(source: number): Promise<UnpaidBill[] | null>
+```
+
+```lua title="Lua"
+local bills = aiLib.billing.unpaid(source) -- table[] oder nil, innerhalb eines Threads aufrufen
+```
+
+**Rückgabewert:** [`UnpaidBill[]`](/de/docs/developers/api/types#unpaidbill) (`id`, `label`, noch geschuldeter `amount`, `sender`), oder `null`, wenn das Rechnungs-Skript sie nicht auflisten kann.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const bills = await billing.unpaid(source);
+const owed = bills?.reduce((sum, bill) => sum + bill.amount, 0) ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local bills = aiLib.billing.unpaid(source) or {}
+    local owed = 0
+    for _, bill in ipairs(bills) do owed = owed + bill.amount end
+    print(owed)
+end)
+```
+</Tab>
+</Tabs>
+
+### billing.pay
+
+Der Spieler bezahlt eine seiner offenen Rechnungen.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+billing.pay(source: number, id: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.pay(source, id)
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Server-ID des zahlenden Spielers.", required: true },
+    id: { type: "string", description: "Die Rechnungs-`id` aus `unpaid`.", required: true },
+  }}
+/>
+
+**Rückgabewert:** `true`, wenn bezahlt. `false`, wenn abgelehnt (nicht genug Geld, unbekannte Rechnung) oder das Rechnungs-Skript Zahlungen nur in seinem eigenen Bildschirm annimmt.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (!billing.pay(source, billId)) return fail("PAY_FAILED");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if not aiLib.billing.pay(source, billId) then return aiLib.fail('PAY_FAILED') end
+```
+</Tab>
+</Tabs>
+
+### billing.provider
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+billing.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.billing.provider()
+```
+
+**Rückgabewert:** das Rechnungs-Skript, an das Rechnungen gehen, `"ai-core"` für die eigenen Rechnungen von ai-core.
+
+```ts
+if (billing.provider() === "ai-core") console.log("using ai-core's own bills");
+```

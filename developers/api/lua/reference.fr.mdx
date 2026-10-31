@@ -1,0 +1,387 @@
+---
+title: Helpers propres à Lua
+description: "aiLib.playerData, aiLib.online, aiLib.isAdmin et la table aiLib.menu : les fonctions aiLib dont la forme Lua diffère de la lib TypeScript."
+icon: FileCode
+---
+
+La plupart des fonctions `aiLib` sont l’équivalent Lua d’une fonction TypeScript et sont documentées à côté d’elle, avec un onglet Lua (voir [Toutes les fonctions aiLib](/fr/docs/developers/api/lua/functions)). Celles de cette page ont un nom, une forme ou un comportement différent en Lua, elles sont donc documentées ici.
+
+## Client : données du joueur
+
+### aiLib.playerData.get
+
+La dernière valeur envoyée par ai-core pour une clé des données du joueur local. Si rien n’est arrivé depuis le démarrage de votre ressource, elle demande une fois à ai-core (`GetPlayerData`) et garde la réponse.
+
+**Côté :** client · **Attend :** non
+
+```lua title="Lua"
+local value = aiLib.playerData.get(key)
+```
+
+**TypeScript :** les mêmes données via `getPlayerData(key)` (voir [Appartenance et données du joueur](/fr/docs/developers/api/lib-client/membership)).
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    key: { type: "'character' | 'money' | 'jobs' | 'duty' | 'job' | 'gangs' | 'activeGang' | 'metadata'", description: 'Une clé de [AiPlayerData](/fr/docs/developers/api/types#aiplayerdata).', required: true },
+  }}
+/>
+
+#### Retour
+
+La valeur : une table pour `character`, `money` (`{ cash = 500, bank = 5000 }`), `jobs`, `job`, `gangs` et `metadata` ; une chaîne ou `nil` pour `duty` et `activeGang`. `nil` tant qu’aucun personnage n’est chargé ou qu’ai-core ne tourne pas.
+
+#### Exemple
+
+```lua title="client.lua"
+RegisterCommand('cash', function()
+    local money = aiLib.playerData.get('money') or {}
+    aiLib.notify(('Cash: $%s'):format(aiLib.numbers.groupDigits(money.cash or 0)), 'info')
+end, false)
+```
+
+### aiLib.playerData.onChange
+
+Exécute une fonction chaque fois qu’ai-core pousse une nouvelle valeur d’une clé pour le joueur local (un changement de métier, l’argent, la prise de service). Pour `money` et `metadata`, ai-core n’envoie que les entrées modifiées ; aiLib les fusionne, si bien que votre gestionnaire reçoit toujours la table entière.
+
+**Côté :** client · **Attend :** non
+
+```lua title="Lua"
+aiLib.playerData.onChange(key, function(value) end)
+```
+
+**TypeScript :** `onPlayerData(key, handler)` (voir [Appartenance et données du joueur](/fr/docs/developers/api/lib-client/membership)).
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'Une clé de `AiPlayerData` (voir `get` plus haut).', required: true },
+    handler: { type: 'fun(value: any)', description: 'Reçoit la nouvelle valeur. S’exécute après chaque envoi, y compris au chargement du personnage.', required: true },
+  }}
+/>
+
+#### Retour
+
+Rien. Il n’existe aucun moyen de retirer le gestionnaire ; il disparaît avec votre ressource.
+
+#### Exemple
+
+```lua title="client.lua"
+aiLib.playerData.onChange('duty', function(job)
+    if job == 'police' then
+        aiLib.notify('You are now on duty', 'success')
+    end
+end)
+```
+
+## Serveur : joueurs en ligne
+
+`aiLib.online` lit les joueurs chargés via les exports d’ai-core, un appel d’export par lecture. Il est prévu pour des recherches au moment d’une action (une commande, un callback), pas pour chaque tick. Le `online` TypeScript garde un miroir local avec plus de lecteurs et des formes de retour différentes (voir [Joueurs](/fr/docs/developers/api/lib-server/players)).
+
+### aiLib.online.character
+
+Le personnage chargé d’un joueur.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local character = aiLib.online.character(src)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur.', required: true },
+  }}
+/>
+
+#### Retour
+
+Une table [CharacterInfo](/fr/docs/developers/api/types#characterinfo) (`id`, `citizenid`, `firstname`, `lastname`, `birthdate`, `sex`, `nationality`...), ou `nil` quand le joueur n’a aucun personnage chargé.
+
+#### Exemple
+
+```lua title="server.lua"
+aiLib.addCommand('whoami', { help = 'Shows your character id' }, function(source)
+    local character = aiLib.online.character(source)
+    if not character then return end
+    aiLib.notify(source, ('Character #%d (%s)'):format(character.id, character.citizenid), 'info')
+end)
+```
+
+### aiLib.online.name
+
+Le « Prénom Nom » du personnage, sinon le nom FiveM du joueur.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local name = aiLib.online.name(src, fallback)
+```
+
+**TypeScript :** `online.name(source, { fallback })` prend une table d’options au lieu d’un booléen.
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur.', required: true },
+    fallback: { type: 'boolean', description: '`false` : répond `""` au lieu du nom FiveM quand aucun personnage n’est chargé.', default: 'true' },
+  }}
+/>
+
+#### Retour
+
+`string` : le nom du personnage, sinon le nom FiveM (ou `""` avec `fallback = false`, ou quand le joueur est parti).
+
+#### Exemple
+
+```lua title="server.lua"
+print(('%s opened the shop'):format(aiLib.online.name(source)))
+```
+
+### aiLib.online.jobs
+
+Tous les métiers d’un joueur, en service ou non.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local jobs = aiLib.online.jobs(src)
+```
+
+**TypeScript :** `online.jobs(source)` ne renvoie que les **noms** des métiers ; Lua renvoie les tables d’appartenance.
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur.', required: true },
+  }}
+/>
+
+#### Retour
+
+Une liste de tables [JobMembership](/fr/docs/developers/api/types#jobmembership) (`{ job = 'police', grade = 2 }`). Une liste vide quand le joueur n’en a aucun ou n’a pas de personnage.
+
+#### Exemple
+
+```lua title="server.lua"
+for _, membership in ipairs(aiLib.online.jobs(source)) do
+    print(membership.job, membership.grade)
+end
+```
+
+### aiLib.online.gangs
+
+Tous les gangs d’un joueur.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local gangs = aiLib.online.gangs(src)
+```
+
+**TypeScript :** `online.gangs(source)` ne renvoie que les noms des gangs.
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur.', required: true },
+  }}
+/>
+
+#### Retour
+
+Une liste de tables [GangMembership](/fr/docs/developers/api/types#gangmembership) (`{ gang = 'ballas', grade = 0 }`), ou une liste vide.
+
+#### Exemple
+
+```lua title="server.lua"
+local inAGang = #aiLib.online.gangs(source) > 0
+```
+
+### aiLib.online.jobGrade
+
+Le grade d’un joueur dans un métier.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local grade = aiLib.online.jobGrade(src, job)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur.', required: true },
+    job: { type: 'string', description: 'Nom du métier (`"police"`).', required: true },
+  }}
+/>
+
+#### Retour
+
+`integer` (0 = le grade le plus bas), ou `nil` quand le joueur n’a pas ce métier.
+
+#### Exemple
+
+```lua title="server.lua"
+local grade = aiLib.online.jobGrade(source, 'police')
+if not grade or grade < 2 then return aiLib.fail('NOT_ALLOWED') end
+```
+
+### aiLib.online.gangGrade
+
+Le grade d’un joueur dans un gang.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local grade = aiLib.online.gangGrade(src, gang)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur.', required: true },
+    gang: { type: 'string', description: 'Nom du gang (`"ballas"`).', required: true },
+  }}
+/>
+
+#### Retour
+
+`integer`, ou `nil` quand le joueur n’est pas dans ce gang.
+
+#### Exemple
+
+```lua title="server.lua"
+local isBoss = (aiLib.online.gangGrade(source, 'ballas') or -1) >= 3
+```
+
+### aiLib.online.dutyJob
+
+Le métier pour lequel un joueur est en service.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local job = aiLib.online.dutyJob(src)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur.', required: true },
+  }}
+/>
+
+#### Retour
+
+Le nom du métier, ou `nil` quand il n’est pas en service.
+
+#### Exemple
+
+```lua title="server.lua"
+if aiLib.online.dutyJob(source) ~= 'police' then return aiLib.fail('NOT_ON_DUTY') end
+```
+
+### aiLib.online.sources
+
+Les ids serveur de tous les joueurs qui ont un personnage chargé.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local players = aiLib.online.sources()
+```
+
+#### Retour
+
+Une liste d’ids serveur (vide quand personne n’est chargé ou qu’ai-core ne tourne pas).
+
+#### Exemple
+
+```lua title="server.lua"
+for _, src in ipairs(aiLib.online.sources()) do
+    if aiLib.online.dutyJob(src) == 'police' then
+        aiLib.notify(src, 'Robbery in progress', 'warning')
+    end
+end
+```
+
+<Callout type="warn">
+Chaque appel est un appel d’export vers ai-core. Dans une boucle sur tous les joueurs, lisez ce dont vous avez besoin une seule fois par joueur, et ne l’exécutez jamais à chaque frame. Pour « combien sont en service », lisez plutôt le global state `ai:duty:<job>` (`GlobalState['ai:duty:police']`).
+</Callout>
+
+## Serveur : permissions
+
+### aiLib.isAdmin
+
+Indique si un joueur est admin d’ai-core (ACE `ai.admin`), ou possède l’ACE que vous nommez.
+
+**Côté :** serveur · **Attend :** non
+
+```lua title="Lua"
+local allowed = aiLib.isAdmin(src, ace)
+```
+
+**TypeScript :** `isAdmin(ace?)` est à la place une **garde** pour `onClientCallback` / `onClientEvent` (voir [Entrées client](/fr/docs/developers/api/lib-server/client-input)). En Lua, protégez un callback avec son option `ace`, ou appelez `aiLib.isAdmin` vous-même.
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Id serveur du joueur. `0` (la console serveur) n’est jamais admin ici.', required: true },
+    ace: { type: 'string', description: 'L’ACE à vérifier.', default: "'ai.admin'" },
+  }}
+/>
+
+#### Retour
+
+`true` quand le joueur possède l’ACE, sinon `false`.
+
+#### Exemple
+
+```lua title="server.lua"
+RegisterCommand('fixall', function(source)
+    if not aiLib.isAdmin(source) then return end
+    -- travail réservé aux admins ici
+end, false)
+```
+
+## Client : la table menu
+
+### aiLib.menu
+
+Les boîtes de dialogue se trouvent sur une seule table. Les noms de premier niveau sont les mêmes fonctions, gardés pour des appels courts :
+
+| Sur `aiLib.menu` | Identique à | Attend | Répond |
+| --- | --- | --- | --- |
+| `menu.show(request, listeners?)` | (seulement ici) | oui | L’`id` de l’entrée choisie, `'__back'` pour le retour d’un sous-menu, ou `nil` à la fermeture. |
+| `menu.input(request)` | `aiLib.input(request)` | oui | Une table des valeurs par `name` de champ, ou `nil` à la fermeture. |
+| `menu.itemPicker(request)` | `aiLib.itemPicker(request)` | oui | Une liste de `{ name, count }`, ou `nil`. Outils d’admin uniquement. |
+| `menu.skillCheck(difficulty, keys?)` | `aiLib.skillCheck(difficulty, keys?)` | oui | `true` quand chaque étape a été réussie. |
+| `menu.lockpick(options?)` | `aiLib.lockpick(options?)` | oui | `'opened'`, `'broken'` ou `'cancelled'`. |
+
+Les formes de requête sont [MenuRequest](/fr/docs/developers/api/types#menurequest), [InputRequest](/fr/docs/developers/api/types#inputrequest), [ItemPickerRequest](/fr/docs/developers/api/types#itempickerrequest) et [SkillDifficulty](/fr/docs/developers/api/types#skilldifficulty). Chaque option et chaque écouteur sont documentés avec les équivalents TypeScript sur [Interface partagée](/fr/docs/developers/api/lib-client/ui).
+
+```lua title="client.lua"
+RegisterCommand('fine', function()
+    local values = aiLib.input({
+        title = 'Write a fine',
+        confirm = 'Send',
+        fields = {
+            { name = 'amount', label = 'Amount', type = 'number', min = 1, max = 10000 },
+            { name = 'reason', label = 'Reason', type = 'text', maxLength = 80 },
+        },
+    })
+    if values then aiLib.callAction('mypolice:fine', { values.amount, values.reason }, { fallback = 'FINE_FAILED' }) end
+end, false)
+```

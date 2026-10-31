@@ -1,0 +1,207 @@
+---
+title: ai-lib für Entwickler
+description: ai-lib in einer Lua- oder JavaScript-Ressource laden, wo die Lib-Referenz liegt, und die eigenen Client-Exports und Events von ai-lib.
+icon: Code
+---
+
+ai-lib bringt `@aicore-fivem/lib` für Ressourcen mit, die das npm-Paket nicht bündeln. Die Funktionen selbst sind einmal dokumentiert, in der Lib-Referenz:
+
+- [Die Lib: Übersicht](/de/docs/developers/lib)
+- [Lib: Client-Funktionen](/de/docs/developers/api/lib-client)
+- [Lib: Server-Funktionen](/de/docs/developers/api/lib-server)
+- [Lib: gemeinsame Funktionen](/de/docs/developers/api/lib-shared)
+- [Lua (`aiLib`)](/de/docs/developers/api/lua): die Lua-Gegenstücke und ihre Argumentreihenfolge
+
+## Laden
+
+<Tabs items={['Lua', 'JavaScript', 'TypeScript']}>
+<Tab value="Lua">
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+```lua title="client.lua"
+local L = aiLib.locale()
+aiLib.notify(L('WELCOME'), 'success')
+```
+
+Module werden bei der ersten Nutzung geladen (`aiLib.Points`, `aiLib.progress`...), innerhalb deiner Ressource, sodass die Punkte, Tastenbelegungen und Callbacks, die du erstellst, deiner Ressource gehören und verschwinden, wenn sie stoppt. Funktionen, die warten (`triggerServerCallback`, `menu.show`, `progress`, `spawnVehicle`, `progressFor`), müssen in einem Thread oder Event-Handler laufen.
+</Tab>
+<Tab value="JavaScript">
+```lua title="fxmanifest.lua"
+dependency 'ai-lib'
+client_script '@ai-lib/dist/client.js'
+server_script '@ai-lib/dist/server.js'
+client_script 'client.js'
+server_script 'server.js'
+```
+
+```js title="client.js"
+aiLib.notify("Welcome", "success");
+```
+
+Das globale `aiLib` enthält die gemeinsamen Funktionen der Lib sowie die Client- oder Server-Funktionen der jeweiligen Seite.
+</Tab>
+<Tab value="TypeScript">
+TypeScript-Ressourcen, die mit der Vorlage von AI Core gebaut werden, importieren stattdessen das Paket und laden die Dateien von ai-lib nicht:
+
+```ts
+import { notify } from "@aicore-fivem/lib/client";
+notify("Welcome", "success");
+```
+
+Sie brauchen trotzdem ein laufendes ai-lib: Die UI-Aufrufe gehen an seine Exports.
+</Tab>
+</Tabs>
+
+## Client-Exports
+
+`notify`, `progress`, `showPrompt`, `menu`, `input`, `skillCheck` und `lockpick` der Lib rufen diese für dich auf; nutze die Lib-Funktionen. Sie sind als `AiLibClientExports` in `@aicore-fivem/shared` typisiert (`resourceExport("ai-lib")`). Hinweise, Menüs und Zonen gehören der aufrufenden Ressource und verschwinden, wenn sie stoppt.
+
+### Notify
+
+Zeigt eine Benachrichtigungskarte auf dem Bildschirm dieses Spielers.
+
+**Seite:** Client · **Wartet:** nein
+
+```ts title="Signatur"
+Notify(notification: Notification): void
+```
+
+```lua title="Lua"
+exports['ai-lib']:Notify({ text = 'Saved', kind = 'success' })
+-- dasselbe über die Lib: aiLib.notify('Saved', 'success')
+```
+
+#### Notification
+
+<TypeTable
+  type={{
+    text: { type: 'string', description: 'Die Nachricht, bereits übersetzt. Wird bei 300 Zeichen abgeschnitten.', required: true },
+    kind: { type: '"success" | "error" | "info" | "warning"', description: 'Farbe und Symbol. Alles andere gilt als `"info"`.', required: true },
+    title: { type: 'string', description: 'Eine Titelzeile, bis zu 60 Zeichen.' },
+    duration: { type: 'number', description: 'Millisekunden auf dem Bildschirm, 1000-30000.', default: '4000' },
+  }}
+/>
+
+#### Rückgabewert
+
+Nichts. Eine Benachrichtigung ohne `text` wird verworfen. Wenn der Betreiber im Panel ein anderes Benachrichtigungsskript gewählt hat, geht die Karte dorthin; nimmt dieses Skript sie nicht an, zeichnet ai-lib sie.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="client.ts"
+import { notify } from "@aicore-fivem/lib/client";
+
+notify("Your vehicle was stored", "success", 5000);
+```
+
+```ts title="server.ts"
+import { notify, onClientEvent } from "@aicore-fivem/lib/server";
+
+// Dieselbe Karte auf dem Bildschirm eines Spielers, vom Server gesendet.
+onClientEvent("myscript:collectPay", (source) => {
+  notify(source, "You were paid $500", "info");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Client
+aiLib.notify('Your vehicle was stored', 'success', 5000)
+
+-- Server
+aiLib.notify(source, 'You were paid $500', 'info')
+```
+</Tab>
+</Tabs>
+
+### ShowProgress and HideProgress
+
+Zeigt den Fortschrittsbalken für eine bestimmte Zeit oder blendet ihn aus. Nur den Balken: Das aufrufende Skript führt die Aktion, ihre Animation und die Abbruchlogik aus. Nutze stattdessen `progress` (Client) oder `progressFor` (Server) der Lib, die all das erledigen.
+
+**Seite:** Client · **Wartet:** nein
+
+```ts title="Signatur"
+ShowProgress(label: string, duration: number): void
+HideProgress(): void
+```
+
+<TypeTable
+  type={{
+    label: { type: 'string', description: 'Text auf dem Balken, bereits übersetzt. Wird bei 60 Zeichen abgeschnitten.', required: true },
+    duration: { type: 'number', description: 'Wie lange sich der Balken füllt, in Millisekunden.', required: true },
+  }}
+/>
+
+Solange der Balken angezeigt wird, löst die Abbruchtaste (**Rücktaste**) das lokale Event `ai-lib:client:cancelProgress` aus.
+
+### ShowPrompt and HidePrompt
+
+Zeigt oder aktualisiert einen der Hinweise der aufrufenden Ressource oder blendet ihn aus. Nutze `showPrompt` / `hidePrompt` der Lib oder besser `Points` der Lib, das Hinweise für dich nach Entfernung ein- und ausblendet.
+
+**Seite:** Client · **Wartet:** nein
+
+```ts title="Signatur"
+ShowPrompt(id: string, text: string, at?: PromptAnchor): void
+HidePrompt(id: string): void
+```
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Die ID deines Hinweises. Dieselbe ID erneut anzuzeigen aktualisiert ihn.', required: true },
+    text: { type: 'string', description: 'Der Text, bereits übersetzt („Open the shop“).', required: true },
+    at: { type: '{ x, y, z } | { anchors: { entity, offset: { x, y, z } }[] }', description: 'Zeichnet den Hinweis über einem Weltpunkt oder über Stellen an Entities (Offsets im eigenen Raum der Entity, sodass er sich mit einer schwingenden Tür bewegt; die Stelle, die dem Spieler am nächsten ist, wird angezeigt). Weggelassen: die Liste rechts auf dem Bildschirm.' },
+  }}
+/>
+
+Wenn der Spieler die Interaktionstaste drückt, während dein Hinweis oben liegt, wird das lokale Event `ai-lib:client:promptPressed (resource, id)` ausgelöst; `onPromptPressed` der Lib filtert es für deine Ressource.
+
+### CloseDialog
+
+Schließt das offene Menü oder den Eingabedialog der aufrufenden Ressource. Der wartende Aufruf `menu.show` / `input` antwortet mit `null`, als hätte der Spieler ihn geschlossen. **Seite:** Client · **Wartet:** nein.
+
+```ts title="Signatur"
+CloseDialog(): void
+```
+
+### Interne Exports
+
+Diese werden von den eigenen Funktionen der Lib genutzt. Du rufst sie nicht auf.
+
+| Export | Genutzt von |
+| --- | --- |
+| `OpenMenu(requestId, request)`, `OpenInput(requestId, request)`, `OpenMinigame(requestId, request)` | `menu.show`, `input`, `skillCheck`, `lockpick` der Lib. Antworten kommen als `ai-lib:client:menuResult` / `inputResult` mit der Request-ID zurück. |
+| `AddZone(key, shape, interval, inside)`, `RemoveZone(key)` | `Zones` der Lib in JavaScript-Ressourcen: ai-lib prüft die Zonen aller Ressourcen mit einem Timer und antwortet mit `ai-lib:client:zone (owner, key, inside)`. |
+| `AddModelPoint(key, def, entity)`, `RemoveModelPoint(key)` | `Points.addModel` / `addVehicle` der Lib im Prompt-Modus: ai-lib findet das nächste Objekt und antwortet mit `ai-lib:client:modelPoint (owner, key, entity)`. |
+
+## Events
+
+| Event | Seite | Argumente | Was es ist |
+| --- | --- | --- | --- |
+| `ai-lib:client:notify` | Server an Client | `notification: Notification` | Zeigt eine Karte auf dem Bildschirm dieses Spielers. Das serverseitige `notify(source, text, kind?, duration?)` der Lib sendet es. |
+| `ai-lib:client:promptPressed` | Client (lokal) | `resource: string, id: string` | Die Interaktionstaste wurde gedrückt, während der Hinweis dieser Ressource oben lag. |
+| `ai-lib:client:cancelProgress` | Client (lokal) | keine | Die Abbruchtaste wurde gedrückt, während ein Fortschrittsbalken angezeigt wird. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Server: eine Benachrichtigung ohne die Lib.
+emitNet("ai-lib:client:notify", source, { text: "Welcome to the city", kind: "info", duration: 6000 });
+```
+</Tab>
+<Tab value="Lua">
+```lua
+TriggerClientEvent('ai-lib:client:notify', source, { text = 'Welcome to the city', kind = 'info', duration = 6000 })
+```
+</Tab>
+</Tabs>

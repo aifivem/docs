@@ -1,0 +1,80 @@
+---
+title: ai-jobs für Entwickler
+description: "Was ai-jobs mit anderen Skripten teilt (es hat keine Exports): den Hotdog-Ruf, Kennzeichen und Schlüssel der Arbeitsfahrzeuge, Buchungsgründe und seine privaten Events."
+icon: Code
+---
+
+ai-jobs hat **keine Exports**. Andere Skripte müssen es nie aufrufen: Routen und Halte sind Panel-Daten, und alles, was eine Schicht tut, läuft über AI Core (Geld, Schlüssel, Inventar). Was ein anderes Skript lesen kann, steht unten.
+
+## Hotdog-Ruf
+
+Der Ruf des Hotdog-Verkäufers sind Charakter-Metadaten von ai-core unter dem Schlüssel `rep`, Feld `hotdog` (derselbe Ort, an dem QBCore `PlayerData.metadata.rep` speichert). Er ist eine ganze Zahl von 0 bis zum **Highest reputation** aus dem Panel. ai-jobs liest ihn, wenn ein Stand gemietet wird, und schreibt ihn nach jedem gekochten Hotdog, wobei die anderen Felder von `rep` unverändert bleiben.
+
+**Seite:** Server · **Wartet:** nein
+
+```ts title="Signatur"
+GetMeta(src: number, key: "rep"): { hotdog?: number; [other: string]: unknown } | null
+```
+
+```lua title="Lua"
+local rep = exports['ai-core']:GetMeta(source, 'rep') -- Tabelle oder nil
+```
+
+#### Rückgabewert
+
+Die Tabelle `rep` des Charakters oder `null` / `nil`, wenn der Spieler keinen geladenen Charakter hat oder nie Ruf verdient hat. `hotdog` fehlt, bis der erste Hotdog gemacht wird.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, notify, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// /hotdogrep zeigt dem Spieler seinen Hotdog-Ruf.
+addCommand("hotdogrep", { help: "Show your hot dog reputation" }, (source) => {
+  if (source === 0) return;
+  const rep = core.GetMeta(source, "rep") as { hotdog?: number } | null;
+  notify(source, `Hot dog reputation: ${rep?.hotdog ?? 0}`, "info");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- fxmanifest.lua: shared_script '@ai-lib/init.lua'
+aiLib.addCommand('hotdogrep', { help = 'Show your hot dog reputation' }, function(source)
+  if source == 0 then return end
+  local rep = exports['ai-core']:GetMeta(source, 'rep') or {}
+  aiLib.notify(source, ('Hot dog reputation: %d'):format(rep.hotdog or 0), 'info')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Schreibe den Ruf nur mit `SetMeta(source, "rep", { ...old, hotdog = value })` und behalte die anderen Felder. Ein gemieteter Stand behält den Wert, den er beim Mieten gelesen hat, und schreibt nach dem nächsten Hotdog seinen eigenen Wert, sodass eine Änderung, die während der Miete eines Stands gemacht wird, überschrieben wird.
+</Callout>
+
+## Arbeitsfahrzeuge
+
+- Gespawnt mit `spawnVehicle` der Lib, Kennzeichen `WORK<source>` (die Server-ID des Arbeiters), gelöscht, wenn die Schicht endet.
+- Der Arbeiter bekommt die Schlüssel über den Schlüssel-Layer von AI Core (`vehicleKeys.give` der Lib) mit dem Zweck `job`, sodass jedes laufende Schlüsselskript sie sieht.
+- Das liegengebliebene Auto einer Abschlepproute spawnt verschlossen, ohne Schlüssel, und wird am Depot oder beim Schichtende gelöscht.
+
+## Geld
+
+Der Lohn einer Route geht auf das **Pay account** der Route mit dem Buchungsgrund `work:<routeId>` (zum Beispiel `work:taxi`). Hotdog-Verkäufe gehen auf **Sales paid into**. Beides erscheint im Transaktionsverlauf von ai-core.
+
+## Private Events und Callbacks
+
+Das ist der eigene Client-Server-Vertrag des Skripts (`resource/common/routes.ts` und `resource/common/hotdog.ts`). Der Server prüft jeden Aufruf (Entfernung, Timing, der aktuelle Halt). Sie können sich zwischen Versionen ändern: Löse sie nicht aus anderen Ressourcen aus und höre nicht darauf.
+
+| Name | Richtung | Was es überträgt |
+| --- | --- | --- |
+| `ai-jobs:start` | Client-Callback | `(routeId)`: eine Schicht am Depot starten, antwortet mit `{ ok }`. |
+| `ai-jobs:stop` | Client-Callback | `()`: die Schicht beenden. |
+| `ai-jobs:arrive` | Client-Callback | `(stopId, underwater)`: die Arbeit am Halt; der Server lässt den Fortschrittsbalken laufen und zahlt dann. |
+| `ai-jobs:client:shift` | Server -> Arbeiter | `(shift \| null)`: der aktuelle Halt oder `null`, wenn die Schicht beendet ist. |
+| `ai-jobs:client:attach` | Server -> Besitzer des abgeschleppten Autos | `(carNetId, flatbedNetId)`: das abgeschleppte Auto am Abschleppwagen befestigen. |

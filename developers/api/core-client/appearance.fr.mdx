@@ -1,0 +1,324 @@
+---
+title: Apparence
+description: Mettre l’apparence d’un personnage sur un ped, lire l’apparence que porte un ped, ouvrir le magasin de vêtements, le barbier ou le menu des tenues, et habiller le joueur d’une tenue de métier, quel que soit le script de vêtements.
+icon: Shirt
+---
+
+Ces exports passent par la **couche d’apparence** d’ai-core : le script de vêtements qu’utilise le serveur (ai-appearance, tgiann-clothing, illenium-appearance, qb-clothing, crm-appearance, rcore_clothing, bl_appearance) fait le travail. Votre script ne touche jamais au format propre d’un script de vêtements, il continue donc de fonctionner quand le propriétaire du serveur en change.
+
+Une **apparence** ([`CharacterAppearance`](/fr/docs/developers/api/types#characterappearance)) est `{ model, data }` : le hash du modèle de ped et les données propres du script de vêtements. Traitez `data` comme une boîte fermée : obtenez une apparence depuis le serveur (`appearance.get(charId)` dans la lib serveur, `aiLib.appearance.get` en Lua) ou depuis `GetPedAppearance`, et rendez-la inchangée.
+
+### ApplyAppearance
+
+Met une apparence sur un ped via le script de vêtements actif. Utilisez-le pour habiller un ped local comme un personnage (un commerçant qui ressemble au propriétaire, un corps endormi, une photo) ou pour remettre au joueur une apparence enregistrée.
+
+**Côté :** Client · **Attend :** non
+
+```ts title="Signature"
+ApplyAppearance(ped: number, look: CharacterAppearance): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:ApplyAppearance(ped, look) -- ou aiLib.appearance.apply(ped, look)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Le handle du ped. Son modèle doit être le `model` de l’apparence : créez le ped avec `look.model`.', required: true },
+    look: { type: 'CharacterAppearance', description: '`{ model, data }` exactement tel que le serveur ou `GetPedAppearance` l’a donné.', required: true, typeDescriptionLink: '/docs/developers/api/types#characterappearance' },
+  }}
+/>
+
+#### Retour
+
+`boolean` : `true` quand le script de vêtements a reçu l’apparence. `false` quand le ped n’existe pas, que son modèle diffère de `look.model`, que l’apparence n’est pas une table `{ model, data }`, ou qu’aucun script de vêtements ne tourne.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { appearance, onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// L’apparence enregistrée du joueur qui demande.
+onClientCallback("myscript:myLook", async (source) => {
+  const character = core.GetCharacter(source);
+  return character ? await appearance.get(character.id) : null;
+});
+```
+
+```ts title="resource/client/index.ts"
+import { appearance, requestModel, triggerServerCallback } from "@aicore-fivem/lib/client";
+import { toCharacterAppearance } from "@aicore-fivem/shared";
+
+// Une copie locale du joueur debout à un point, habillée comme lui.
+export async function spawnLookalike(x: number, y: number, z: number): Promise<number> {
+  const look = toCharacterAppearance(await triggerServerCallback("myscript:myLook", []));
+  if (!look) return 0;
+  await requestModel(look.model);
+  const ped = CreatePed(4, look.model, x, y, z, 0, false, false);
+  SetModelAsNoLongerNeeded(look.model);
+  appearance.apply(ped, look);
+  return ped;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+-- L’apparence enregistrée du joueur qui demande.
+aiLib.onClientCallback('myscript:myLook', function(source)
+  local character = exports['ai-core']:GetCharacter(source)
+  return character and aiLib.appearance.get(character.id) or nil
+end)
+```
+
+```lua title="client.lua"
+-- Une copie locale du joueur debout à un point, habillée comme lui (appelez depuis un thread).
+local function spawnLookalike(x, y, z)
+  local look = aiLib.triggerServerCallback('myscript:myLook', {})
+  if not look then return 0 end
+  aiLib.requestModel(look.model)
+  local ped = CreatePed(4, look.model, x, y, z, 0.0, false, false)
+  SetModelAsNoLongerNeeded(look.model)
+  aiLib.appearance.apply(ped, look)
+  return ped
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Sur le propre ped du joueur, `ApplyAppearance` change ce qu’il porte maintenant. L’enregistrement de ce changement relève de la règle du script de vêtements, pas d’ai-core. Pour habiller le joueur d’un uniforme jamais enregistré, utilisez [WearOutfit](#wearoutfit).
+</Callout>
+
+### GetPedAppearance
+
+Renvoie l’apparence que porte un ped en ce moment, dans la même forme `{ model, data }` qu’utilisent les apparences enregistrées du serveur.
+
+**Côté :** Client · **Attend :** non
+
+```ts title="Signature"
+GetPedAppearance(ped: number): CharacterAppearance | null
+```
+
+```lua title="Lua"
+local look = exports['ai-core']:GetPedAppearance(ped) -- ou aiLib.appearance.read(ped)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Le handle du ped (`cache.ped` pour le joueur local).', required: true },
+  }}
+/>
+
+#### Retour
+
+[`CharacterAppearance`](/fr/docs/developers/api/types#characterappearance) : `model` est le hash du modèle du ped, `data` les données du script de vêtements. `null` quand le ped n’existe pas, qu’aucun script de vêtements ne tourne, ou que le script de vêtements ne peut pas lire ce ped (certains ne lisent que le propre ped du joueur local).
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/photo.ts"
+import { appearance, cache } from "@aicore-fivem/lib/client";
+
+// Copie ce que porte maintenant le joueur sur un autre ped du même modèle.
+export function copyPlayerLook(target: number): boolean {
+  const look = appearance.read(cache.ped);
+  return look !== null && appearance.apply(target, look);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/photo.lua"
+-- Copie ce que porte maintenant le joueur sur un autre ped du même modèle.
+local function copyPlayerLook(target)
+  local look = aiLib.appearance.read(aiLib.cache.ped)
+  return look ~= nil and aiLib.appearance.apply(target, look)
+end
+```
+</Tab>
+</Tabs>
+
+### OpenClothingMenu
+
+Ouvre l’un des menus du script de vêtements actif pour le joueur local : le magasin de vêtements, le barbier, ou ses tenues enregistrées. Utilisez-le pour vos propres marqueurs de magasin ou une garde-robe dans une maison.
+
+**Côté :** Client · **Attend :** non
+
+```ts title="Signature"
+OpenClothingMenu(menu: ClothingMenu): boolean
+```
+
+```lua title="Lua"
+local opened = exports['ai-core']:OpenClothingMenu(menu) -- ou aiLib.appearance.openMenu(menu)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    menu: { type: '"clothing" | "barber" | "outfits"', description: '`clothing` : le magasin de vêtements. `barber` : cheveux, barbe et maquillage. `outfits` : les tenues enregistrées du joueur (une garde-robe).', required: true, typeDescriptionLink: '/docs/developers/api/types#clothingmenu' },
+  }}
+/>
+
+#### Retour
+
+`boolean` : `true` quand le script de vêtements a ouvert le menu. `false` pour un `menu` inconnu, quand aucun script de vêtements ne tourne, ou quand celui en cours n’a pas ce menu.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/wardrobe.ts"
+import { appearance, notify, Points } from "@aicore-fivem/lib/client";
+import { Locale } from "common";
+
+const points = new Points();
+
+// Une garde-robe dans une chambre de motel.
+points.add("motel_wardrobe", {
+  coords: { x: 151.3, y: -1001.2, z: -99.0 },
+  label: Locale("WARDROBE"),
+  onPressed: () => {
+    if (!appearance.openMenu("outfits")) notify(Locale("NO_WARDROBE"), "error");
+  },
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/wardrobe.lua"
+local Locale = aiLib.locale()
+
+RegisterCommand('wardrobe', function()
+  if not aiLib.appearance.openMenu('outfits') then
+    aiLib.notify(Locale('NO_WARDROBE'), 'error')
+  end
+end, false)
+```
+</Tab>
+</Tabs>
+
+### WearOutfit
+
+Met une tenue de métier (un uniforme) au joueur local jusqu’à `ReloadSkin`. Seules les pièces que vous listez changent ; le reste de ses vêtements reste. La tenue n’est jamais enregistrée comme l’apparence propre du joueur.
+
+**Côté :** Client · **Attend :** non
+
+```ts title="Signature"
+WearOutfit(outfit: JobOutfit): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:WearOutfit(outfit) -- ou aiLib.appearance.wearOutfit(outfit)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    outfit: { type: 'JobOutfit', description: 'Les pièces à mettre. Champs ci-dessous.', required: true, typeDescriptionLink: '/docs/developers/api/types#joboutfit' },
+  }}
+/>
+
+#### JobOutfit
+
+<TypeTable
+  type={{
+    components: { type: 'OutfitPiece[]', description: 'Composants de vêtements (torse, jambes, chaussures...) : `id` 0-11.', required: true, typeDescriptionLink: '/docs/developers/api/types#outfitpiece' },
+    props: { type: 'OutfitPiece[]', description: 'Accessoires (chapeaux, lunettes, montres...) : `id` 0-13.', required: true, typeDescriptionLink: '/docs/developers/api/types#outfitpiece' },
+  }}
+/>
+
+#### OutfitPiece
+
+Voir aussi [OutfitPiece](/fr/docs/developers/api/types#outfitpiece).
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'L’id du composant (0-11) ou l’id de l’accessoire (0-13).', required: true },
+    collection: { type: 'string', description: 'Le nom de la collection de vêtements (DLC) d’où vient la pièce ; `""` pour le jeu de base. 64 caractères au plus.', required: true },
+    index: { type: 'number', description: 'L’index du drawable dans cette collection (0-1023). Pour un accessoire, `-1` le retire.', required: true },
+    texture: { type: 'number', description: 'La texture (variante de couleur). Une valeur absente ou négative compte pour 0.', required: true },
+  }}
+/>
+
+#### Retour
+
+`boolean` : `true` quand le script de vêtements a mis la tenue. `false` quand il ne reste aucune pièce valide après vérification, qu’aucun script de vêtements ne tourne, ou que celui en cours ne sait pas porter de tenues. Les pièces invalides (mauvaise plage d’id, index incorrect) sont écartées une par une ; les valides sont quand même portées.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/locker.ts"
+import { appearance } from "@aicore-fivem/lib/client";
+import type { JobOutfit } from "@aicore-fivem/shared";
+
+// Un uniforme simple fait de pièces du jeu de base : chemise, pantalon, chaussures, sans chapeau.
+const UNIFORM: JobOutfit = {
+  components: [
+    { id: 11, collection: "", index: 55, texture: 0 },
+    { id: 4, collection: "", index: 35, texture: 0 },
+    { id: 6, collection: "", index: 25, texture: 0 },
+  ],
+  props: [{ id: 0, collection: "", index: -1, texture: 0 }],
+};
+
+export const putOnUniform = (): boolean => appearance.wearOutfit(UNIFORM);
+export const takeOffUniform = (): boolean => appearance.reloadSkin();
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/locker.lua"
+-- Un uniforme simple fait de pièces du jeu de base : chemise, pantalon, chaussures, sans chapeau.
+local UNIFORM = {
+  components = {
+    { id = 11, collection = '', index = 55, texture = 0 },
+    { id = 4, collection = '', index = 35, texture = 0 },
+    { id = 6, collection = '', index = 25, texture = 0 },
+  },
+  props = { { id = 0, collection = '', index = -1, texture = 0 } },
+}
+
+local function putOnUniform() return aiLib.appearance.wearOutfit(UNIFORM) end
+local function takeOffUniform() return aiLib.appearance.reloadSkin() end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Les index de drawables diffèrent entre les modèles freemode homme et femme : gardez une tenue par modèle et choisissez-la selon le modèle du joueur.
+</Callout>
+
+### ReloadSkin
+
+Remet l’apparence enregistrée du joueur local. Utilisez-le pour retirer une tenue de métier.
+
+**Côté :** Client · **Attend :** non
+
+```ts title="Signature"
+ReloadSkin(): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:ReloadSkin() -- ou aiLib.appearance.reloadSkin()
+```
+
+#### Paramètres
+
+Aucun.
+
+#### Retour
+
+`boolean` : `true` quand on a demandé au script de vêtements de recharger l’apparence. `false` quand aucun script de vêtements ne tourne ou que celui en cours ne sait pas recharger.
+
+#### Exemple
+
+Voir l’exemple de [WearOutfit](#wearoutfit).

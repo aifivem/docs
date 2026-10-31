@@ -1,0 +1,360 @@
+---
+title: Araçlar ve entity’ler
+description: nearestVehicle, drivenVehicle, waitForEntity, entityFromNetId ve araç props yardımcıları - client’ta araç ve entity bulmak ve bir aracın görünümünü okumak ya da uygulamak.
+icon: Car
+---
+
+Oyuncunun yakınındaki araçları bulmak, server’dan gelen network id’leri yerel entity’lere çevirmek ve bir aracın görünümünü okumak ya da uygulamak. Araç oluşturmak yalnızca server’dadır ([Araçlar](/tr/docs/developers/api/lib-server/vehicles) sayfasındaki `spawnVehicle`); yerel bir galeri (showroom) arabası [`PreviewVehicle`](/tr/docs/developers/api/lib-client/world-objects#new-previewvehicle)’dır.
+
+## Araç bulmak
+
+### nearestVehicle
+
+Yerel oyuncuya belirli bir mesafe içindeki en yakın araç. `notOwn` verilmedikçe oyuncunun oturduğu araç önceliklidir. Uymayan araçları atlamak için `filter` kullan; böylece oyuncunun arkasında durduğu bagaj, yanındaki daha yakın bir arabaya tercih edilir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+nearestVehicle(metres: number, options?: { networked?: boolean; notOwn?: boolean; filter?: (vehicle: number) => boolean }): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.nearestVehicle(metres, options) -- hiç yoksa 0
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    metres: { type: 'number', description: 'Metre cinsinden arama yarıçapı.', required: true },
+    options: { type: '{ networked?, notOwn?, filter? }', description: 'Alanlar aşağıda.', default: '{}' },
+  }}
+/>
+
+#### Seçenekler
+
+<TypeTable
+  type={{
+    networked: { type: 'boolean', description: 'Yalnızca yerel araçları (galeri önizlemeleri, prop’lar) atla. false onları dahil eder.', default: 'true' },
+    notOwn: { type: 'boolean', description: 'Oyuncunun oturduğu aracı atla.', default: 'false' },
+    filter: { type: '(vehicle: number) => boolean', description: 'false döndürdüğü araçları atlar. Oyuncunun oturduğu araca da uygulanır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number`: araç handle’ı ya da `metres` içinde hiç yoksa `0`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, nearestVehicle, notify } from "@aicore-fivem/lib/client";
+
+export async function impound(): Promise<void> {
+  const vehicle = nearestVehicle(5, { notOwn: true, filter: (v) => GetPedInVehicleSeat(v, -1) === 0 });
+  if (!vehicle) return notify("No empty vehicle near", "error");
+  await callAction("mypolice:impound", [NetworkGetNetworkIdFromEntity(vehicle)], { fallback: "IMPOUND_FAILED" });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function impound()
+    CreateThread(function()
+        local vehicle = aiLib.nearestVehicle(5.0, {
+            notOwn = true,
+            filter = function(v) return GetPedInVehicleSeat(v, -1) == 0 end,
+        })
+        if vehicle == 0 then return aiLib.notify('No empty vehicle near', 'error') end
+        aiLib.callAction('mypolice:impound', { NetworkGetNetworkIdFromEntity(vehicle) }, { fallback = 'IMPOUND_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Client’ın bildiği her aracı dolaşır; bu yüzden onu her karede değil, bir tuşa basıldığında ya da bir aksiyonda çağır. Aracı server’a bir network id olarak gönder; server onu `vehicleFromNet` ya da `vehicleNearPlayer` ile geri çevirir ve mesafeyi kontrol eder.
+</Callout>
+
+### drivenVehicle
+
+Yerel oyuncunun sürdüğü (sürücü koltuğunda oturduğu) araç.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+drivenVehicle(): number | false
+```
+
+Lua karşılığı yok: `aiLib.cache.seat == -1 and aiLib.cache.vehicle`.
+
+#### Dönüş değeri
+
+`number | false`: oyuncu sürücüyse araç handle’ı; yayayken ya da yolcuyken `false`.
+
+#### Örnek
+
+```ts
+import { drivenVehicle, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "flip",
+  () => {
+    const vehicle = drivenVehicle();
+    if (vehicle === false) return notify("You must drive a vehicle", "error");
+    SetVehicleOnGroundProperly(vehicle);
+  },
+  false,
+);
+```
+
+## Network id’lerinden entity’ler
+
+Server entity’leri network id olarak gönderir. Bir client’ta entity henüz var olmayabilir (oyuncu uzaktadır ya da entity yeni oluşturulmuştur).
+
+### waitForEntity
+
+Bir network id’nin entity’si bu client’ta var olana kadar bekler ve onu döndürür.
+
+**Taraf:** Client · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+waitForEntity(netId: number, timeoutMs?: number): Promise<number>
+```
+
+```lua title="Lua"
+local entity = aiLib.waitForEntity(netId, timeout) -- bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    netId: { type: 'number', description: 'Server’ın gönderdiği network id.', required: true },
+    timeoutMs: { type: 'number', description: 'Ne kadar bekleneceği, milisaniye cinsinden. Lua’da adı timeout.', default: '5000' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Promise<number>`: yerel entity handle’ı ya da zaman aşımından sonra `0`. Asla reddedilmez.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onServerEvent, waitForEntity } from "@aicore-fivem/lib/client";
+import { readId } from "@aicore-fivem/lib/shared";
+
+// Server bir meslek aracı oluşturdu ve net id’sini gönderiyor.
+onServerEvent(
+  "myjob:vehicle",
+  { args: ([id]) => { const netId = readId(id); return netId === null ? null : [netId]; } },
+  async (netId) => {
+    const vehicle = await waitForEntity(netId);
+    if (vehicle) SetVehicleFuelLevel(vehicle, 100);
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onServerEvent('myjob:vehicle', function(netId)
+    if type(netId) ~= 'number' then return end
+    local vehicle = aiLib.waitForEntity(netId)
+    if vehicle ~= 0 then SetVehicleFuelLevel(vehicle, 100.0) end
+end)
+```
+</Tab>
+</Tabs>
+
+### entityFromNetId
+
+Beklemeden, bir network id’nin şu anki yerel entity’si. İsteğe bağlı olarak entity tipini kontrol eder.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+entityFromNetId(netId: number, type?: 1 | 2 | 3): number
+```
+
+Lua karşılığı yok: `NetworkDoesEntityExistWithNetworkId(netId) and NetToEnt(netId) or 0`.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    netId: { type: 'number', description: 'Server’ın gönderdiği network id.', required: true },
+    type: { type: '1 | 2 | 3', description: 'Yalnızca bu entity tipini kabul et: 1 ped, 2 araç, 3 nesne. Verilmezse herhangi bir tip.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number`: entity handle’ı ya da bu client’ta yoksa veya `type` tipinde değilse `0`.
+
+#### Örnek
+
+```ts
+import { entityFromNetId, EntityState, stateBoolean } from "@aicore-fivem/lib/client";
+
+const sirens = new EntityState("sirensMuted", stateBoolean);
+
+sirens.onChange((netId, muted) => {
+  const vehicle = entityFromNetId(netId, 2);
+  if (vehicle) SetVehicleHasMutedSirens(vehicle, muted === true);
+});
+```
+
+## Araç görünümü
+
+### getVehicleProps
+
+Bu client’ın görebildiği bir aracın tüm özelliklerini okur: plaka, renkler, modlar, ekstralar, neon, hasar. Aynı görünümü daha sonra geri koymak için sonucu sakla.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+getVehicleProps(vehicle: number): VehicleProps
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Bir araç handle’ı.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+[`VehicleProps`](/tr/docs/developers/api/types#vehicleprops): `v` (format sürümü 1), `model`, `plate` (kırpılmış), `plateIndex`, `colors`, `extraColors`, `customPrimary`, `customSecondary` (RGB ya da `null`), `wheelType`, `windowTint`, `livery`, `mods` (mod tipine göre 0-49; aç/kapa modları 17-22, 1 ya da 0 olarak), `xenonColor`, `neon` (dört boolean), `neonColor`, `tyreSmoke`, `extras` (ekstra id’sine göre), `dirt`, `engineHealth`, `bodyHealth`.
+
+#### Örnek
+
+```ts
+import { callAction, drivenVehicle, getVehicleProps } from "@aicore-fivem/lib/client";
+
+export async function saveLook(): Promise<void> {
+  const vehicle = drivenVehicle();
+  if (vehicle === false) return;
+  await callAction("mygarage:saveProps", [NetworkGetNetworkIdFromEntity(vehicle), getVehicleProps(vehicle)], { fallback: "SAVE_FAILED" });
+}
+```
+
+<Callout type="warn">
+Props oyuncunun client’ından gelir: server onları saklamadan önce ayrıştırmalı ve kontrol etmelidir (`@aicore-fivem/lib/shared`’dan `toVehicleProps`).
+</Callout>
+
+### setVehicleProps
+
+Kayıtlı özellikleri bir araca uygular. Yalnızca bu client’ın kontrol ettiği bir araçta çalışır; diğer oyuncular görünümü ağ üzerinden alır.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+setVehicleProps(vehicle: number, props: VehicleProps): void
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Bu client’ın kontrol ettiği bir araç (sürücü ya da oluşturan).', required: true },
+    props: { type: 'VehicleProps', description: 'getVehicleProps ile okunup saklanan özellikler.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+import { onServerEvent, setVehicleProps, waitForEntity } from "@aicore-fivem/lib/client";
+import { readId, toVehicleProps } from "@aicore-fivem/lib/shared";
+
+onServerEvent(
+  "mygarage:look",
+  {
+    args: ([id, raw]) => {
+      const netId = readId(id);
+      const props = toVehicleProps(raw);
+      return netId === null || props === null ? null : [netId, props];
+    },
+  },
+  async (netId, props) => {
+    const vehicle = await waitForEntity(netId);
+    if (vehicle && NetworkHasControlOfEntity(vehicle)) setVehicleProps(vehicle, props);
+  },
+);
+```
+
+<Callout type="info">
+`spawnVehicle({ props })` ile oluşturulan bir aracın görünümü sahip client’ta zaten ai-core tarafından uygulanır. `setVehicleProps`’a yalnızca kendi akışların için ihtiyacın olur.
+</Callout>
+
+### setVehicleSetup
+
+Yeni bir araca bir spawn kurulumu uygular: maksimum performans, renkler, livery, cam filmi, kir, motor açık. Yalnızca bu client’ın kontrol ettiği bir araçta çalışır.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+setVehicleSetup(vehicle: number, setup: VehicleSetup): void
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Bu client’ın kontrol ettiği bir araç.', required: true },
+    setup: { type: 'VehicleSetup', description: 'Alanlar aşağıda. Verilmeyen alanlar olduğu gibi kalır.', required: true },
+  }}
+/>
+
+#### VehicleSetup
+
+<TypeTable
+  type={{
+    maxed: { type: 'boolean', description: 'Motor, frenler, şanzıman, süspansiyon ve zırh en üst seviyede, turbo ve xenon’lar açık.' },
+    colors: { type: '[number, number]', description: 'GTA renk index’leri: birincil, ikincil.' },
+    primary: { type: '[number, number, number]', description: 'Özel birincil renk, RGB 0-255.' },
+    secondary: { type: '[number, number, number]', description: 'Özel ikincil renk, RGB 0-255.' },
+    livery: { type: 'number', description: 'Livery index’i.' },
+    windowTint: { type: 'number', description: 'Cam filmi index’i.' },
+    dirt: { type: 'number', description: 'Kir seviyesi: 0 temiz ile 15 arası.' },
+    engineOn: { type: 'boolean', description: 'Motoru çalıştır.' },
+  }}
+/>
+
+Tipi [`VehicleSetup`](/tr/docs/developers/api/types#vehiclesetup)’tır.
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+import { PreviewVehicle, setVehicleSetup } from "@aicore-fivem/lib/client";
+
+const preview = new PreviewVehicle();
+
+export function showMaxed(model: string): Promise<number> {
+  return preview.show(model, { x: -44.4, y: -1097.1, z: 26.4, heading: 120 }, (vehicle) =>
+    setVehicleSetup(vehicle, { maxed: true, primary: [20, 200, 120], windowTint: 1 }),
+  );
+}
+```

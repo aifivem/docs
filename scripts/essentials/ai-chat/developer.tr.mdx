@@ -1,0 +1,190 @@
+---
+title: Geliştiriciler için ai-chat
+description: ai-chat’in cevapladığı chat API’si (FiveM’in chat resource’u), export’ları, event’leri ve mesaj yapısı.
+icon: Code
+---
+
+ai-chat FiveM’in `chat` resource API’sini cevaplar, bu yüzden sohbet kodunu standart FiveM yoluyla yazarsın. Export’lar hem `exports['ai-chat']` hem `exports.chat` altında cevap verir.
+
+## ChatMessage
+
+Her export’un ve event’in aldığı mesaj yapısı.
+
+<TypeTable
+  type={{
+    args: { type: 'string[]', description: '`[author, text]` veya `[text]`. `^0`-`^9` renk kodları çizilir; HTML çizilmez.', required: true },
+    color: { type: '[number, number, number] | string', description: 'Yazar rengi: `[r, g, b]` (0-255) veya bir CSS rengi.' },
+    multiline: { type: 'boolean', description: 'Metnin birkaç satıra kaymasına izin verir.' },
+    channel: { type: 'string', description: 'Bir panel kanalının id’si; etiketi yazardan önce gösterilir.' },
+  }}
+/>
+
+## Server export’ları
+
+### addMessage
+
+Bir oyuncuya, birkaç oyuncuya veya herkese bir sohbet satırı gönderir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+addMessage(target: number | number[], message: ChatMessage): void
+```
+
+```lua title="Lua"
+exports.chat:addMessage(source, { args = { 'Bank', 'Your salary arrived.' }, color = { 61, 247, 158 } })
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    target: { type: 'number | number[]', description: 'Bir server id, server id listesi veya herkes için `-1`.', required: true },
+    message: { type: 'ChatMessage', description: 'Gösterilecek satır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. Geçerli bir `args` listesi olmayan mesaj atılır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+function announce(text: string): void {
+  callExport("chat", "addMessage", -1, { args: ["City", text], color: [61, 247, 158], multiline: true });
+}
+announce("The bank closes in 10 minutes.");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function announce(text)
+    exports.chat:addMessage(-1, { args = { 'City', text }, color = { 61, 247, 158 }, multiline = true })
+end
+announce('The bank closes in 10 minutes.')
+```
+</Tab>
+</Tabs>
+
+### registerMessageHook
+
+Bir oyuncunun gönderdiği her mesaj için, mesaj iletilmeden önce fonksiyonunu çalıştırır. Hook mesajı değiştirebilir, kime gideceğini değiştirebilir veya iptal edebilir. Resource’un durduğunda hook’lar kaldırılır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+registerMessageHook(hook: (source: number, message: ChatMessage, ref: HookRef) => void): void
+```
+
+#### HookRef
+
+<TypeTable
+  type={{
+    updateMessage: { type: '(change: Partial<ChatMessage>) => void', description: '`change` değerini mesajla birleştirir.' },
+    cancel: { type: '() => void', description: 'Mesajı atar: kimse almaz.' },
+    setRouting: { type: '(target: number | number[]) => void', description: 'Mesajı bunun yerine bu server id’lerine gönderir (herkes için `-1`).' },
+  }}
+/>
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+callExport("chat", "registerMessageHook", (source: number, message: { args: string[] }, ref: { cancel(): void }) => {
+  const text = message.args[message.args.length - 1] ?? "";
+  if (/discord\.gg\//i.test(text)) ref.cancel();
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports.chat:registerMessageHook(function(source, message, ref)
+    local text = message.args[#message.args] or ''
+    if text:lower():find('discord%.gg/') then ref.cancel() end
+end)
+```
+</Tab>
+</Tabs>
+
+### registerMode
+
+Bir script’ten kanal ekler (FiveM’in chat modları). Callback’i, bir mesaj hook’u gibi, her mesajı kimin alacağına karar verir. Resource’un durduğunda mod kaldırılır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+registerMode(data: { name: string; displayName?: string; color?: string; cb?: (source: number, message: ChatMessage, ref: HookRef) => void }): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Mod id’si.', required: true },
+    displayName: { type: 'string', description: 'Mod için gösterilen metin.', default: 'name' },
+    color: { type: 'string', description: 'Modun CSS rengi.', default: '"#ffffff"' },
+    cb: { type: '(source, message, ref) => void', description: 'Modun her mesajını yönlendirir (`ref.setRouting`, `ref.cancel`).' },
+  }}
+/>
+
+## Client export’ları
+
+| Export | Ne yapar |
+| --- | --- |
+| `addMessage(message: ChatMessage \| string): void` | Sadece bu oyuncunun sohbetinde bir satır gösterir. |
+| `addSuggestion(name: string, help: string, params?: { name: string, help: string }[]): void` | Bu oyuncu için bir komut önerisi ekler. |
+
+## Event’ler
+
+### chatMessage (server)
+
+Bir oyuncunun gönderdiği her mesaj için, iletilmeden önce server’da tetiklenir. Mesajı atmak için iptal et (`CancelEvent()`).
+
+**Taraf:** Server (yerel event)
+
+| Argüman | Tip | Ne olduğu |
+| --- | --- | --- |
+| `source` | `number` | Gönderenin server id’si. |
+| `author` | `string` | Gösterilen yazar (karakter adı). |
+| `text` | `string` | Mesaj metni. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("chatMessage", (source: number, author: string, text: string) => {
+  console.log(`[chat] ${author} (${source}): ${text}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('chatMessage', function(source, author, text)
+    print(('[chat] %s (%d): %s'):format(author, source, text))
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-chat’in dinlediği client event’leri
+
+Onları server’dan (`TriggerClientEvent`) veya bir client script’inden (`TriggerEvent`) gönder.
+
+| Event | Argümanlar | Ne yapar |
+| --- | --- | --- |
+| `chat:addMessage` | `message: ChatMessage \| string` | Bir satır gösterir. |
+| `chatMessage` | `author: string, color: [r, g, b], text: string` | Bir satır gösterir (eski stil). |
+| `chat:addSuggestion` | `name: string, help: string, params?: { name, help }[]` | Bir öneri ekler. |
+| `chat:addSuggestions` | `suggestions: { name, help, params? }[]` | Birkaç öneri ekler. |
+| `chat:removeSuggestion` | `name: string` | Bir öneriyi kaldırır. |
+| `chat:addMode` / `chat:removeMode` | `mode` / `name` | Bu client’ta bir script modu ekler veya kaldırır. |
+| `chat:clear` | yok | Bu oyuncunun sohbetini boşaltır. |
+
+<Callout type="warn">
+`chat:addTemplate` yok sayılır: şablonlar (HTML) asla çizilmez. Oyuncuların yazdığı mesajlar `_chat:messageEntered` üzerinden gönderilmez; server’da `chatMessage` event’ini dinle.
+</Callout>

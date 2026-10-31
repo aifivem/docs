@@ -1,0 +1,207 @@
+---
+title: Geliştiriciler için ai-lib
+description: ai-lib’i bir Lua ya da JavaScript resource’unda yüklemek, lib referansının nerede olduğu ve ai-lib’in kendi client export’ları ile event’leri.
+icon: Code
+---
+
+ai-lib, npm paketini paketlemeyen resource’lar için `@aicore-fivem/lib`’i taşır. Fonksiyonların kendisi bir kez, lib referansında anlatılır:
+
+- [Lib: genel bakış](/tr/docs/developers/lib)
+- [Lib: client fonksiyonları](/tr/docs/developers/api/lib-client)
+- [Lib: server fonksiyonları](/tr/docs/developers/api/lib-server)
+- [Lib: shared fonksiyonlar](/tr/docs/developers/api/lib-shared)
+- [Lua (`aiLib`)](/tr/docs/developers/api/lua): Lua karşılıkları ve argüman sıraları
+
+## Yüklemek
+
+<Tabs items={['Lua', 'JavaScript', 'TypeScript']}>
+<Tab value="Lua">
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+```lua title="client.lua"
+local L = aiLib.locale()
+aiLib.notify(L('WELCOME'), 'success')
+```
+
+Modüller ilk kullanımda (`aiLib.Points`, `aiLib.progress`...) senin resource’unun içinde yüklenir; böylece oluşturduğun noktalar, tuşlar ve callback’ler senin resource’una aittir ve o durunca gider. Bekleyen fonksiyonlar (`triggerServerCallback`, `menu.show`, `progress`, `spawnVehicle`, `progressFor`) bir thread ya da event handler içinde çalışmalı.
+</Tab>
+<Tab value="JavaScript">
+```lua title="fxmanifest.lua"
+dependency 'ai-lib'
+client_script '@ai-lib/dist/client.js'
+server_script '@ai-lib/dist/server.js'
+client_script 'client.js'
+server_script 'server.js'
+```
+
+```js title="client.js"
+aiLib.notify("Welcome", "success");
+```
+
+Global `aiLib` lib’in shared fonksiyonlarını ve o tarafın client ya da server fonksiyonlarını tutar.
+</Tab>
+<Tab value="TypeScript">
+AI Core şablonuyla derlenen TypeScript resource’ları bunun yerine paketi import eder ve ai-lib’in dosyalarını yüklemez:
+
+```ts
+import { notify } from "@aicore-fivem/lib/client";
+notify("Welcome", "success");
+```
+
+Yine de ai-lib’in çalışıyor olması gerekir: arayüz çağrıları onun export’larına gider.
+</Tab>
+</Tabs>
+
+## Client export’ları
+
+Lib’in `notify`, `progress`, `showPrompt`, `menu`, `input`, `skillCheck` ve `lockpick` fonksiyonları bunları senin yerine çağırır; lib fonksiyonlarını kullan. `@aicore-fivem/shared` içinde `AiLibClientExports` olarak tiplenmişlerdir (`resourceExport("ai-lib")`). İstemler, menüler ve bölgeler çağıran resource’a aittir ve o durunca gider.
+
+### Notify
+
+Bu oyuncunun ekranında bir bildirim kartı gösterir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+Notify(notification: Notification): void
+```
+
+```lua title="Lua"
+exports['ai-lib']:Notify({ text = 'Saved', kind = 'success' })
+-- lib üzerinden aynısı: aiLib.notify('Saved', 'success')
+```
+
+#### Notification
+
+<TypeTable
+  type={{
+    text: { type: 'string', description: 'Mesaj, önceden çevrilmiş. 300 karakterde kesilir.', required: true },
+    kind: { type: '"success" | "error" | "info" | "warning"', description: 'Renk ve simge. Başka her şey `"info"` sayılır.', required: true },
+    title: { type: 'string', description: 'En fazla 60 karakterlik bir başlık satırı.' },
+    duration: { type: 'number', description: 'Ekranda kalma süresi, milisaniye, 1000-30000.', default: '4000' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `text` olmayan bir bildirim atılır. Sunucu sahibi panelde başka bir bildirim script’i seçtiyse kart oraya gider; o script kartı almazsa ai-lib çizer.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="client.ts"
+import { notify } from "@aicore-fivem/lib/client";
+
+notify("Your vehicle was stored", "success", 5000);
+```
+
+```ts title="server.ts"
+import { notify, onClientEvent } from "@aicore-fivem/lib/server";
+
+// Aynı kart tek bir oyuncunun ekranında, server’dan gönderilir.
+onClientEvent("myscript:collectPay", (source) => {
+  notify(source, "You were paid $500", "info");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- client
+aiLib.notify('Your vehicle was stored', 'success', 5000)
+
+-- server
+aiLib.notify(source, 'You were paid $500', 'info')
+```
+</Tab>
+</Tabs>
+
+### ShowProgress and HideProgress
+
+İlerleme çubuğunu bir süre gösterir ya da gizler. Sadece çubuk: eylemi, animasyonunu ve iptal mantığını çağıran script yürütür. Bunun yerine bunların hepsini yapan lib `progress` (client) ya da `progressFor` (server) fonksiyonunu kullan.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+ShowProgress(label: string, duration: number): void
+HideProgress(): void
+```
+
+<TypeTable
+  type={{
+    label: { type: 'string', description: 'Çubuktaki metin, önceden çevrilmiş. 60 karakterde kesilir.', required: true },
+    duration: { type: 'number', description: 'Çubuğun ne kadar sürede dolduğu, milisaniye.', required: true },
+  }}
+/>
+
+Çubuk görünürken iptal tuşu (**Backspace**) yerel `ai-lib:client:cancelProgress` event’ini tetikler.
+
+### ShowPrompt and HidePrompt
+
+Çağıran resource’un istemlerinden birini gösterir ya da günceller, veya gizler. Lib `showPrompt` / `hidePrompt` kullan, ya da daha iyisi, istemleri mesafeye göre senin yerine gösterip gizleyen lib `Points`.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+ShowPrompt(id: string, text: string, at?: PromptAnchor): void
+HidePrompt(id: string): void
+```
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'İstem id’n. Aynı id’yi yeniden göstermek onu günceller.', required: true },
+    text: { type: 'string', description: 'Metin, önceden çevrilmiş ("Open the shop").', required: true },
+    at: { type: '{ x, y, z } | { anchors: { entity, offset: { x, y, z } }[] }', description: 'İstemi dünyadaki bir noktanın ya da entity’ler üzerindeki noktaların üzerine çizer (offset’ler entity’nin kendi uzayındadır, böylece sallanan bir kapıyla birlikte hareket eder; oyuncuya en yakın nokta görünür). Verilmezse: ekranın sağındaki liste.' },
+  }}
+/>
+
+İstemin en üstteyken oyuncu etkileşim tuşuna bastığında yerel `ai-lib:client:promptPressed (resource, id)` event’i tetiklenir; lib `onPromptPressed` onu senin resource’un için süzer.
+
+### CloseDialog
+
+Çağıran resource’un açık menüsünü ya da giriş penceresini kapatır. Bekleyen `menu.show` / `input` çağrısı, oyuncu kapatmış gibi `null` cevap verir. **Taraf:** Client · **Bekler:** hayır.
+
+```ts title="Signature"
+CloseDialog(): void
+```
+
+### Altyapı export’ları
+
+Bunları lib’in kendi fonksiyonları kullanır. Sen çağırmazsın.
+
+| Export | Kullanan |
+| --- | --- |
+| `OpenMenu(requestId, request)`, `OpenInput(requestId, request)`, `OpenMinigame(requestId, request)` | lib `menu.show`, `input`, `skillCheck`, `lockpick`. Cevaplar istek id’siyle `ai-lib:client:menuResult` / `inputResult` olarak geri gelir. |
+| `AddZone(key, shape, interval, inside)`, `RemoveZone(key)` | JavaScript resource’larında lib `Zones`: ai-lib her resource’un bölgelerini tek bir zamanlayıcıyla kontrol eder ve `ai-lib:client:zone (owner, key, inside)` ile cevap verir. |
+| `AddModelPoint(key, def, entity)`, `RemoveModelPoint(key)` | İstem modunda lib `Points.addModel` / `addVehicle`: ai-lib en yakın objeyi bulur ve `ai-lib:client:modelPoint (owner, key, entity)` ile cevap verir. |
+
+## Event’ler
+
+| Event | Taraf | Argümanlar | Ne olduğu |
+| --- | --- | --- | --- |
+| `ai-lib:client:notify` | Server’dan client’a | `notification: Notification` | O oyuncunun ekranında bir kart gösterir. Lib server `notify(source, text, kind?, duration?)` bunu gönderir. |
+| `ai-lib:client:promptPressed` | Client (yerel) | `resource: string, id: string` | O resource’un istemi en üstteyken etkileşim tuşuna basıldı. |
+| `ai-lib:client:cancelProgress` | Client (yerel) | yok | Bir ilerleme çubuğu görünürken iptal tuşuna basıldı. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Server: lib olmadan bir bildirim.
+emitNet("ai-lib:client:notify", source, { text: "Welcome to the city", kind: "info", duration: 6000 });
+```
+</Tab>
+<Tab value="Lua">
+```lua
+TriggerClientEvent('ai-lib:client:notify', source, { text = 'Welcome to the city', kind = 'info', duration = 6000 })
+```
+</Tab>
+</Tabs>

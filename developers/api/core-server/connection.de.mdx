@@ -1,0 +1,183 @@
+---
+title: Verbindungsprüfungen
+description: Prüfungen hinzufügen, die jeder verbindende Spieler bestehen muss (Whitelists, Banns), und erklären, dass dein Skript ein anderes ersetzt.
+icon: ShieldCheck
+---
+
+Jeder verbindende Spieler passiert ein Tor in ai-core. Die eigenen Prüfungen von ai-core kommen zuerst: Der Spieler braucht einen FiveM-Account, und kein unnötiges Skript darf neben dem Skript laufen, das es ersetzt (wenn die Panel-Einstellung **Refuse players while both run** (Spieler abweisen, solange beide laufen) aktiv ist). Dann kommen die Prüfungen, die andere Ressourcen mit `AddConnectionCheck` hinzufügen, in der Reihenfolge, in der sie hinzugefügt wurden. Die erste Ablehnung gewinnt.
+
+### AddConnectionCheck
+
+Fügt eine Prüfung hinzu, die jeder verbindende Spieler bestehen muss. Nutze es für eine Whitelist, eine Bannliste oder einen Wartungsmodus.
+
+**Seite:** Server · **Wartet:** nein (die Prüfung selbst muss sofort antworten) · **Lib:** keine
+
+```ts title="Signature"
+AddConnectionCheck(
+  id: string,
+  check: (source: number, identifiers: Record<string, string>) => string | null | undefined,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(source, identifiers) end)
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Ein eindeutiger Name für diese Prüfung (`myscript:whitelist`). Wird dieselbe ID erneut hinzugefügt, ersetzt das die Prüfung und behält ihren Platz in der Reihenfolge.', required: true },
+    check: { type: '(source, identifiers) => string | null | undefined', description: 'Läuft für jeden verbindenden Spieler. Gib einen Text zurück, um den Spieler mit diesem Text abzuweisen, oder `null` / nichts, um ihn durchzulassen.', required: true, typeDescription: '(source: number, identifiers: Record<string, string>) => string | null | undefined' },
+  }}
+/>
+
+`identifiers` enthält jeden Identifier-Typ mit seinem Wert **ohne das Präfix**: `identifiers.license` ist `abc123...`, nicht `license:abc123...`. Typen, die der Spieler nicht hat, fehlen.
+
+#### Rückgabe
+
+Nichts. Ohne eine Text-`id` oder eine Funktion tut der Aufruf nichts. Die Prüfung wird entfernt, wenn deine Ressource stoppt.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const allowed = new Set<string>(); // beim Start aus deiner Datenbank gefüllt
+
+core.AddConnectionCheck("myscript:whitelist", (_source, identifiers) => {
+  const fivem = identifiers.fivem;
+  return fivem && allowed.has(fivem) ? null : Locale("CONNECT_NOT_WHITELISTED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local allowed = {} -- FiveM-ID -> true, beim Start aus deiner Datenbank gefüllt
+
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(_, identifiers)
+  if identifiers.fivem and allowed[identifiers.fivem] then return nil end
+  return Locale('CONNECT_NOT_WHITELISTED')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Die Prüfung läuft, während sich der Spieler verbindet, und muss sofort antworten: keine Datenbankabfrage, kein `await`, kein `Wait`. Halte, was du prüfst, im Speicher (lade es beim Start, aktualisiere es, wenn es sich ändert). Eine Prüfung, die einen Fehler wirft, wird geloggt und übersprungen, sodass sie nie alle aussperrt.
+</Callout>
+
+### RegisterReplacement
+
+Erklärt, dass ein Skript andere unnötig macht (dein Skript erledigt dieselbe Aufgabe wie ihres). Solange beide installiert sind, warnt ai-core in der Konsole und nennt den zu löschenden Ordner; solange beide gestartet sind und die Panel-Einstellung **Refuse players while both run** aktiv ist, kann niemand beitreten.
+
+**Seite:** Server · **Wartet:** nein · **Lib:** keine
+
+```ts title="Signature"
+RegisterReplacement(remove: string | string[], keep?: string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    remove: { type: 'string | string[]', description: 'Ressourcenname(n), die unnötig werden. Leere Namen werden übersprungen.', required: true },
+    keep: { type: 'string', description: 'Die Ressource, die sie ersetzt.', default: 'die aufrufende Ressource' },
+  }}
+/>
+
+#### Rückgabe
+
+Nichts. Die Regel wird entfernt, wenn die aufrufende Ressource stoppt. ai-core prüft eine Sekunde nach jedem Start oder Stopp einer Ressource erneut auf Konflikte.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Unser Bank-Skript tut, was diese tun; beide laufen zu lassen würde die Bankbildschirme verdoppeln.
+core.RegisterReplacement(["qb-banking", "okokBanking"]);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Eine Ressource, die du nicht ändern kannst (ein Escrow-Skript), kann dasselbe mit einer Zeile in ihrer `fxmanifest.lua` erklären: `ai_replaces 'qb-banking'`.
+</Callout>
+
+### GetConflicts
+
+Jeder jetzt gefundene Konflikt: ein Skript, das neben einem Skript installiert ist, das es ersetzt.
+
+**Seite:** Server · **Wartet:** nein · **Lib:** keine
+
+```ts title="Signature"
+GetConflicts(): { keep: string; remove: string; running: boolean; from: string }[]
+```
+
+```lua title="Lua"
+local conflicts = exports['ai-core']:GetConflicts() -- Liste von Tabellen
+```
+
+#### Parameter
+
+Keine.
+
+#### Rückgabe
+
+Eine Liste, ein Eintrag pro Konflikt:
+
+<TypeTable
+  type={{
+    keep: { type: 'string', description: 'Das Skript, das bleibt.' },
+    remove: { type: 'string', description: 'Das unnötige Skript, das gelöscht werden soll.' },
+    running: { type: 'boolean', description: '`true`, wenn beide gestartet sind (Spieler werden abgewiesen, solange der Panel-Schalter aktiv ist); `false`, wenn das unnötige nur installiert ist.' },
+    from: { type: 'string', description: 'Woher die Regel kommt: `ai-core`, `<resource> fxmanifest` oder die Ressource, die `RegisterReplacement` aufgerufen hat.' },
+  }}
+/>
+
+Eine leere Liste, wenn es keinen Konflikt gibt.
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("conflicts", { help: "Lists scripts to remove", restricted: true }, () => {
+  for (const c of core.GetConflicts())
+    console.log(`${c.keep} replaces ${c.remove}${c.running ? " (both started!)" : ""} [${c.from}]`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('conflicts', { help = 'Lists scripts to remove', restricted = true }, function()
+  for _, c in ipairs(exports['ai-core']:GetConflicts()) do
+    print(('%s replaces %s%s [%s]'):format(c.keep, c.remove, c.running and ' (both started!)' or '', c.from))
+  end
+end)
+```
+</Tab>
+</Tabs>

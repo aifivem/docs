@@ -1,0 +1,215 @@
+---
+title: Oyuncu
+description: Yerel oyuncunun karakterini, parasını, mesleklerini, mesaisini ve çetelerini oku, bir karakterin yüklü olup olmadığını kontrol et ve meslek ve çete tanımlarını oku.
+icon: User
+---
+
+Bu export’lar ai-core’un bu oyunun başındaki oyuncu hakkında bildiklerini okur: karakteri, parası, meslekleri ve çeteleri. Server bu veriyi karakter yüklendiğinde oyuncunun kendi client’ına bir kez gönderir, sonra yalnızca değişen değerleri. Başka hiçbir oyuncunun verisi asla bu client’a ulaşmaz.
+
+<Callout type="info">
+TypeScript’te `GetPlayerData`’yı tekrar tekrar çağırmak yerine lib’in `getPlayerData(key)` ve `onPlayerData(key, handler)`’ını kullan. Lua’da `aiLib.playerData.get(key)` ve `aiLib.playerData.onChange(key, handler)` kullan. Export’u bir kez okurlar, sonra ai-core’un gönderdiği her değişikliği izlerler.
+</Callout>
+
+### GetPlayerData
+
+ai-core’un yerel oyuncunun yüklü karakteri hakkında bildiği her şeyi tek tabloda döndürür: karakter, para, meslekler, mesai, ana meslek, çeteler, aktif çete ve metadata. Resource’un başladığında veriyi bir kez okumak için kullan; değişiklikleri `onPlayerData` (TS) ya da `aiLib.playerData.onChange` (Lua) ile izle.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="İmza"
+GetPlayerData(): AiPlayerData | null
+```
+
+```lua title="Lua"
+local data = exports['ai-core']:GetPlayerData() -- tablo ya da nil
+```
+
+#### Parametreler
+
+Yok.
+
+#### Dönüş değeri
+
+Bir karakter dünyada dururken [`AiPlayerData`](/tr/docs/developers/api/types#aiplayerdata); karakter ekranında, ilk karakter yüklenmeden önce ve oyuncu karakter ekranına döndükten sonra `null` (Lua’da `nil`).
+
+<TypeTable
+  type={{
+    character: { type: 'CharacterInfo | null', description: 'Karakter: `id`, `citizenid`, `slot`, `firstname`, `lastname`, `birthdate` (`YYYY-MM-DD`), `sex` (`"male"` ya da `"female"`), `nationality`.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#characterinfo' },
+    money: { type: 'Record<string, number>', description: 'Ada göre her hesabın bakiyesi, örneğin `{ cash: 500, bank: 12000 }`. Hesap adları admin panelinden gelir.', required: true },
+    jobs: { type: 'JobMembership[]', description: 'Karakterin sahip olduğu her meslek: `{ job, grade }`. Bir karakter birden fazla mesleğe sahip olabilir.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#jobmembership' },
+    duty: { type: 'string | null', description: 'Oyuncunun şu an mesaide olduğu meslek, mesai dışındayken `null`.', required: true },
+    job: { type: 'JobMembership', description: 'Diğer script’lerin "asıl" meslek olarak ele aldığı meslek: mesaideki meslek, yoksa en son mesaide oldukları meslek, yoksa ilk meslek, yoksa `{ job: "unemployed", grade: 0 }`.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#jobmembership' },
+    gangs: { type: 'GangMembership[]', description: 'Karakterin ait olduğu her çete: `{ gang, grade }`.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#gangmembership' },
+    activeGang: { type: 'string | null', description: 'Oyuncunun şu an adına hareket ettiği çete, yoksa `null`.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Karakterle birlikte saklanan serbest değerler. Framework köprüleri ESX / QB metadata’sını burada tutar (açlık, susuzluk, stres...).', required: true },
+  }}
+/>
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { getPlayerData, onPlayerData } from "@aicore-fivem/lib/client";
+
+// Oyuncu polis olarak mesaideyken yalnızca polise özel bir blip gösterir.
+let blip = 0;
+
+function updateBlip(duty: string | null): void {
+  if (duty === "police" && blip === 0) {
+    blip = AddBlipForCoord(441.8, -982.0, 30.7); // Mission Row polis karakolu
+    SetBlipSprite(blip, 60);
+  } else if (duty !== "police" && blip !== 0) {
+    RemoveBlip(blip);
+    blip = 0;
+  }
+}
+
+// Bir kez oku (lib senin için ai-core’un GetPlayerData’sına sorar), sonra her değişikliği izle.
+updateBlip(getPlayerData("duty") ?? null);
+onPlayerData("duty", (duty) => updateBlip(duty));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- fxmanifest.lua: dependency 'ai-lib' ve shared_script '@ai-lib/init.lua'
+-- Oyuncu polis olarak mesaideyken yalnızca polise özel bir blip gösterir.
+local blip = 0
+
+local function updateBlip(duty)
+  if duty == 'police' and blip == 0 then
+    blip = AddBlipForCoord(441.8, -982.0, 30.7) -- Mission Row polis karakolu
+    SetBlipSprite(blip, 60)
+  elseif duty ~= 'police' and blip ~= 0 then
+    RemoveBlip(blip)
+    blip = 0
+  end
+end
+
+-- Bir kez oku (aiLib senin için ai-core’un GetPlayerData’sına sorar), sonra her değişikliği izle.
+updateBlip(aiLib.playerData.get('duty'))
+aiLib.playerData.onChange('duty', updateBlip)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bu, ekranda bir şeyler göstermek için oyuncunun kendi kopyasıdır. Server’ın güvenmesi gereken hiçbir şeye (bir ödeme, bir eşya, bir stash’e erişim) asla buna göre karar verme: server kendi export’larıyla tekrar kontrol eder.
+</Callout>
+
+### IsPlayerLoaded
+
+Bu client’ta dünyada bir karakterin durup durmadığını söyler. Resource’un oyuncu zaten yüklendikten sonra başlayabilecekken, karakter gerektiren herhangi bir şeyi (bir HUD, bir meslek döngüsü) başlatmadan önce kullan.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="İmza"
+IsPlayerLoaded(): boolean
+```
+
+```lua title="Lua"
+local loaded = exports['ai-core']:IsPlayerLoaded() -- boolean
+```
+
+#### Parametreler
+
+Yok.
+
+#### Dönüş değeri
+
+`boolean`: karakter dünyaya konduktan sonra `true`; karakter ekranında, oyuncu bir doğma noktası seçerken ve karakter ekranına döndükten sonra `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+function start(): void {
+  console.log("character ready, starting the job loop");
+}
+
+// Oyuncu bu resource başlamadan önce yüklenmiş olabilir (bir restart): önce kontrol et, sonra dinle.
+if (core.IsPlayerLoaded()) start();
+on(CORE.clientPlayerLoadedEvent, start);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local function start()
+  print('character ready, starting the job loop')
+end
+
+-- Oyuncu bu resource başlamadan önce yüklenmiş olabilir (bir restart): önce kontrol et, sonra dinle.
+if exports['ai-core']:IsPlayerLoaded() then start() end
+AddEventHandler('ai-core:client:playerLoaded', start)
+```
+</Tab>
+</Tabs>
+
+### GetDefinitions
+
+Admin panelinin sakladığı haliyle her mesleği ya da her çeteyi döndürür (etiketler, rütbeler ve panelin düzenlediği diğer alanlar). Framework köprüleri ESX / QB meslek tablolarını kurmak için bunu kullanır. Bir kez oku, sonra panelin değiştirdiği her meslek ya da çete için tetiklenen `ai-core:client:definitions` client event’ini izle.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="İmza"
+GetDefinitions(file: "jobs" | "gangs"): Record<string, unknown> | null
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetDefinitions('jobs') -- meslek adına göre anahtarlanmış tablo ya da nil
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    file: { type: '"jobs" | "gangs"', description: 'Hangi panel dosyasının okunacağı: her meslek ya da her çete.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Record<string, unknown>`: adına göre anahtarlanmış (`police`, `ambulance`) meslek ya da çete başına bir kayıt. Kayıtlar panelin kendi verisidir ve kontrol edilmez. `file` ne `"jobs"` ne `"gangs"` ise `null`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// Her mesleğin güncel tutulan yerel bir kopyası.
+const jobs: Record<string, unknown> = { ...(core.GetDefinitions("jobs") ?? {}) };
+
+on(CORE.clientDefinitionsEvent, (file: string, name: string, definition: unknown) => {
+  if (file !== "jobs") return;
+  if (definition === null) delete jobs[name];
+  else jobs[name] = definition;
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- Her mesleğin güncel tutulan yerel bir kopyası.
+local jobs = exports['ai-core']:GetDefinitions('jobs') or {}
+
+AddEventHandler('ai-core:client:definitions', function(file, name, definition)
+  if file ~= 'jobs' then return end
+  jobs[name] = definition -- meslek silindiyse nil
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Server’da bir mesleğin ya da çetenin rütbe adları ve etiketleri için ai-core’un server export’larını ya da server lib’ini kullan; rütbeleri kontrol eden taraf server’dır.
+</Callout>

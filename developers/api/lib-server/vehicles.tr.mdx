@@ -1,0 +1,611 @@
+---
+title: Araçlar
+description: "spawnVehicle, vehicleType, randomPlate, en yakın araçlar, client net id’lerinden entity’ler, vehicleKeys, yakıt ve garajlar."
+icon: Car
+---
+
+```ts title="TypeScript"
+import { spawnVehicle, vehicleKeys, fuel, garages, vehicleFromNet } from "@aicore-fivem/lib/server";
+```
+
+## Araç oluşturma
+
+### spawnVehicle
+
+Server’da ağa bağlı (networked) bir araç oluşturur ve tek çağrıda kurar: plaka, yakıt, görünüm, kilit, routing bucket, doğru amaç için anahtarlar, bir sürücü ve yolcular. Her script aracı için kullan (meslek araçları, kiralıklar, garaj araçları, admin spawn’ları).
+
+**Taraf:** Server · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+spawnVehicle(options: SpawnVehicleOptions): Promise<number | null>
+```
+
+```lua title="Lua"
+local vehicle = aiLib.spawnVehicle(options) -- entity ya da nil, bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    options: { type: "SpawnVehicleOptions", description: "Neyin oluşturulacağı ve nasıl kurulacağı. Alanlar aşağıda.", required: true },
+  }}
+/>
+
+#### SpawnVehicleOptions
+
+<TypeTable
+  type={{
+    model: { type: "string", description: "Modelin spawn adı (`taxi`, `adder`).", required: true },
+    coords: { type: "{ x: number; y: number; z: number; heading: number }", description: "Nerede ve hangi yöne bakarak (heading derece cinsinden). Lua bir `vector4` ya da `{ x, y, z, w }` de kabul eder.", required: true },
+    asker: { type: "number", description: "Client’ı spawn tipini ve modelin var olup olmadığını söyleyen bir oyuncu (ai-core client’ta cevap verir). Aracı isteyen oyuncuyu geçir.", required: false },
+    type: { type: "string", description: "`asker` yokken `CreateVehicleServerSetter` tipi: `automobile`, `bike`, `boat`, `heli`, `plane`, `submarine`, `trailer`, `train`.", default: '"automobile"' },
+    plate: { type: "string", description: "Plaka metni, en fazla 8 karakter (uzunu kesilir). Bu olmadan oyundakine benzer rastgele bir plaka ayarlanır.", required: false },
+    fuel: { type: "number", description: "0 ile 100 arası yakıt seviyesi, ai-core’un yakıt katmanı üzerinden ayarlanır (Lua karşılığı `fuel` state bag’ini yazar).", required: false },
+    keysTo: { type: "number", description: "Anahtarları ai-core’un anahtar katmanı üzerinden alan oyuncunun server id’si.", required: false },
+    purpose: { type: '"purchase" | "garage" | "job" | "rental" | "temporary"', typeDescriptionLink: "/tr/docs/developers/api/types#keypurpose", description: "Oyuncunun anahtarları neden aldığı. Anahtar script’leri amaca göre farklı davranır.", default: '"temporary"' },
+    driver: { type: "number", description: "Sürücü koltuğuna oturtulan oyuncunun server id’si.", required: false },
+    seats: { type: "Array<{ source: number; seat: number }>", description: "Diğer koltuklara oturtulan oyuncular: 0 ön yolcu, 1 ve 2 arka, vb.", required: false },
+    props: { type: "VehicleProps", typeDescriptionLink: "/tr/docs/developers/api/types#vehicleprops", description: "Kayıtlı bir görünüm ve modifiye (bir garaj aracı). ai-core onu entity’nin sahibi olan client’ta uygular.", required: false },
+    setup: { type: "VehicleSetup", typeDescriptionLink: "/tr/docs/developers/api/types#vehiclesetup", description: "Yeni bir araç için ekstralar: `maxed` (her performans modu en üst seviyede), `colors` (GTA renk index’leri), `primary` / `secondary` (RGB 0-255), `livery`, `windowTint`, `dirt` (0 temiz ile 15 arası), `engineOn`.", required: false },
+    locked: { type: "boolean", description: "Kapılar herkese kilitli; anahtarlar kilidi açar.", default: "false" },
+    bucket: { type: "number", description: "Aracın içinde bulunduğu routing bucket. Oturttuğun oyuncular aynı bucket’ta olmalıdır.", required: false },
+    persistent: { type: "boolean", description: "Sahibi olan client ayrıldığında araç kalır (orphan mode 2).", default: "true" },
+    bags: { type: "Record<string, unknown>", description: "Oluşturulduktan hemen sonra ayarlanan replike state bag değerleri.", required: false },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Promise<number | null>`: araç entity handle’ı. Model yoksa (`asker` client’ı öyle söylediyse), entity 5 saniye içinde oluşturulmadıysa ya da tip bilinmiyorsa `null`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, spawnVehicle, hasCharacter, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const DEPOT = { x: 895.4, y: -179.3, z: 74.7 };
+
+onClientCallback(
+  "my-taxi:start",
+  async (source) => {
+    const vehicle = await spawnVehicle({
+      model: "taxi",
+      coords: { x: 899.1, y: -180.6, z: 73.8, heading: 238 },
+      asker: source,
+      keysTo: source,
+      purpose: "job",
+      driver: source,
+      fuel: 100,
+      setup: { dirt: 0 },
+    });
+    if (!vehicle) return fail("SPAWN_FAILED");
+    return { ok: true, netId: NetworkGetNetworkIdFromEntity(vehicle) };
+  },
+  { guards: [hasCharacter(), near(DEPOT, 5)], lock: true },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local DEPOT = vector3(895.4, -179.3, 74.7)
+
+aiLib.onClientCallback('my-taxi:start', function(source)
+    if #(GetEntityCoords(GetPlayerPed(source)) - DEPOT) > 5.0 then return aiLib.fail('TOO_FAR') end
+    local vehicle = aiLib.spawnVehicle({
+        model = 'taxi',
+        coords = vector4(899.1, -180.6, 73.8, 238.0),
+        asker = source,
+        keysTo = source,
+        purpose = 'job',
+        driver = source,
+        fuel = 100,
+    })
+    if not vehicle then return aiLib.fail('SPAWN_FAILED') end
+    return { ok = true, netId = NetworkGetNetworkIdFromEntity(vehicle) }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Anahtarlar, server plakayı okuyana kadar (en fazla 3 saniye) bekler: sahip client’ın ilk senkronundan önce server boş bir plaka okur. Oturtulan oyuncular oturana kadar en fazla 2 saniye boyunca yeniden yerleştirilir. TypeScript’te bir client’tan gelen model tipi, ikinci bir oyuncunun client’ı aynı cevabı verene kadar yalnızca o oyuncuya hizmet eder; Lua karşılığı aldığı ilk cevabı tutar.
+</Callout>
+
+### vehicleType
+
+Bir oyuncunun client’ına sorulan bir modelin spawn tipi. Para almadan önce bir modelin var olduğunu kontrol etmek için kullan.
+
+**Taraf:** Server · **Bekler:** evet (Promise)
+
+```ts title="Signature"
+vehicleType(model: string, asker: number): Promise<string | null>
+```
+
+Lua karşılığı yok: `asker` ile `aiLib.spawnVehicle` bunu kontrol eder ve bilinmeyen bir model için `nil` döndürür.
+
+<TypeTable
+  type={{
+    model: { type: "string", description: "Modelin spawn adı.", required: true },
+    asker: { type: "number", description: "Client’ı cevap veren oyuncunun server id’si.", required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Promise<string | null>`: `automobile`, `bike`, `boat`, `heli`, `plane`, `submarine`, `trailer` ya da `train`; oyunda böyle bir araç yoksa ya da client geçerli bir cevap vermediyse `null`. İki farklı oyuncunun client’ı bir cevapta anlaştığında cevap herkes için saklanır; böylece değiştirilmiş tek bir client yalnızca kendi spawn’larını bozabilir.
+
+#### Örnek
+
+```ts
+import { onClientCallback, vehicleType } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readText } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-dealer:buy", { args: oneArg((v) => readText(v, 32)), lock: true }, async (source, model) => {
+  if (!(await vehicleType(model, source))) return fail("UNKNOWN_MODEL");
+  // parayı al, sonra spawnVehicle(...)
+  return { ok: true };
+});
+```
+
+### randomPlate
+
+Oyunun kendisininkine benzeyen rastgele bir plaka (iki rakam, üç harf, üç rakam) ya da senin ön ekin ve ardından rakamlar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+randomPlate(prefix?: string): string
+```
+
+Lua karşılığı yok (plaka vermezsen `aiLib.spawnVehicle` rastgele bir plaka ayarlar).
+
+<TypeTable
+  type={{
+    prefix: { type: "string", description: "Plakanın başladığı metin; geri kalanı 8 karaktere kadar rakamla doldurulur. 8’den uzunu kesilir.", required: false },
+  }}
+/>
+
+**Dönüş değeri**: 8 karakterlik bir plaka (`42ABC123` ya da `randomPlate("TAXI")` için `TAXI1234`). Benzersizliği kontrol edilmez: saklamadan önce kendi tablonu kontrol et.
+
+```ts
+const plate = randomPlate("RENT");
+```
+
+## Araç bulmak
+
+### nearestVehicleTo
+
+Bir oyuncuya `metres` mesafe içindeki, filtrenden geçen en yakın araç. Oyuncunun oturduğu araç önceliklidir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+nearestVehicleTo(source: number, metres: number, filter?: (vehicle: number) => boolean): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.nearestVehicleTo(source, metres, filter) -- entity ya da 0
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    metres: { type: "number", description: "Metre cinsinden arama yarıçapı.", required: true },
+    filter: { type: "(vehicle: number) => boolean", description: "`false` cevabını verdiği araçları atla (kilitli kapılar, bir model).", required: false },
+  }}
+/>
+
+**Dönüş değeri**: araç entity’si ya da hiç yoksa `0`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = nearestVehicleTo(source, 5);
+if (!vehicle) return fail("NO_VEHICLE");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = aiLib.nearestVehicleTo(source, 5.0)
+if vehicle == 0 then return aiLib.fail('NO_VEHICLE') end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Server’daki her aracı dolaşır: komutlar ve aksiyonlar (hız sınırlı) için kullan, asla bir tick içinde değil.
+</Callout>
+
+### nearestVehicleAt
+
+Bir noktaya `metres` mesafe içindeki en yakın araç. Bir spawn noktasının boş olduğunu kontrol etmek için kullan.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+nearestVehicleAt(point: { x: number; y: number; z: number }, metres: number, filter?: (vehicle: number) => boolean): number
+```
+
+Lua karşılığı yok.
+
+**Dönüş değeri**: araç entity’si ya da hiç yoksa `0`. `nearestVehicleTo` gibi her aracı dolaşır.
+
+```ts
+const SPOT = { x: 899.1, y: -180.6, z: 73.8 };
+if (nearestVehicleAt(SPOT, 3)) return fail("SPOT_BLOCKED");
+```
+
+## Client girdisinden entity’ler
+
+Bir client asla bir entity handle’ı değil, bir network id gönderir. Bunlar bir net id’yi canlı server entity’sine çevirir ve kontrol eder; böylece `NetworkGetEntityFromNetworkId` + `DoesEntityExist` + `GetEntityType` zincirini asla elle çağırmazsın.
+
+### entityFromNet
+
+Bir client’ın network id’sinin arkasındaki canlı entity.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+entityFromNet(netId: unknown, type?: 1 | 2 | 3): number
+```
+
+Lua karşılığı yok (Lua’da `vehicleFromNet` var).
+
+<TypeTable
+  type={{
+    netId: { type: "unknown", description: "Client’tan gelen ham değer.", required: true },
+    type: { type: "1 | 2 | 3", description: "Gereken entity tipi: 1 ped, 2 araç, 3 nesne. Verilmezse herhangi bir tip.", required: false },
+  }}
+/>
+
+**Dönüş değeri**: entity ya da değer pozitif bir tam sayı değilse, ağa bağlı değilse, yok olduysa veya başka bir tipteyse `0`.
+
+```ts
+const prop = entityFromNet(rawNetId, 3);
+if (!prop) return fail("NOT_FOUND");
+```
+
+### pedFromNet
+
+`entityFromNet(netId, 1)`: canlı ped ya da `0`.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+pedFromNet(netId: unknown): number
+```
+
+Lua karşılığı yok.
+
+```ts
+const ped = pedFromNet(rawNetId);
+```
+
+### vehicleFromNet
+
+`entityFromNet(netId, 2)`: canlı araç ya da `0`.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+vehicleFromNet(netId: unknown): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.vehicleFromNet(netId) -- entity ya da 0
+```
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = vehicleFromNet(rawNetId);
+if (!vehicle) return fail("NO_VEHICLE");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = aiLib.vehicleFromNet(netId)
+if vehicle == 0 then return aiLib.fail('NO_VEHICLE') end
+```
+</Tab>
+</Tabs>
+
+### vehicleNearPlayer
+
+Bir client’ın network id’sinin arkasındaki araç; ama yalnızca oyuncu ona yakınsa (ya da sürücü koltuğundaysa).
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+vehicleNearPlayer(source: number, netId: unknown, options?: { metres?: number; driver?: boolean }): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.vehicleNearPlayer(source, netId, options) -- entity ya da 0
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    netId: { type: "unknown", description: "Client’tan gelen ham net id.", required: true },
+    "options.metres": { type: "number", description: "Oyuncu ile araç arasındaki en büyük mesafe.", default: "5" },
+    "options.driver": { type: "boolean", description: "Mesafe yerine oyuncunun sürücü koltuğunda olmasını iste.", default: "false" },
+  }}
+/>
+
+**Dönüş değeri**: araç ya da id hatalıysa, araç yok olduysa veya oyuncu çok uzaktaysa / sürücü değilse `0`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onClientCallback("my-tow:hook", { args: oneArg(readId), lock: true }, (source, netId) => {
+  const vehicle = vehicleNearPlayer(source, netId, { metres: 6 });
+  if (!vehicle) return fail("TOO_FAR");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-tow:hook', function(source, netId)
+    local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 6 })
+    if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+## Anahtarlar
+
+`vehicleKeys` ai-core’un anahtar katmanı üzerinden gider: sunucunun çalıştırdığı anahtar script’i (ai-vehiclekeys ya da sahibin seçtiği başka biri) cevap verir. Bir araç, bir server entity handle’ı ya da bir plakadır.
+
+### vehicleKeys.give
+
+Bir oyuncuya bir aracın anahtarlarını verir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+vehicleKeys.give(source: number, vehicle: number | string, purpose?: KeyPurpose): void
+```
+
+```lua title="Lua"
+aiLib.vehicleKeys.give(source, vehicle, purpose)
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Oyuncunun server id’si.", required: true },
+    vehicle: { type: "number | string", description: "Server entity handle’ı ya da plaka.", required: true },
+    purpose: { type: '"purchase" | "garage" | "job" | "rental" | "temporary"', typeDescriptionLink: "/tr/docs/developers/api/types#keypurpose", description: "`purchase`: satın alındı, yeni bir anahtar. `garage`: depodan çıkan sahip olunan bir araç. `job`: bir iş aracı. `rental`: kiralık. `temporary`: admin spawn’ı, test sürüşü, soygun.", default: '"temporary"' },
+  }}
+/>
+
+**Dönüş değeri** `void`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicleKeys.give(source, vehicle, "rental");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.vehicleKeys.give(source, vehicle, 'rental')
+```
+</Tab>
+</Tabs>
+
+### vehicleKeys.remove
+
+Bir oyuncunun bir araca ait anahtarlarını alır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+vehicleKeys.remove(source: number, vehicle: number | string): void
+```
+
+```lua title="Lua"
+aiLib.vehicleKeys.remove(source, vehicle)
+```
+
+**Dönüş değeri** `void`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicleKeys.remove(source, "RENT1234");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.vehicleKeys.remove(source, 'RENT1234')
+```
+</Tab>
+</Tabs>
+
+### vehicleKeys.has
+
+Bir oyuncunun anahtarlara sahip olup olmadığı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+vehicleKeys.has(source: number, vehicle: number | string): boolean
+```
+
+```lua title="Lua"
+local has = aiLib.vehicleKeys.has(source, vehicle)
+```
+
+**Dönüş değeri** `boolean`. Anahtar script’i bunu söyleyemiyorsa ya da hiçbiri çalışmıyorsa da `true`; bu yüzden onu değerli bir şeyin tek kilidi olarak kullanma.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (!vehicleKeys.has(source, vehicle)) return fail("NO_KEYS");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if not aiLib.vehicleKeys.has(source, vehicle) then return aiLib.fail('NO_KEYS') end
+```
+</Tab>
+</Tabs>
+
+## Yakıt
+
+`fuel`, hangi yakıt script’i çalışıyorsa ai-core’un yakıt katmanı üzerinden bir aracın yakıtını (0 ile 100 arası) okur ve ayarlar. Server’da Lua karşılığı yok: ai-core’un `GetVehicleFuel` / `SetVehicleFuel` export’larını çağır.
+
+### fuel.get
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+fuel.get(vehicle: number): number | null
+```
+
+**Dönüş değeri**: bir server araç entity’sinin seviyesi (0 ile 100 arası) ya da yakıtı yoksa `null`.
+
+```ts
+const level = fuel.get(vehicle) ?? 0;
+```
+
+### fuel.set
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+fuel.set(vehicle: number, level: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Server araç entity’si.", required: true },
+    level: { type: "number", description: "Yeni seviye, 0-100 aralığına sıkıştırılır.", required: true },
+  }}
+/>
+
+**Dönüş değeri**: ayarlandıysa `true`, yanlış bir araç için `false`.
+
+```ts
+fuel.set(vehicle, 100);
+```
+
+### fuel.provider
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+fuel.provider(): string | null
+```
+
+**Dönüş değeri**: cevap veren yakıt script’inin resource adı (`ai-fuel`, `ox_fuel`, `LegacyFuel`...) ya da hiçbiri çalışmıyorsa `null`.
+
+```ts
+console.log(`fuel through ${fuel.provider() ?? "nothing"}`);
+```
+
+## Garajlar
+
+`garages`, hangi garaj script’i çalışıyorsa ai-core’un garaj katmanı üzerinden gider; her script yalnızca dışarıya açtığı şeylere cevap verir. Lua karşılığı yok.
+
+### garages.impound
+
+Bir aracı otoparka (impound) gönderir ya da `by` için garaj script’inin impound formunu açar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+garages.impound(vehicle: number, by?: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Server araç entity’si.", required: true },
+    by: { type: "number", description: "Aracı çektiren oyuncunun server id’si (formu olan script’ler onu bu oyuncu için açar).", required: false },
+  }}
+/>
+
+**Dönüş değeri**: garaj script’i aracı aldıysa `true`. Hiçbir şey almadıysa `false`: aracı kendin sil.
+
+```ts
+if (!garages.impound(vehicle, source)) DeleteEntity(vehicle);
+```
+
+### garages.store
+
+Bir aracı bir garaja koyar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+garages.store(vehicle: number, garage?: string | null, by?: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Server araç entity’si.", required: true },
+    garage: { type: "string | null", description: "Garaj script’inin kendi garaj id’si.", default: "null" },
+    by: { type: "number", description: "Aracı koyan oyuncunun server id’si.", required: false },
+  }}
+/>
+
+**Dönüş değeri**: konduysa `true`, hiçbir şey almadıysa `false`.
+
+```ts
+if (!garages.store(vehicle, "legion", source)) return fail("STORE_FAILED");
+```
+
+### garages.open
+
+Garaj script’inin garaj menüsünü bir oyuncu için açar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+garages.open(source: number, garage?: string | null): boolean
+```
+
+**Dönüş değeri**: açıldıysa `true`, script’in böyle bir menüsü yoksa `false`.
+
+```ts
+garages.open(source, "pillbox");
+```
+
+### garages.stored
+
+Bir oyuncunun garajlardaki ya da otoparktaki araçları.
+
+**Taraf:** Server · **Bekler:** evet (Promise)
+
+```ts title="Signature"
+garages.stored(source: number): Promise<GaragedVehicle[] | null>
+```
+
+**Dönüş değeri**: [`GaragedVehicle[]`](/tr/docs/developers/api/types#garagedvehicle) (`plate`, `model`, `garage`, `impounded`) ya da script bunu söyleyemiyorsa veya ai-core durmuşsa `null`.
+
+```ts
+const list = await garages.stored(source);
+const impounded = list?.filter((v) => v.impounded).length ?? 0;
+```
+
+### garages.provider
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+garages.provider(): string | null
+```
+
+**Dönüş değeri**: cevap veren garaj script’i ya da hiçbiri çalışmıyorsa `null`.
+
+```ts
+if (!garages.provider()) console.warn("no garage script runs");
+```

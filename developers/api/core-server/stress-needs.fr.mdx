@@ -1,0 +1,177 @@
+---
+title: Stress et besoins
+description: Ajouter ou soulager du stress et remplir la faim et la soif via le HUD qui les tient.
+icon: Activity
+---
+
+Le stress, la faim et la soif vivent dans le script de HUD qui les affiche. ai-core transmet les changements au **premier HUD qui tourne et tient le stress** : tgiann-lumihud, tgiann-hudv2, tgiann-modern-hud, qb-hud, ps-hud, puis ai-hud. N’appelez jamais les propres événements ou exports d’un HUD (`hud:server:GainStress`, `AddNeed` d’ai-hud).
+
+### GetStressSystem
+
+Le nom de ressource du HUD auquel ai-core donne le stress.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`stress.provider()`](/fr/docs/developers/api/lib-server/jobs#stressprovider)
+
+```ts title="Signature"
+GetStressSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetStressSystem() -- string ou nil
+```
+
+#### Paramètres
+
+Aucun.
+
+#### Retour
+
+`string | null` : le nom de ressource du HUD. `null` quand aucun HUD avec stress ne tourne (les changements de stress sont alors abandonnés).
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("stresssystem", { help: "Shows the HUD that keeps stress", restricted: true }, () => {
+  console.log(core.GetStressSystem() ?? "none: stress is dropped");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('stresssystem', { help = 'Shows the HUD that keeps stress', restricted = true }, function()
+  print(exports['ai-core']:GetStressSystem() or 'none: stress is dropped')
+end)
+```
+</Tab>
+</Tabs>
+
+### AddStress
+
+Ajoute du stress à un joueur, ou en soulage avec un montant négatif.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`stress.gain(source, amount)`](/fr/docs/developers/api/lib-server/jobs#stressgain) et [`stress.relieve(source, amount)`](/fr/docs/developers/api/lib-server/jobs#stressrelieve) (prennent tous deux un montant positif)
+
+```ts title="Signature"
+AddStress(source: number, amount: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:AddStress(source, 5)    -- plus de stress
+local ok2 = exports['ai-core']:AddStress(source, -10) -- moins de stress
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serveur du joueur. Un nombre entier positif.', required: true },
+    amount: { type: 'number', description: 'Points de stress sur l’échelle 0-100 du HUD : positif ajoute, négatif soulage. Pas 0, 100 au plus dans un sens comme dans l’autre.', required: true },
+  }}
+/>
+
+#### Retour
+
+`boolean` : `true` quand le changement a été transmis au HUD. `false` quand `source` ou `amount` est hors limites, qu’aucun HUD avec stress ne tourne, ou que le HUD a échoué. Le HUD borne le résultat à 0-100.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Braquer un magasin est stressant ; fumer un joint détend.
+export function robberyStarted(source: number): void {
+  core.AddStress(source, 8);
+}
+
+core.RegisterUsableItem("joint", (source) => {
+  core.AddStress(source, -15);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function RobberyStarted(source)
+  exports['ai-core']:AddStress(source, 8)
+end
+
+exports['ai-core']:RegisterUsableItem('joint', function(source)
+  exports['ai-core']:AddStress(source, -15)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Le stress dû aux tirs et à la conduite rapide est l’affaire du HUD lui-même. Utilisez `AddStress` pour les événements que votre script connaît.
+</Callout>
+
+### RefillNeeds
+
+Remplit complètement la faim et la soif d’un joueur via le HUD qui les tient. Utilisez-le après une réanimation ou un séjour à l’hôpital.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`needs.refill`](/fr/docs/developers/api/lib-server/jobs#needsrefill)
+
+```ts title="Signature"
+RefillNeeds(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RefillNeeds(source)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serveur du joueur. Doit avoir un personnage chargé.', required: true },
+  }}
+/>
+
+#### Retour
+
+`boolean` : `true` quand le remplissage a été transmis au HUD. Sans HUD qui tient les besoins, ai-core fixe lui-même les métadonnées `hunger` et `thirst` du personnage à 100 (et prévient les HUD de style QB avec `hud:client:UpdateNeeds`) et répond `true`. `false` quand le joueur n’a pas de personnage chargé ou que le HUD a échoué.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const BED = { x: 317.8, y: -585.2, z: 43.3 };
+
+// Un lit d’hôpital : réanimation, pleine santé, estomac plein.
+onClientCallback("myscript:hospitalBed", { guards: [near(BED, 2)], lock: true }, (source) => {
+  if (!core.RemoveMoney(source, "bank", 500, "hospital_bed")) return fail("NOT_ENOUGH_MONEY");
+  if (!core.RevivePlayer(source)) core.HealPlayer(source);
+  core.RefillNeeds(source);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local BED = vector3(317.8, -585.2, 43.3)
+
+aiLib.onClientCallback('myscript:hospitalBed', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - BED) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:RemoveMoney(source, 'bank', 500, 'hospital_bed') then return aiLib.fail('NOT_ENOUGH_MONEY') end
+  if not exports['ai-core']:RevivePlayer(source) then exports['ai-core']:HealPlayer(source) end
+  exports['ai-core']:RefillNeeds(source)
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>

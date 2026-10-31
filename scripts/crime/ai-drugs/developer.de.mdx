@@ -1,0 +1,84 @@
+---
+title: ai-drugs für Entwickler
+description: Die Pflanzentabelle, Alarme und der Buchungsgrund von ai-drugs, wie du Drogen, die es kennt, aus einem anderen Skript verkaufbar machst, und seine privaten Events.
+icon: Code
+---
+
+ai-drugs hat **keine Exports**. Verkäufe und Ernten werden auf seinem Server entschieden, und Items, Geld und Alarme laufen über AI Core. Was ein anderes Skript nutzen kann, steht unten.
+
+## Datenbanktabelle `ai_drugs_plants`
+
+Eine Zeile pro Cannabispflanze in der Welt. Wird beim Start angelegt (`sql/main.sql`, über den Tabellen-Installer von ai-core). Alle Zeilen werden einmal beim Start geladen und im Speicher gehalten; verfaulte Pflanzen löscht der Server, sodass die Tabelle klein bleibt.
+
+| Spalte | Typ | Was sie enthält |
+| --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | Die Pflanzen-ID (Auto-Increment). |
+| `owner` | `INT UNSIGNED` | `ai_core_characters.id` des Pflanzenden (danach werden die Pflanzen pro Charakter gezählt). |
+| `x`, `y`, `z` | `FLOAT` | Wo die Pflanze steht. |
+| `planted_at` | `DATETIME` | Wann sie gepflanzt wurde; Wachstum und Fäulnis werden ab hier gezählt. |
+
+<Callout type="warn">
+ai-drugs liest die Tabelle nur beim Start und hält seine Pflanzen danach im Speicher. Eine Zeile, die eine andere Ressource einfügt, ändert oder löscht, während es läuft, wird bis zum nächsten Neustart nicht gesehen. Ändere Pflanzen nur, während ai-drugs gestoppt ist.
+</Callout>
+
+## Polizeialarme
+
+Ein Verkauf kann einen Alarm senden (nach der **Police alert chance** aus dem Panel) über `dispatch.alert` der Lib: Code `10-31`, der Text „Suspicious hand-off reported“, an der Position des Verkäufers, Symbol `cannabis`, Blip-Sprite 51 rot. Er erreicht das jeweils laufende Alarmskript.
+
+## Geld
+
+Das Geld aus Verkäufen geht auf das **Money account** aus dem Panel mit dem Buchungsgrund `drugs:sale`.
+
+## Items
+
+Die Drogen, die Fremde kaufen, sind die Liste **Drugs** aus dem Panel (standardmäßig `weed_bud`, `coke_baggy`, `meth_baggy`). Um den Straßenverkauf aus deinem eigenen Drogenlabor zu beliefern, gib dem Spieler eines dieser Items: ai-drugs verkauft jedes aufgeführte Item, das der Spieler trägt.
+
+#### Beispiel
+
+Ein Laborskript, das 5 `weed_bud` in ein `coke_baggy` verwandelt (ein erfundenes Rezept):
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, onClientCallback, progressFor } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+onClientCallback("mylab:cook", async (source) => {
+  if (!inventory.hasItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  const done = await progressFor(source, { label: "Cooking", duration: 10_000 });
+  if (!done) return fail("LAB_ERR_CANCELLED");
+  if (!inventory.removeItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  inventory.addItem(source, "coke_baggy", 1);
+  notify(source, "You made a baggy", "success");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+RegisterNetEvent('mylab:cook', function()
+  local source = source
+  if not aiLib.inventory.hasItem(source, 'weed_bud', 5) then return end
+  CreateThread(function()
+    local done = aiLib.progressFor(source, { label = 'Cooking', duration = 10000 })
+    if not done then return end
+    if not aiLib.inventory.removeItem(source, 'weed_bud', 5) then return end
+    aiLib.inventory.addItem(source, 'coke_baggy', 1)
+    aiLib.notify(source, 'You made a baggy', 'success')
+  end)
+end)
+```
+</Tab>
+</Tabs>
+
+## Private Events und Callbacks
+
+Der eigene Vertrag des Skripts (`resource/common/drugs.ts`). Der Server prüft bei jedem Aufruf den Käufer, die Entfernung und die Abklingzeiten. Sie können sich zwischen Versionen ändern: Löse sie nicht aus anderen Ressourcen aus und höre nicht darauf.
+
+| Name | Richtung | Was es überträgt |
+| --- | --- | --- |
+| `ai-drugs:sell` | Client-Callback | `(buyerNetId)`: an den Fremden neben dem Spieler verkaufen; antwortet mit `{ ok, count, price }`. |
+| `ai-drugs:area` | Client -> Server | `(cellX, cellY)`: Die Pflanzenzelle des Spielers hat sich geändert. |
+| `ai-drugs:client:plants` | Server -> Spieler | `(reset, puts, removes, serverNow, growMinutes)`: die Pflanzen um den Spieler (die 3x3 Zellen von 128 m um ihn, danach Änderungen). |
+| `ai-drugs:harvest` | Client-Callback | `(plantId)`: eine reife Pflanze ernten oder zerstören (Polizei). |

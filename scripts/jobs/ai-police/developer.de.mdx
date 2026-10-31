@@ -1,0 +1,92 @@
+---
+title: ai-police für Entwickler
+description: Der State Bag cuffed von ai-police, wie seine Aktionen andere Skripte über AI Core erreichen, und seine privaten Events.
+icon: Code
+---
+
+ai-police hat **keine Exports**. Seine Bußgelder, Einträge, Haftstrafen, Alarme, Durchsuchungen und Beschlagnahmungen laufen alle über die Layer von AI Core, daher ruft ein anderes Skript ai-police nie auf. Was ein anderes Skript lesen kann, ist der Zustand `cuffed`.
+
+## State Bag `cuffed`
+
+`true` im State Bag eines Spielers, solange ai-police ihn gefesselt hält; sonst `false` (oder fehlend). Der Server schreibt ihn; jeder Client kann ihn lesen. Der Schlüsselname ist `PLAYER_BAGS.cuffed` in `@aicore-fivem/shared`.
+
+**Seite:** Server und Client (lesen) · **Wartet:** nein
+
+```ts title="Signatur"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- Server
+local cuffed = LocalPlayer.state.cuffed == true      -- Client, der lokale Spieler
+```
+
+#### Rückgabewert
+
+`true`, solange gefesselt. `false` nach dem Abnehmen der Handschellen, `undefined` / `nil`, wenn der Spieler in dieser Sitzung nie gefesselt war.
+
+#### Beispiel
+
+Ein Item ablehnen, solange der Spieler gefesselt ist:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... das Funkgerät öffnen
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... das Funkgerät öffnen
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Setze `cuffed` nicht selbst: ai-police führt seine eigene Liste gefesselter Spieler und Abführungen auf dem Server und spiegelt sie nur in den State Bag. Ein von einem anderen Skript geschriebener Wert ist keine echte Fesselung und wird bei der nächsten Handschellen-Aktion überschrieben.
+</Callout>
+
+## Was ai-police über AI Core sendet
+
+| Aktion | Genutzter Layer | Was dort ankommt |
+| --- | --- | --- |
+| Bußgeld ausstellen | `billing.send` der Lib | Eine Rechnung vom Job im Dienst des Beamten, Label „Police fine“. |
+| Bußgeld ausstellen | `mdt.record` der Lib | Ein `fine`-Eintrag mit dem Betrag. |
+| Ins Gefängnis schicken | `prison.jail` der Lib | Die Strafe, mit dem Beamten als `by`. |
+| Ins Gefängnis schicken | `mdt.record` der Lib | Ein `arrest`-Eintrag mit den Minuten. |
+| Schüsse | `dispatch.alert` der Lib | Ein Alarm pro Bereich von 150 m alle 30 s, an die Polizeijobs aus dem Panel. |
+| Durchsuchen | `inventory.openInventory` der Lib | Das Inventar des Ziels öffnet sich für den Beamten. |
+| Beschlagnahme | `garages.impound` der Lib | Das Garagenskript übernimmt das Fahrzeug; lehnt es ab, wird das Fahrzeug gelöscht. |
+
+Um auf eines davon zu reagieren, höre auf der Seite des Layers (dein Rechnungs-, MDT-, Gefängnis- oder Alarmskript), nicht auf ai-police.
+
+## Private Events und Callbacks
+
+Der eigene Client-Server-Vertrag des Skripts (`resource/common/police.ts`). Der Server prüft bei jedem Aufruf Dienst, Entfernung und den Fesselungszustand. Sie können sich zwischen Versionen ändern: Löse sie nicht aus anderen Ressourcen aus und höre nicht darauf.
+
+| Name | Richtung | Was es überträgt |
+| --- | --- | --- |
+| `ai-police:act` | Client-Callback | `(action, target, extra?)`: Ein Beamter handelt am nächsten Spieler (Server-ID) oder Fahrzeug (Net-ID). Antwortet mit `{ ok }`. |
+| `ai-police:duty` | Client-Callback | `(stationId)`: den Dienst an einer Dienststelle umschalten. Antwortet mit `{ ok, onDuty }`. |
+| `ai-police:shot` | Client -> Server | `(x, y, z)`: Der Spieler hat eine Waffe abgefeuert (mit Rate-Limit, nur Nicht-Polizisten zählen). |
+| `ai-police:client:cuffed` | Server -> Ziel | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | Server -> Ziel | `(officerNetId \| null)`: am Beamten befestigen oder loslassen. |
+| `ai-police:client:seat` | Server -> Ziel | `(vehicleNetId \| null)`: sich hinten in ein Fahrzeug setzen oder aussteigen. |

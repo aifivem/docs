@@ -1,0 +1,345 @@
+---
+title: Données du panneau
+description: "num, int, bool, str, record, vec4, spec, readRecords et withoutSchemaKey : lire les fichiers data/*.json que modifie le panneau d’administration."
+icon: SlidersHorizontal
+---
+
+Les réglages de votre script se trouvent dans des fichiers `data/*.json` que le propriétaire du serveur modifie dans le panneau d’administration d’ai-core (voir [Panneau d’administration](/fr/docs/developers/api/lib-server/admin-panel)). Le panneau vérifie les valeurs par rapport à votre `schema.ts`, mais un fichier peut tout de même être ancien, modifié à la main ou privé d’un champ. Les lecteurs de cette page **ne refusent jamais** : une valeur manquante ou fausse donne la valeur de repli que vous passez, et le script démarre donc toujours.
+
+Pour les valeurs qu’envoie un client, utilisez plutôt les lecteurs stricts de [Actions et entrées du client](/fr/docs/developers/api/lib-shared/input) : eux refusent une mauvaise valeur.
+
+```ts title="TypeScript"
+import { num, int, bool, str, record, vec4, spec, readRecords, withoutSchemaKey } from "@aicore-fivem/lib/shared";
+```
+
+**Lua :** aucun de ces utilitaires n’a d’équivalent Lua (le panneau d’administration et ses fichiers de données sont uniquement en TypeScript).
+
+## Lecteurs de valeurs
+
+### num
+
+Un nombre fini borné à `[min, max]`, sinon la valeur de repli.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+num(value: unknown, fallback: number, min?: number, max?: number): number
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'La valeur brute du fichier.', required: true },
+    fallback: { type: 'number', description: 'Utilisée quand `value` n’est pas un nombre fini.', required: true },
+    min: { type: 'number', description: 'Un nombre plus petit est remonté à cette valeur.', default: '-Infinity' },
+    max: { type: 'number', description: 'Un nombre plus grand est abaissé à cette valeur.', default: 'Infinity' },
+  }}
+/>
+
+#### Retour
+
+`number` : la valeur bornée dans l’intervalle, ou `fallback` (non borné).
+
+#### Exemple
+
+```ts
+import { num } from "@aicore-fivem/lib/shared";
+
+num(25, 2.5, 1, 20);      // 20 (borné)
+num("big", 2.5, 1, 20);   // 2.5 (repli)
+```
+
+### int
+
+Comme `num`, puis arrondi à un nombre entier.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+int(value: unknown, fallback: number, min?: number, max?: number): number
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'La valeur brute du fichier.', required: true },
+    fallback: { type: 'number', description: 'Utilisée quand `value` n’est pas un nombre fini.', required: true },
+    min: { type: 'number', description: 'Plus petit résultat.', default: '-Infinity' },
+    max: { type: 'number', description: 'Plus grand résultat.', default: 'Infinity' },
+  }}
+/>
+
+#### Retour
+
+`number` : un nombre entier (la valeur de repli est arrondie aussi).
+
+#### Exemple
+
+```ts
+import { int } from "@aicore-fivem/lib/shared";
+
+int(12.6, 10, 0, 100); // 13
+int(null, 10, 0, 100); // 10
+```
+
+### bool
+
+Un booléen, sinon la valeur de repli.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+bool(value: unknown, fallback: boolean): boolean
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'La valeur brute du fichier.', required: true },
+    fallback: { type: 'boolean', description: 'Utilisée quand `value` n’est ni `true` ni `false`.', required: true },
+  }}
+/>
+
+#### Retour
+
+`boolean`.
+
+#### Exemple
+
+```ts
+import { bool } from "@aicore-fivem/lib/shared";
+
+bool(true, false);   // true
+bool("yes", false);  // false (repli)
+```
+
+### str
+
+Une chaîne non vide, sans espaces autour, coupée à `max` caractères, sinon la valeur de repli.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+str(value: unknown, fallback: string, max?: number): string
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'La valeur brute du fichier.', required: true },
+    fallback: { type: 'string', description: 'Utilisée quand `value` n’est pas une chaîne ou est vide une fois les espaces retirés.', required: true },
+    max: { type: 'number', description: 'Nombre maximal de caractères gardés.', default: '64' },
+  }}
+/>
+
+#### Retour
+
+`string`.
+
+#### Exemple
+
+```ts
+import { str } from "@aicore-fivem/lib/shared";
+
+str("  City Hall ", "Hall", 48); // "City Hall"
+str("", "Hall", 48);             // "Hall"
+```
+
+### record
+
+La valeur sous forme d’objet simple, ou un objet vide `{}`. Utilisez-le avant de lire les champs d’une valeur qui peut manquer.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+record(value: unknown): Record<string, unknown>
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'N’importe quelle valeur.', required: true },
+  }}
+/>
+
+#### Retour
+
+`value` lui-même quand c’est un objet simple, sinon un nouveau `{}` (aussi pour les tableaux et `null`).
+
+#### Exemple
+
+```ts
+import { num, record } from "@aicore-fivem/lib/shared";
+
+function readCoords(raw: unknown) {
+  const c = record(raw); // {} quand le champ manque
+  return { x: num(c.x, 0), y: num(c.y, 0), z: num(c.z, 0) };
+}
+```
+
+### vec4
+
+Une position avec un cap ; chaque champ manquant ou faux vient de la valeur de repli.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+vec4(value: unknown, fallback: Vec4): Vec4
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'La valeur brute (`{ x, y, z, heading }`).', required: true },
+    fallback: { type: 'Vec4', description: 'D’où vient chaque champ manquant.', required: true, typeDescription: '{ x, y, z, heading }' },
+  }}
+/>
+
+#### Retour
+
+Un nouveau [Vec4](/fr/docs/developers/api/types#vec4).
+
+#### Exemple
+
+```ts
+import { vec4 } from "@aicore-fivem/lib/shared";
+
+vec4({ x: 10, y: 20, z: 30 }, { x: 0, y: 0, z: 0, heading: 90 }); // { x: 10, y: 20, z: 30, heading: 90 }
+```
+
+## Utilitaires de schéma
+
+### spec
+
+Des constructeurs pour les champs numériques de votre `schema.ts` de panneau, pour ne pas écrire le même objet `DataSpec` à la main.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+spec.int(min: number, max: number, optional?: boolean): DataSpec
+spec.num(min: number, max: number, optional?: boolean): DataSpec
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    min: { type: 'number', description: 'Plus petite valeur que le panneau accepte.', required: true },
+    max: { type: 'number', description: 'Plus grande valeur que le panneau accepte.', required: true },
+    optional: { type: 'boolean', description: '`true` : le champ peut rester vide.', default: 'false' },
+  }}
+/>
+
+#### Retour
+
+`DataSpec` : `{ type: "number", min, max }`, plus `integer: true` pour `spec.int` et `optional: true` sur demande.
+
+#### Exemple
+
+```ts title="resource/server/schema.ts"
+import { spec } from "@aicore-fivem/lib/shared";
+import type { PanelSchema } from "@aicore-fivem/shared";
+
+export const schema: PanelSchema = {
+  title: "ADMIN_TITLE",
+  icon: "store",
+  files: {
+    settings: {
+      kind: "settings",
+      sync: "admin",
+      sections: {
+        prices: { type: "object", fields: { water: spec.int(0, 1_000_000), tax: spec.num(0, 0.5) } },
+      },
+    },
+  },
+  tabs: [], // la disposition du panneau (cartes et champs), voir Panneau d’administration
+};
+```
+
+### withoutSchemaKey
+
+Retire la clé `"$schema"` du contenu d’un fichier de données. La clé n’est là que pour que les éditeurs de code puissent vérifier le fichier ; votre lecteur ne doit pas la voir.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+withoutSchemaKey(value: unknown): unknown
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Un fichier de données parsé.', required: true },
+  }}
+/>
+
+#### Retour
+
+Une copie sans `$schema` quand la valeur est un objet qui l’a ; sinon `value` inchangé.
+
+#### Exemple
+
+```ts
+import { withoutSchemaKey } from "@aicore-fivem/lib/shared";
+
+withoutSchemaKey({ $schema: "./schemas/shops.schema.json", legion: { label: "Legion" } });
+// { legion: { label: "Legion" } }
+```
+
+## Fichiers d’enregistrements
+
+Un fichier d’**enregistrements** (records) contient de nombreuses entrées par clé (`{ "legion": {...}, "pillbox": {...} }`) : magasins, garages, mairies. Chaque entrée est lue par votre propre fonction de lecture (`RecordReader<T> = (key: string, raw: Record<string, unknown>) => T | null`), construite avec les lecteurs de valeurs ci-dessus.
+
+### readRecords
+
+Lit en une fois tout un fichier d’enregistrements dans une `Map`, une entrée par clé, via votre lecteur. Les entrées qui ne sont pas des objets, ou pour lesquelles votre lecteur renvoie `null`, sont laissées de côté.
+
+**Côté :** client, serveur et NUI · **Attend :** non
+
+```ts title="Signature"
+readRecords<T>(raw: unknown, readOne: RecordReader<T>): Map<string, T>
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    raw: { type: 'unknown', description: 'Le fichier parsé (`{ key: record }`). Toute autre chose donne une map vide.', required: true },
+    readOne: { type: '(key: string, raw: Record<string, unknown>) => T | null', description: 'Lit une entrée. Renvoyez `null` pour la laisser de côté.', required: true },
+  }}
+/>
+
+#### Retour
+
+`Map<string, T>` : les entrées parsées par clé.
+
+#### Exemple
+
+```ts
+import { readRecords, str, num, record } from "@aicore-fivem/lib/shared";
+
+type Shop = { label: string; x: number; y: number; z: number };
+
+const readShop = (key: string, v: Record<string, unknown>): Shop => {
+  const c = record(v.coords);
+  return { label: str(v.label, key, 48), x: num(c.x, 0), y: num(c.y, 0), z: num(c.z, 0) };
+};
+
+const shops = readRecords({ legion: { label: "Legion", coords: { x: 25.7, y: -1347.3, z: 29.5 } } }, readShop);
+shops.get("legion"); // { label: "Legion", x: 25.7, y: -1347.3, z: 29.5 }
+```
+
+<Callout type="info">
+Pour un fichier du panneau, préférez `panel.records(file, readOne)` (`AdminPanel` serveur) ou `world.records(file, readOne)` (`AdminWorld` client) : ils renvoient une map qui reste à jour pendant que le propriétaire modifie, en ne parsant que l’entrée modifiée.
+</Callout>
+
+### RecordObjects
+
+Garde les objets du monde d’un fichier d’enregistrements (points, blips, peds, zones) synchronisés avec le panneau, une entrée à la fois : une entrée modifiée ne reconstruit que ses propres objets. Elle est exportée depuis `@aicore-fivem/lib/shared` et n’a pas d’équivalent Lua. Sa référence complète (constructeur, fonction `build`, `rebuild`, `rebuildAll`, exemple) se trouve sur [Points d’interaction : RecordObjects](/fr/docs/developers/api/lib-client/points#new-recordobjects).

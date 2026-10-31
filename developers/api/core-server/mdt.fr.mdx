@@ -1,0 +1,132 @@
+---
+title: MDT
+description: Écrire des amendes, mandats, arrestations et peines de prison dans le MDT de police qu’utilise le serveur.
+icon: ClipboardList
+---
+
+Les enregistrements passent par ai-core, jamais par les exports ou événements propres à un MDT. ai-core transmet chaque enregistrement au **MDT actif** : celui que choisit le réglage **MDT script** du panneau, ou le premier qui tourne. Il n’existe pas de MDT ai-*, donc **tant qu’aucun MDT ne tourne, les enregistrements ne sont écrits nulle part**. L’ouverture de l’écran du MDT se fait sur le client (export client `OpenMdt`, `mdt.open` de la lib).
+
+### GetMdtSystem
+
+Le nom de ressource du MDT auquel ai-core transmet.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`mdt.provider()`](/fr/docs/developers/api/lib-server/jobs#mdtprovider)
+
+```ts title="Signature"
+GetMdtSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetMdtSystem() -- string ou nil
+```
+
+#### Paramètres
+
+Aucun.
+
+#### Retour
+
+`string | null` : le nom de ressource du MDT. `null` quand aucun ne tourne.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("mdtsystem", { help: "Shows the MDT in use", restricted: true }, () => {
+  console.log(core.GetMdtSystem() ?? "none: records are not written");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('mdtsystem', { help = 'Shows the MDT in use', restricted = true }, function()
+  print(exports['ai-core']:GetMdtSystem() or 'none: records are not written')
+end)
+```
+</Tab>
+</Tabs>
+
+### AddMdtRecord
+
+Écrit un enregistrement sur un joueur dans le MDT : une amende, un mandat, une arrestation ou une peine de prison. ai-core complète les citizen ids et les noms de la cible et de l’agent.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`mdt.record`](/fr/docs/developers/api/lib-server/jobs#mdtrecord)
+
+```ts title="Signature"
+AddMdtRecord(record: MdtRecord): boolean
+```
+
+```lua title="Lua"
+local written = exports['ai-core']:AddMdtRecord({ kind = 'fine', target = target, by = source, title = 'Speeding', amount = 250 })
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    record: { type: 'MdtRecord', description: 'L’enregistrement. Champs ci-dessous.', required: true },
+  }}
+/>
+
+#### MdtRecord
+
+<TypeTable
+  type={{
+    kind: { type: '"fine" | "warrant" | "arrest" | "jail"', description: 'Ce que concerne l’enregistrement.', required: true },
+    target: { type: 'number', description: 'Id serveur du joueur concerné par l’enregistrement. Doit avoir un personnage chargé.', required: true },
+    by: { type: 'number', description: 'Id serveur de l’agent qui l’écrit.' },
+    title: { type: 'string', description: 'Ce qui s’est passé (`Speeding`, `Armed robbery`), déjà traduit. Coupé à 120 caractères.', required: true },
+    amount: { type: 'number', description: 'Un montant d’amende en dollars. Un nombre entier de 1 à 10 000 000 ; ignoré sinon.' },
+    minutes: { type: 'number', description: 'Une peine de prison en minutes. Un nombre entier de 1 à 100 000 ; ignoré sinon.' },
+  }}
+/>
+
+Voir [MdtRecord](/fr/docs/developers/api/types#mdtrecord) et [MdtRecordKind](/fr/docs/developers/api/types#mdtrecordkind).
+
+#### Retour
+
+`boolean` : `true` quand le MDT l’a écrit. `false` quand l’enregistrement est invalide (mauvais `kind`, pas de `title`, `target` qui n’est pas un nombre entier positif), que la cible n’a pas de personnage chargé, qu’aucun MDT ne tourne, que le MDT n’accepte pas d’enregistrements des scripts ou n’a pas ce type.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readId } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+// Un agent emprisonne un joueur pour 20 minutes ; le MDT garde l’enregistrement.
+onClientCallback(
+  "myscript:jail",
+  { args: ([target]) => { const id = readId(target); return id === null ? null : [id]; }, lock: true },
+  (source, target) => {
+    if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+    if (!core.JailPlayer(target, 20, source)) return fail("JAIL_FAILED");
+    core.AddMdtRecord({ kind: "jail", target, by: source, title: Locale("RECORD_ROBBERY"), minutes: 20 });
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('myscript:jail', function(source, target)
+  if math.type(target) ~= 'integer' or target < 1 then return aiLib.fail('BAD_TARGET') end
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  if not exports['ai-core']:JailPlayer(target, 20, source) then return aiLib.fail('JAIL_FAILED') end
+  exports['ai-core']:AddMdtRecord({ kind = 'jail', target = target, by = source, title = Locale('RECORD_ROBBERY'), minutes = 20 })
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>

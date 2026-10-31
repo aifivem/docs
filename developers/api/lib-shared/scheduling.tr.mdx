@@ -1,0 +1,371 @@
+---
+title: Zamanlama ve yaşam döngüsü
+description: "every, onStop, caller, ByResource, Reasons, sleep ve waitFor: periyodik işler, beklemek ve onu kaydeden resource’a ait olan veriler."
+icon: Timer
+---
+
+```ts title="TypeScript"
+import { every, onStop, caller, ByResource, Reasons } from "@aicore-fivem/lib/fivem";
+import { sleep, waitFor } from "@aicore-fivem/lib/shared";
+```
+
+## Periyodik işler
+
+### every
+
+Resource’unun tek zamanlayıcısından her `ms` milisaniyede bir (`0` = her kare) bir fonksiyon çalıştırır. `setInterval`, `setTick` ya da `Wait`’li bir `CreateThread` döngüsü yerine bunu kullan: bir resource’un tüm görevleri tek bir tick’i paylaşır ve o tick yalnızca en az bir görev açıkken var olur; böylece boştaki bir resource resmon’da hiçbir maliyet getirmez.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+every(ms: number, fn: () => unknown, options?: EveryOptions): Job
+```
+
+```lua title="Lua"
+local job = aiLib.every(ms, fn, options) -- job:set(active), job:stop(), job.running
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Milisaniye cinsinden aralık. `0` onu her karede çalıştırır. Kesirli sayılar aşağı yuvarlanır, negatifler 0 sayılır.', required: true },
+    fn: { type: '() => unknown', description: 'Yapılacak iş. Bir promise döndürebilir; fırlatılan bir hata ya da reddedilen bir promise loglanır ve görev çalışmaya devam eder.', required: true },
+    options: { type: 'EveryOptions', description: 'Alanlar aşağıda.' },
+  }}
+/>
+
+#### EveryOptions
+
+<TypeTable
+  type={{
+    active: { type: 'boolean', description: '`false` görevi kapalı olarak oluşturur. Onu daha sonra `job.set(true)` ile aç.', default: 'true' },
+    name: { type: 'string', description: 'Hata logundaki ad.', default: "fonksiyonun adı (TS), 'anonymous' (Lua)" },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Job`: görevi açıp kapatmak için bir handle.
+
+<TypeTable
+  type={{
+    running: { type: 'boolean (read only)', description: 'Görev açıkken `true`.' },
+    'set(active)': { type: '(active: boolean) => void', description: 'Görevi açar ya da kapatır. Açıldığında ilk çalışma bir aralık sonra gelir (0 için sonraki kare). Lua: `job:set(true)`.' },
+    'stop()': { type: '() => void', description: 'Görevi kalıcı olarak kapatır: sonrasında `set(true)` hiçbir şey yapmaz. Lua: `job:stop()`.' },
+  }}
+/>
+
+#### Örnek
+
+Yalnızca yapacak bir işi varken çalışan kare başı bir görev:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { every, cache, onCache } from "@aicore-fivem/lib/client";
+
+// Nişangahı her karede gizler, ama yalnızca elde silah varken.
+const hideCrosshair = every(0, () => HideHudComponentThisFrame(14), {
+  active: cache.weapon !== false,
+  name: "hide crosshair",
+});
+
+onCache("weapon", (weapon) => hideCrosshair.set(weapon !== false));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Nişangahı her karede gizler, ama yalnızca elde silah varken.
+local hideCrosshair = aiLib.every(0, function()
+    HideHudComponentThisFrame(14)
+end, { active = aiLib.cache.weapon ~= false, name = 'hide crosshair' })
+
+aiLib.cache.onChange('weapon', function(weapon)
+    hideCrosshair:set(weapon ~= false)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bir görev asla beklememelidir: Lua’da `Wait` yok, TypeScript’te bir sonraki çalışmadan önce bitmesini beklediğin uzun bir `await` zinciri yok. Lua’da bir görev içindeki `Wait` resource’un diğer her görevini bekletir; bunun için görevden bir thread başlat. Başarısız olan bir görev en fazla 10 saniyede bir loglanır (aradaki hatalar bir sonraki satıra sayı olarak eklenir).
+</Callout>
+
+## Beklemek
+
+### sleep
+
+`ms` milisaniye bekler.
+
+**Taraf:** Client, server ve NUI · **Bekler:** evet (Promise)
+
+```ts title="Signature"
+sleep(ms: number): Promise<void>
+```
+
+**Lua:** karşılığı yok; bir thread içinde `Wait(ms)` kullan.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Beklenecek milisaniye.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`ms` milisaniye sonra çözülen `Promise<void>`.
+
+#### Örnek
+
+```ts
+import { sleep } from "@aicore-fivem/lib/shared";
+import { fadeOut, fadeIn } from "@aicore-fivem/lib/client";
+
+async function blink(): Promise<void> {
+  await fadeOut(300);
+  await sleep(1000);
+  await fadeIn(300);
+}
+```
+
+### waitFor
+
+Bir koşulu bir değer verene kadar kontrol eder, sonra o değeri döndürür. Oyunun kendi zamanında yaptığı bir şeyi beklemek için kullan: bir entity’nin var olması, bir modelin yüklenmesi, bir değerin gelmesi.
+
+**Taraf:** Client, server ve NUI · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+waitFor<T>(check: () => T | undefined, timeoutMs?: number | false, intervalMs?: number): Promise<T>
+```
+
+```lua title="Lua"
+local value = aiLib.waitFor(check, timeout, interval) -- değer ya da zaman aşımından sonra nil; bir thread içinde çağır
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    check: { type: '() => T | undefined', description: 'Her kontrolde çalışır. Beklediğin değeri ya da beklemeye devam etmek için `undefined` (Lua: `nil`) döndür. Doğru bir koşulu beklemek için `cond || undefined` (Lua: `cond or nil`) döndür.', required: true },
+    timeoutMs: { type: 'number | false', description: 'Bu kadar milisaniyeden sonra vazgeç. `false` sonsuza kadar bekler.', default: '10000' },
+    intervalMs: { type: 'number', description: 'Kontroller arasındaki milisaniye. `0` her tick’te kontrol eder.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+TypeScript: `check`’in döndürdüğü, `undefined` olmayan ilk değerle çözülen `Promise<T>`. Zaman aşımından sonra `Error("waitFor timed out after <ms> ms")` ile **reddedilir**.
+
+Lua: değer ya da zaman aşımından sonra `nil` (hata fırlatmaz).
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { waitFor } from "@aicore-fivem/lib/shared";
+
+async function vehicleFromNet(netId: number): Promise<number | null> {
+  try {
+    return await waitFor(() => {
+      const vehicle = NetworkGetEntityFromNetworkId(netId);
+      return DoesEntityExist(vehicle) ? vehicle : undefined;
+    }, 5000);
+  } catch {
+    return null; // 5 saniye içinde stream edilmedi
+  }
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local vehicle = aiLib.waitFor(function()
+        local entity = NetworkGetEntityFromNetworkId(netId)
+        return DoesEntityExist(entity) and entity or nil
+    end, 5000)
+    if not vehicle then return end -- 5 saniye içinde stream edilmedi
+    SetVehicleEngineOn(vehicle, true, true, false)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+TypeScript’te reddetmeyi her zaman ele al (`try` / `catch` ya da `.catch()`) veya zaman aşımı olarak `false` geçir. Lua’da `waitFor` yalnızca bir thread içinde çalışır.
+</Callout>
+
+## Resource yaşam döngüsü
+
+### onStop
+
+Resource’un durduğunda (kodun çalıştığı tarafta) bir fonksiyon çalıştırır. Native’lerin oluşturduğu ve başka hiçbir şeyin kaldırmadığı şeyleri silmek için kullan: oluşturduğun entity’ler, kameralar, bir NUI odağı.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+onStop(fn: () => void): void
+```
+
+**Lua:** karşılığı yok; `AddEventHandler('onResourceStop', function(name) if name == GetCurrentResourceName() then ... end end)` kullan.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    fn: { type: '() => void', description: 'Bu resource durduğunda bir kez çalışır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { onStop } from "@aicore-fivem/lib/server";
+
+const spawned = new Set<number>();
+
+onStop(() => {
+  for (const entity of spawned) if (DoesEntityExist(entity)) DeleteEntity(entity);
+});
+```
+
+<Callout type="info">
+Bir resource’un tüm `onStop`, `ByResource` ve `Reasons`’ları tek bir durdurma dinleyicisini paylaşır; bu yüzden çok sayıda eklemek ekstra bir maliyet getirmez.
+</Callout>
+
+### caller
+
+Şu an çalışan export’u çağıran resource’un adı. Kendi kodunun içinde (bir export çağrısında değil) senin resource’unun adıdır.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+caller(): string
+```
+
+**Lua:** karşılığı yok; `GetInvokingResource() or GetCurrentResourceName()` kullan.
+
+#### Dönüş değeri
+
+`string`: çağıran resource’un adı ya da başka hiçbir resource çağırmıyorsa bu resource’un adı.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { registerExport, caller } from "@aicore-fivem/lib/server";
+
+registerExport("Ping", () => {
+  console.log(`${caller()} asked for a ping`);
+  return true;
+});
+```
+
+### ByResource
+
+Girdileri onları ayarlayan resource’a ait olan bir map. O resource durduğunda girdileri hemen kaldırılır (ve her biri için `onDrop` çalışır). Diğer resource’ların senin export’ların üzerinden kaydettiği şeyler için kullan: hook’lar, istemler, eşyalar, menü girdileri.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+new ByResource<K, V>(options?: { onDrop?: (resource: string, key: K, value: V) => void })
+```
+
+**Lua:** karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    'options.onDrop': { type: '(resource: string, key: K, value: V) => void', description: 'Resource’u durduğu için kaldırılan her girdi için çalışır (`delete` için değil).' },
+  }}
+/>
+
+#### Metotlar
+
+<TypeTable
+  type={{
+    'set(key, value, owner?)': { type: '(key: K, value: V, owner?: string) => void', description: 'Girdiyi `owner` altında saklar (varsayılan: `caller()`, export’unu çağıran resource). Başka bir resource’un sahip olduğu bir anahtarı ayarlamak onu yeni sahibine taşır.' },
+    'get(key)': { type: '(key: K) => V | undefined', description: 'Girdi; yoksa `undefined`.' },
+    'ownerOf(key)': { type: '(key: K) => string | undefined', description: 'Girdinin sahibi olan resource.' },
+    'delete(key)': { type: '(key: K) => boolean', description: 'Girdiyi kaldırır. Yoksa `false`.' },
+    'values()': { type: '() => Generator<V>', description: 'Tüm değerler.' },
+    'entries()': { type: '() => Generator<[K, V]>', description: 'Tüm anahtarlar ve değerler.' },
+    size: { type: 'number (read only)', description: 'Girdi sayısı.' },
+    'dropResource(resource)': { type: '(resource: string) => void', description: 'Bir resource’un tüm girdilerini şimdi kaldırır (girdi başına `onDrop`). Bir resource durduğunda senin için çağrılır.' },
+  }}
+/>
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { ByResource, registerExport } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+type Hook = (source: number, text: string) => boolean;
+const hooks = new ByResource<string, Hook>({
+  onDrop: (resource, id) => console.log(`${resource} stopped: hook ${id} removed`),
+});
+
+// Başka bir resource: exports["my-chat"].AddHook("swear-filter", (source, text) => ...)
+registerExport("AddHook", (id: unknown, hook: unknown) => {
+  const name = readText(id, 64);
+  if (name === null || typeof hook !== "function") return false;
+  hooks.set(name, hook as Hook); // sahip = AddHook’u çağıran resource
+  return true;
+});
+
+export function allowed(source: number, text: string): boolean {
+  for (const hook of hooks.values()) if (!hook(source, text)) return false;
+  return true;
+}
+```
+
+### Reasons
+
+En az bir sebep ayarlıyken açık olan bir anahtar. Her resource kendi adlandırılmış sebeplerini ayarlar ve duran bir resource’un sebepleri temizlenir. "HUD’u gizle", "senkronu duraklat", "menüyü engelle" için kullan: birkaç script aynı anda isteyebilir ve durum yalnızca sonuncusu bıraktığında geri döner.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+new Reasons()
+```
+
+**Lua:** karşılığı yok.
+
+#### Metotlar
+
+<TypeTable
+  type={{
+    any: { type: 'boolean (read only)', description: 'Herhangi bir resource’un en az bir sebebi ayarlıyken `true`.' },
+    'set(reason, on, owner?)': { type: '(reason: string, on: boolean, owner?: string) => void', description: '`owner`’ın (varsayılan: `caller()`) bir sebebini ayarlar (`on = true`) ya da temizler.' },
+    'has(reason, owner?)': { type: '(reason: string, owner?: string) => boolean', description: '`owner`’ın (varsayılan: `caller()`) o sebebinin ayarlı olup olmadığı.' },
+    'onChange(handler)': { type: '(handler: (any: boolean) => void) => void', description: '`any` değiştiğinde (kapalıdan açığa ya da açıktan kapalıya) çalışır. Her `set`’te değil.' },
+  }}
+/>
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { Reasons, registerExport } from "@aicore-fivem/lib/client";
+import { readText } from "@aicore-fivem/lib/shared";
+
+const hidden = new Reasons();
+hidden.onChange((any) => SendNUIMessage({ action: "visible", value: !any }));
+
+// Diğer resource’lar: exports["my-hud"].Hide("cutscene") ve exports["my-hud"].Show("cutscene")
+registerExport("Hide", (reason: unknown) => {
+  const name = readText(reason, 64);
+  if (name !== null) hidden.set(name, true);
+});
+registerExport("Show", (reason: unknown) => {
+  const name = readText(reason, 64);
+  if (name !== null) hidden.set(name, false);
+});
+```

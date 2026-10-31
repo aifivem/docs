@@ -1,0 +1,604 @@
+---
+title: Geliştiriciler için ai-vehicles
+description: ai-vehicles’ın server export’ları, state bag’leri ve event’leri, cevapladığı qbx_vehicles API’si.
+icon: Code
+---
+
+ai-vehicles’ın sadece server export’ları vardır. Hepsi senkrondur (Promise yok, Lua’da bekleme yok); tek istisna, cevabını bir callback ile veren `SpawnVehicle`’dır. Tipler `@aicore-fivem/shared` içindedir (`vehicles.ts`).
+
+```ts title="TypeScript"
+import { resourceExport } from "@aicore-fivem/lib/server";
+const vehicles = resourceExport("ai-vehicles");
+```
+
+```lua title="Lua"
+local vehicles = exports['ai-vehicles']
+```
+
+<Callout type="info">
+Anahtar vermek, almak ya da kontrol etmek, bir aracı garaja koymak veya yakıtı okumak için lib’in katmanlarını (`vehicleKeys`, `garages`, `fuel`) kullan: server hangi anahtar, garaj ya da yakıt script’ini çalıştırıyorsa onunla çalışırlar. ai-vehicles’ı doğrudan sadece sahipliğin kendisi için çağır.
+</Callout>
+
+## Tipler
+
+### VehicleOwner
+
+Bir aracın sahibi.
+
+<TypeTable
+  type={{
+    type: { type: '"character" | "job" | "gang" | "resource"', description: '`character`: tek bir karakter. `job` / `gang`: o mesleğin veya çetenin her üyesinin kullanabildiği bir filo. `resource`: bir script’in tuttuğu, hiçbir oyuncuya ait olmayan araç (bir ikinci el araç pazarı ilanı).', required: true },
+    id: { type: 'string', description: 'Metin olarak karakter id’si (`"12"`), meslek ya da çete adı (`"police"`) veya aracı tutan resource’un adı. Number da kabul edilir ve metne çevrilir. En fazla 64 karakter.', required: true },
+  }}
+/>
+
+### OwnedVehicle
+
+`GetVehicle` ve `GetVehicles`’ın döndürdüğü yapı.
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'ai-vehicles’taki araç id’si.', required: true },
+    plate: { type: 'string', description: 'Id’den üretilen plaka, `AI` ve altı karakter.', required: true },
+    owner: { type: 'VehicleOwner', description: 'Sahibi.', required: true },
+    model: { type: 'string', description: 'Küçük harfle model adı (`"sultan"`).', required: true },
+    props: { type: 'VehicleProps | null', description: 'Kayıtlı görünüş ve modifiye (`@aicore-fivem/lib/shared` içindeki `VehicleProps`). İlk kayda kadar `null`.', required: true },
+    setup: { type: 'VehicleSetup | null', description: 'Aracın props’u yokken spawn olduğu görünüş (galeride seçilen bir renk). İlk props kaydı bunu siler.', required: true },
+    state: { type: '"garage" | "out" | "impound"', description: 'Park halinde, dünyada ya da çekilmiş araç otoparkında bekliyor.', required: true },
+    garage: { type: 'string | null', description: 'Park edildiği garaj id’si. Dışarıdayken ya da mesleğinin veya çetesinin her garajında görünen bir filo aracı için `null`.', required: true },
+    fuel: { type: 'number', description: 'Yakıt, 0-100.', required: true },
+    engine: { type: 'number', description: 'Motor sağlığı, -4000 ile 1000 arası.', required: true },
+    body: { type: 'number', description: 'Kaporta sağlığı, 0-1000.', required: true },
+  }}
+/>
+
+## Server export’ları
+
+### CreateVehicle
+
+Yeni bir sahipli aracı kaydeder ve park eder. Bir oyuncu araç edindiğinde kullan (satın alma, ödül, admin hediyesi). Arabayı spawn etmez: `SpawnVehicle` ile çıkar ya da oyuncunun onu bir garajdan almasına izin ver.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+CreateVehicle(owner: VehicleOwner, model: string, garage: string | null, props?: VehicleProps): { id: number; plate: string } | null
+```
+
+```lua title="Lua"
+local created = exports['ai-vehicles']:CreateVehicle(owner, model, garage, props) -- { id = number, plate = string } ya da nil
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Kimin sahibi olacağı.', required: true },
+    model: { type: 'string', description: 'Model adı (`"sultan"`). Küçük harfle saklanır. Model kontrol edilmez: var olan bir model ver.', required: true },
+    garage: { type: 'string | null', description: 'Aracın beklediği ai-garages garaj id’si (`"pillbox"`). `null`: garaj yok (bir filo aracı o zaman mesleğinin veya çetesinin her garajında görünür).', required: true },
+    props: { type: 'VehicleProps', description: 'Başlangıç görünüşü. Geçerli bir `VehicleProps` nesnesi değilse yok sayılır. İçindeki plaka her zaman aracın kendi plakasıyla değiştirilir.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Yeni aracın `{ id, plate }` değeri. `owner` geçerli bir sahip değilse ya da `model` metin değilse `null`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+const vehicles = resourceExport("ai-vehicles");
+
+// Oyuncuya Motel Parking garajında park halinde bir Sultan verir.
+export function giveSultan(source: number): string | null {
+  const character = core.GetCharacter(source);
+  if (!character) return null;
+  const created = vehicles.CreateVehicle(
+    { type: "character", id: String(character.id) },
+    "sultan",
+    "pillbox",
+  );
+  return created?.plate ?? null;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Oyuncuya Motel Parking garajında park halinde bir Sultan verir.
+local function giveSultan(source)
+  local character = exports['ai-core']:GetCharacter(source)
+  if not character then return nil end
+  local created = exports['ai-vehicles']:CreateVehicle(
+    { type = 'character', id = tostring(character.id) }, 'sultan', 'pillbox')
+  return created and created.plate
+end
+```
+</Tab>
+</Tabs>
+
+### GetVehicle
+
+Tek bir sahipli aracı id’si ya da plakasıyla bulur.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+GetVehicle(ref: number | string): OwnedVehicle | null
+```
+
+```lua title="Lua"
+local vehicle = exports['ai-vehicles']:GetVehicle(ref) -- table ya da nil
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ref: { type: 'number | string', description: 'Bir araç id’si (number) ya da plaka (metin).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`OwnedVehicle`; bellekte o id’ye ya da plakaya sahip araç yoksa (çevrim dışı bir karaktere aitse de) `null`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = vehicles.GetVehicle("AI00001A");
+if (vehicle) console.log(vehicle.model, vehicle.state, vehicle.fuel);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = exports['ai-vehicles']:GetVehicle('AI00001A')
+if vehicle then print(vehicle.model, vehicle.state, vehicle.fuel) end
+```
+</Tab>
+</Tabs>
+
+### GetVehicles
+
+Tek bir sahibin bütün araçları.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+GetVehicles(owner: VehicleOwner): OwnedVehicle[]
+```
+
+```lua title="Lua"
+local list = exports['ai-vehicles']:GetVehicles(owner) -- dizi
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Çevrim içi bir karakter ya da herhangi bir meslek veya çete filosu.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`OwnedVehicle` dizisi. Geçersiz bir sahip, aracı olmayan bir sahip ya da çevrim dışı bir karakter için boştur.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const fleet = vehicles.GetVehicles({ type: "job", id: "police" });
+const parked = fleet.filter((v) => v.state === "garage").length;
+console.log(`police: ${parked} of ${fleet.length} cars parked`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local fleet = exports['ai-vehicles']:GetVehicles({ type = 'job', id = 'police' })
+local parked = 0
+for _, v in ipairs(fleet) do
+  if v.state == 'garage' then parked = parked + 1 end
+end
+print(('police: %d of %d cars parked'):format(parked, #fleet))
+```
+</Tab>
+</Tabs>
+
+### IsOwnedPlate
+
+Bir plakanın bellekteki sahipli bir araca ait olup olmadığı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+IsOwnedPlate(plate: string): boolean
+```
+
+```lua title="Lua"
+local owned = exports['ai-vehicles']:IsOwnedPlate(plate)
+```
+
+#### Dönüş değeri
+
+Bu plakaya sahip sahipli bir araç varsa `true`. Bilinmeyen bir plaka, metin olmayan bir değer ya da çevrim dışı bir karakterin aracı için `false`.
+
+### GetVehicleIdByEntity
+
+Spawn edilmiş sahipli bir aracın ai-vehicles id’si.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+GetVehicleIdByEntity(entity: number): number | null
+```
+
+```lua title="Lua"
+local id = exports['ai-vehicles']:GetVehicleIdByEntity(entity)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    entity: { type: 'number', description: 'Server entity handle’ı (`NetworkGetEntityFromNetworkId(netId)`).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Araç id’si; entity ai-vehicles’ın spawn ettiği sahipli bir araç değilse `null`.
+
+### GetEntity
+
+Spawn edilmiş sahipli bir aracın entity’si.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+GetEntity(id: number): number | null
+```
+
+```lua title="Lua"
+local entity = exports['ai-vehicles']:GetEntity(id)
+```
+
+#### Dönüş değeri
+
+Server entity handle’ı; araç dışarıda değilse ya da entity’si artık yoksa `null`.
+
+### GetPlateOwners
+
+Bellekteki her sahipli araç, `[plate, ownerType, ownerId]` olarak. Çok sayıda plakayı kontrol etmesi gereken bir script (bir anahtar sistemi) her kontrolde export çağırmak yerine bunu açılışta bir kez okur, sonra [`ai-vehicles:owners`](#ai-vehiclesowners) event’ini takip eder.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+GetPlateOwners(): Array<[plate: string, type: VehicleOwnerType, id: string]>
+```
+
+```lua title="Lua"
+local owners = exports['ai-vehicles']:GetPlateOwners() -- { { plate, type, id }, ... }
+```
+
+#### Dönüş değeri
+
+Üçlülerden oluşan bir dizi. Bellekte araç yoksa boştur.
+
+### SaveVehicle
+
+Bir aracın durumunu ve görünüşünü kaydeder: yakıt, hasar, durum, garaj ve props (renkler, ekstralar, kir). Kayıtlı modifiye (`mods`, `neon`) burada asla değişmez; böylece bir oyuncunun client’ından okunan görünüş, bir mod menüsünün yaptıklarını kaydedemez. Modifiye için `SaveTuning` kullan.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+SaveVehicle(id: number, change: { props?: VehicleProps; fuel?: number; engine?: number; body?: number; state?: VehicleState; garage?: string | null }): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SaveVehicle(id, change)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'Araç id’si.', required: true },
+    change: { type: 'object', description: 'Sadece verdiğin alanlar değişir. Alanlar aşağıda.', required: true },
+  }}
+/>
+
+#### change
+
+<TypeTable
+  type={{
+    props: { type: 'VehicleProps', description: 'Yeni görünüş. Geçerli bir `VehicleProps` nesnesi değilse yok sayılır. Props kaydetmek aracın spawn setup’ını bitirir.' },
+    fuel: { type: 'number', description: 'Yakıt, 0-100 aralığına sınırlanır.' },
+    engine: { type: 'number', description: 'Motor sağlığı, -4000 ile 1000 aralığına sınırlanır.' },
+    body: { type: 'number', description: 'Kaporta sağlığı, 0-1000 aralığına sınırlanır.' },
+    state: { type: '"garage" | "out" | "impound"', description: 'Yeni durum. Başka her değer yok sayılır.' },
+    garage: { type: 'string', description: 'Garaj id’si. Sadece metin kabul edilir: bu export garajı temizleyemez (`null` ile `StoreVehicle` kullan).' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. Bilinmeyen bir id hiçbir şey yapmaz.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Bir tamir işi bitti: motor ve kaporta tam.
+vehicles.SaveVehicle(vehicleId, { engine: 1000, body: 1000 });
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Bir tamir işi bitti: motor ve kaporta tam.
+exports['ai-vehicles']:SaveVehicle(vehicleId, { engine = 1000, body = 1000 })
+```
+</Tab>
+</Tabs>
+
+### SaveTuning
+
+Modifiye dahil (`mods`, `neon`) tam props’u kaydeder. Sadece modifiye dükkânları içindir: onu çağıran tek ai-* script’i, AI Core’un kendi modifiye dükkânı ai-mechanic’tir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+SaveTuning(id: number, props: VehicleProps): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SaveTuning(id, props)
+```
+
+#### Dönüş değeri
+
+Hiçbir şey. Geçersiz props yok sayılır. Props içindeki plaka her zaman aracın kendi plakasıyla değiştirilir.
+
+<Callout type="warn">
+Bir oyuncunun client’ından doğrudan gelen props’u server’da kontrol etmeden asla verme: burada ne kaydedersen bundan sonra arabanın modifiyesi o olur.
+</Callout>
+
+### StoreVehicle
+
+Bir aracı park eder: dışarıdaysa entity’sini siler, durumunu ve garajını ayarlar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+StoreVehicle(id: number, garage: string | null, state?: VehicleState): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:StoreVehicle(id, garage, state)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'Araç id’si.', required: true },
+    garage: { type: 'string | null', description: 'Garaj id’si ya da garaj yoksa `null`.', required: true },
+    state: { type: '"garage" | "out" | "impound"', description: 'Yeni durum.', default: '"garage"' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. Önce durumu kaydetmez: hasar ve yakıt korunacaksa ondan önce `SaveVehicle` çağır. Server hangi garaj script’ini çalıştırıyorsa onun üzerinden park etmek için bunun yerine lib’in `garages.store` fonksiyonunu kullan.
+
+### SetOwner
+
+Bir aracı başka bir sahibe verir (oyuncular arası satış, bir meslek filosuna aktarılan araba).
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+SetOwner(id: number, owner: VehicleOwner): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SetOwner(id, owner)
+```
+
+#### Dönüş değeri
+
+Hiçbir şey. Geçersiz bir sahip ya da bilinmeyen bir id hiçbir şey yapmaz. Eski sahibin anahtarları alınmaz: gerekirse lib’in `vehicleKeys.remove` fonksiyonuyla kaldır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicles.SetOwner(vehicleId, { type: "job", id: "mechanic" });
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:SetOwner(vehicleId, { type = 'job', id = 'mechanic' })
+```
+</Tab>
+</Tabs>
+
+### DeleteVehicle
+
+Sahipli bir aracı tamamen siler: dışarıdaysa entity’sini ve veritabanı satırını.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+DeleteVehicle(id: number): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:DeleteVehicle(id)
+```
+
+#### Dönüş değeri
+
+Hiçbir şey.
+
+<Callout type="error">
+Bu geri alınamaz. Araç, görünüşü ve modifiyesi yok olur.
+</Callout>
+
+### SpawnVehicle
+
+Sahipli bir aracın entity’sini dünyada görünüşü, plakası, yakıtı ve state bag’leriyle oluşturur ve anahtarları aktif anahtar sistemi üzerinden `asker`’a verir. Aracın durumu `out` olur.
+
+**Taraf:** Server · **Bekler:** hayır (sonuç `cb` içinde gelir)
+
+```ts title="Signature"
+SpawnVehicle(id: number, at: { x: number; y: number; z: number; heading: number }, asker: number, cb: (netId: number | null) => void, purpose?: KeyPurpose, setup?: VehicleSetup): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SpawnVehicle(id, at, asker, function(netId) end, purpose, setup)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'Araç id’si.', required: true },
+    at: { type: '{ x, y, z, heading }', description: 'Belirdiği yer. `heading` derece cinsinden; `heading` yerine `w` de kabul edilir, verilmezse 0’dır. Koordinatlarından biri number olmayan bir nokta hiçbir şey spawn etmez ve `cb` hiç çağrılmaz.', required: true },
+    asker: { type: 'number', description: 'Noktanın yakınındaki bir oyuncunun server id’si. Onun client’ı server’a modelin tipini söyler ve anahtarları o alır.', required: true },
+    cb: { type: '(netId: number | null) => void', description: 'Yeni entity’nin network id’siyle ya da oluşturulamadıysa `null` ile çağrılır.', required: true },
+    purpose: { type: 'KeyPurpose', description: 'Asker’ın anahtarı neden aldığı: `"purchase"`, `"garage"`, `"job"`, `"rental"` ya da `"temporary"`. Bunları ayırt eden anahtar sistemleri bunu kullanır.', default: '"garage"' },
+    setup: { type: 'VehicleSetup', description: 'Henüz props’u olmayan bir araçla tutulan görünüş (örneğin `{ colors: [12, 12] }`); ilk props kaydına kadar her spawn’da uygulanır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `cb` network id’sini alır; araç yoksa, zaten dışarıdaysa, şu an spawn ediliyorsa ya da oyun onu oluşturamadıysa `null` alır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+export function bringOut(source: number, vehicleId: number): void {
+  const ped = GetPlayerPed(String(source));
+  const [x, y, z] = GetEntityCoords(ped);
+  const heading = GetEntityHeading(ped);
+  vehicles.SpawnVehicle(vehicleId, { x: x + 3, y, z, heading }, source, (netId) => {
+    if (netId === null) console.log(`vehicle ${vehicleId} could not come out`);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function bringOut(source, vehicleId)
+  local ped = GetPlayerPed(source)
+  local coords = GetEntityCoords(ped)
+  local at = { x = coords.x + 3.0, y = coords.y, z = coords.z, heading = GetEntityHeading(ped) }
+  exports['ai-vehicles']:SpawnVehicle(vehicleId, at, source, function(netId)
+    if not netId then print(('vehicle %d could not come out'):format(vehicleId)) end
+  end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Zaten dışarıda olan bir araç reddedilir (`cb(null)`). Dışarıdayken entity’si sonradan kaybolursa impound durumuna geçer.
+</Callout>
+
+## Event’ler
+
+### ai-vehicles:owners
+
+Araçlar ai-vehicles’ın belleğine girdiğinde ya da sahip değiştirdiğinde ve plakalar bellekten çıktığında tetiklenir. Server tick’i başına bir toplu paket. Açılışta `GetPlateOwners`’ı bir kez oku, sonra plakadan sahibe bir kopya tutmak için bu paketleri uygula. Adı `@aicore-fivem/shared` içinde `VEHICLES_EVENTS.owners`’dır.
+
+**Taraf:** Server (yerel event, client’lara gönderilmez)
+
+<TypeTable
+  type={{
+    puts: { type: 'Array<[plate: string, type: VehicleOwnerType, id: string]>', description: 'Belleğe giren ya da yeni bir sahip alan araçlar.', required: true },
+    removes: { type: 'string[]', description: 'Bellekten çıkan plakalar (sahibi çevrim dışı oldu, araç silindi).', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+import { VEHICLES_EVENTS } from "@aicore-fivem/shared";
+
+const owners = new Map<string, string>();
+for (const [plate, type, id] of resourceExport("ai-vehicles").GetPlateOwners())
+  owners.set(plate, `${type}:${id}`);
+
+on(VEHICLES_EVENTS.owners, (puts: [string, string, string][], removes: string[]) => {
+  for (const [plate, type, id] of puts) owners.set(plate, `${type}:${id}`);
+  for (const plate of removes) owners.delete(plate);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local owners = {}
+for _, row in ipairs(exports['ai-vehicles']:GetPlateOwners()) do
+  owners[row[1]] = row[2] .. ':' .. row[3]
+end
+
+AddEventHandler('ai-vehicles:owners', function(puts, removes)
+  for _, row in ipairs(puts) do owners[row[1]] = row[2] .. ':' .. row[3] end
+  for _, plate in ipairs(removes) do owners[plate] = nil end
+end)
+```
+</Tab>
+</Tabs>
+
+## State bag’ler
+
+ai-vehicles bunları spawn ettiği her sahipli araçta ayarlar. Adlar `VEHICLE_BAGS` içindedir (`@aicore-fivem/shared`).
+
+| Bag | Tip | Anlamı |
+| --- | --- | --- |
+| `ai:owned` | `true` | Entity sahipli bir araçtır. |
+| `ai:vid` | `number` | ai-vehicles’taki id’si. |
+| `ai:props` | `VehicleProps` | Kayıtlı görünüş. Entity’nin sahibi olan ai-core client’ı bunu uygular. |
+| `ai:setup` | `VehicleSetup` | Props’u olmayan bir araç için spawn görünüşü, bir kez uygulanır. |
+| `fuel` | `number` | Yakıt 0-100. Bundan sonra onu yakıt script’i tutar. |
+
+```lua title="Lua (client)"
+local vehicle = GetVehiclePedIsIn(PlayerPedId(), false)
+if Entity(vehicle).state['ai:owned'] then
+  print('owned vehicle', Entity(vehicle).state['ai:vid'])
+end
+```
+
+## qbx_vehicles API
+
+ai-vehicles `qbx_vehicles` adını `provide` eder, bu yüzden bu çağrılar ona ulaşır. Yapılar Qbox’u izler: `state` değeri `0` dışarıda, `1` garajda, `2` çekilmiş araç otoparkında demektir.
+
+| Export | Ne yapar |
+| --- | --- |
+| `GetPlayerVehicles(filters: { citizenid?, garage? })` | Çevrim içi bir karakterin araçları, istenirse sadece tek bir garajdakiler. `{ id, citizenid, modelName, garage, state, depotPrice, props }[]` döner. |
+| `GetPlayerVehicle(id: number)` | Aynı yapıda tek bir araç ya da `nil`. |
+| `CreatePlayerVehicle(request: { model, citizenid, garage?, props? })` | Çevrim içi bir karakter için araç oluşturur. Id’yi ya da `nil, { code, message }` (`bad_request`, `not_found`) döner. |
+| `SetPlayerVehicleOwner(id: number, citizenid: string)` | Yeni sahip (çevrim içi). İşe yaradıysa `true`. |
+| `DeletePlayerVehicles(idType: "plate" \| "vehicleId", idValue)` | Tek bir aracı siler. Bulunduysa `true`. |
+| `GetVehicleIdByPlate(plate: string)` | Id ya da `nil`. |
+| `DoesPlayerVehiclePlateExist(plate: string)` | Plaka sahipliyse `true`. |
+| `SaveVehicle(entity: number, options: { props?, state?, garage? })` | Spawn edilmiş bir aracı modifiye dahil kaydeder. AI Core’un props’unu ya da ox_lib / qb-core props yapısını kabul eder. Entity’den farklı bir modelin props’u reddedilir (state ve garage yine kaydedilir). |
+
+`GetPlayerVehicle` props’u ox_lib’in değil, AI Core’un `VehicleProps` yapısında döner. `depotPrice` her zaman `0`’dır.

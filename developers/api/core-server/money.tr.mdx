@@ -1,0 +1,603 @@
+---
+title: Para ve hesaplar
+description: Bir oyuncunun bakiyelerini, meslek ve çete hesaplarını oku ve değiştir, tek bir transaction içinde iki hesap arasında para taşı, hesap tiplerini oku.
+icon: Wallet
+---
+
+Her karakterin **hesap tipi** başına bir bakiyesi vardır. Tipler admin panelinin Accounts listesinden gelir; yeni bir sunucuda `cash`, `bank`, `black_money` ve `crypto` vardır. Her meslek ve çetenin de her tipten bir hesabı vardır (şirket parası), boş başlar.
+
+ai-core’da para nasıl çalışır:
+
+- Miktarlar **tam sayıdır** (dolar, kuruş yok). Kesirli bir sayı, `NaN` ya da JavaScript’in güvenli tam sayı aralığını aşan bir sayı reddedilir.
+- Bir değişiklik bellekte hemen uygulanır ve yaklaşık 50 ms içinde bir defter satırıyla (`ai_core_transactions`) birlikte veritabanına yazılır. Defter verdiğin `reason`’ı saklar; o yoksa çağıran resource’un adını saklar.
+- Hesap tipinin panelde **Can go below zero** ayarı açık değilse bakiye 0’ın altına inemez.
+- Bir oyuncunun hesabındaki her değişiklik `ai-core:moneyChanged (src, account, balance, delta, reason)` server event’ini tetikler ve oyuncunun kendi oyununa ulaşır. Bkz. [Event’ler ve durum](/tr/docs/developers/api/events).
+
+### GetMoney
+
+Bir oyuncunun tek bir hesaptaki bakiyesi.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+GetMoney(src: number, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = exports['ai-core']:GetMoney(source, 'bank') -- sayı ya da nil
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    account: { type: 'string', description: 'Paneldeki hesap tipi adı: `cash`, `bank`, `black_money`, `crypto` ya da senin eklediğin biri.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number | null`: bakiye. Oyuncunun yüklü karakteri yoksa ya da hesap tipi yoksa `null`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:balance", (source) => {
+  const bank = core.GetMoney(source, "bank");
+  if (bank === null) return fail("NO_CHARACTER");
+  return { ok: true, bank };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:balance', function(source)
+  local bank = exports['ai-core']:GetMoney(source, 'bank')
+  if not bank then return aiLib.fail('NO_CHARACTER') end
+  return { ok = true, bank = bank }
+end)
+```
+</Tab>
+</Tabs>
+
+### AddMoney
+
+Bir oyuncunun hesabına para ekler. Ödüller, script’inin ödediği maaşlar ya da satış geliri için kullan.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+AddMoney(src: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:AddMoney(source, 'cash', 250, 'fishing_sale')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    account: { type: 'string', description: 'Hesap tipi adı (`cash`, `bank`...).', required: true },
+    amount: { type: 'number', description: 'Ne kadar ekleneceği. 0’ın üstünde bir tam sayı.', required: true },
+    reason: { type: 'string', description: 'Defterde saklanan kısa etiket ya da dil anahtarı (`fishing_sale`).', default: 'çağıran resource’un adı' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: para eklendiğinde `true`. Oyuncunun yüklü karakteri yoksa, hesap tipi yoksa ya da `amount` 0’ın üstünde bir tam sayı değilse `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, inventory, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const BUYER = { x: -1845.2, y: -1197.4, z: 14.3 };
+
+onClientCallback("myscript:sellFish", { guards: [near(BUYER, 3)], lock: true }, (source) => {
+  const fish = inventory.getItemCount(source, "fish");
+  if (fish < 1) return fail("NO_FISH");
+  if (!inventory.removeItem(source, "fish", fish)) return fail("SELL_FAILED");
+  core.AddMoney(source, "cash", fish * 25, "fishing_sale");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local BUYER = vector3(-1845.2, -1197.4, 14.3)
+
+aiLib.onClientCallback('myscript:sellFish', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - BUYER) > 3.0 then return aiLib.fail('TOO_FAR') end
+  local fish = exports['ai-core']:GetItemCount(source, 'fish')
+  if fish < 1 then return aiLib.fail('NO_FISH') end
+  if not exports['ai-core']:RemoveItem(source, 'fish', fish) then return aiLib.fail('SELL_FAILED') end
+  exports['ai-core']:AddMoney(source, 'cash', fish * 25, 'fishing_sale')
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Parayı bir hesaptan diğerine taşımak için (bir oyuncunun bir mesleğe ödemesi, bir banka transferi) bir `RemoveMoney` + `AddMoney` çifti değil `TransferMoney` kullan: transfer tek bir veritabanı transaction’ıdır, çift ise iki ayrı değişiklik.
+</Callout>
+
+### RemoveMoney
+
+Bir oyuncunun hesabından para alır. Bir şeyin ücretini almak için kullan.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+RemoveMoney(src: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local paid = exports['ai-core']:RemoveMoney(source, 'bank', 500, 'license_fee')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    account: { type: 'string', description: 'Hesap tipi adı (`cash`, `bank`...).', required: true },
+    amount: { type: 'number', description: 'Ne kadar alınacağı. 0’ın üstünde bir tam sayı.', required: true },
+    reason: { type: 'string', description: 'Defterde saklanan kısa etiket ya da dil anahtarı.', default: 'çağıran resource’un adı' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: para alındığında `true`. Bakiye çok düşükse (ve hesap tipi negatif bakiyeye izin vermiyorsa), oyuncunun yüklü karakteri yoksa, hesap tipi yoksa ya da `amount` 0’ın üstünde bir tam sayı değilse `false`. `false` durumunda hiçbir şey değişmemiştir.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, inventory, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const PRICE = 500;
+
+onClientCallback("myscript:buyLicense", { lock: true }, (source) => {
+  if (!inventory.canCarryItem(source, "driver_license")) return fail("NO_SPACE");
+  if (!core.RemoveMoney(source, "bank", PRICE, "license_fee")) return fail("NOT_ENOUGH_MONEY");
+  inventory.addItem(source, "driver_license");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local PRICE = 500
+
+aiLib.onClientCallback('myscript:buyLicense', function(source)
+  if not exports['ai-core']:CanCarryItem(source, 'driver_license') then return aiLib.fail('NO_SPACE') end
+  if not exports['ai-core']:RemoveMoney(source, 'bank', PRICE, 'license_fee') then
+    return aiLib.fail('NOT_ENOUGH_MONEY')
+  end
+  exports['ai-core']:AddItem(source, 'driver_license')
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Parayı almadan önce başarısız olabilecek şeyleri kontrol et (envanterde yer, stok) ya da sonraki adım başarısız olduğunda parayı `AddMoney` ile geri ver.
+</Callout>
+
+### SetMoney
+
+Bir oyuncunun bakiyesini tam bir değere ayarlar. Admin araçları için kullan; oyun özellikleri ekleyip çıkarmalıdır.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+SetMoney(src: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetMoney(source, 'cash', 0, 'admin_reset')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    account: { type: 'string', description: 'Hesap tipi adı (`cash`, `bank`...).', required: true },
+    amount: { type: 'number', description: 'Yeni bakiye. Bir tam sayı; yalnızca hesap tipi negatif bakiyeye izin veriyorsa 0’ın altında.', required: true },
+    reason: { type: 'string', description: 'Defterde saklanan kısa etiket ya da dil anahtarı (defter satırı farkı tutar).', default: 'çağıran resource’un adı' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: bakiye artık `amount` ise (zaten öyleyse de) `true`. Oyuncunun yüklü karakteri yoksa, hesap tipi yoksa, `amount` bir tam sayı değilse ya da buna izin vermeyen bir hesapta 0’ın altındaysa `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("setcash", {
+  help: "Sets a player cash",
+  params: [{ name: "id", type: "playerId" }, { name: "amount", type: "number" }],
+  restricted: true,
+}, (_source, args) => {
+  console.log(core.SetMoney(args.id, "cash", args.amount, "admin_set") ? "done" : "refused");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('setcash', {
+  help = 'Sets a player cash',
+  params = { { name = 'id', type = 'playerId' }, { name = 'amount', type = 'number' } },
+  restricted = true,
+}, function(_, args)
+  print(exports['ai-core']:SetMoney(args.id, 'cash', args.amount, 'admin_set') and 'done' or 'refused')
+end)
+```
+</Tab>
+</Tabs>
+
+### GetSharedMoney
+
+Bir mesleğin ya da çetenin hesabının bakiyesi (şirket parası).
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok ([`banking.societyBalance`](/tr/docs/developers/api/lib-server/money#bankingsocietybalance) banka katmanına sorar, o da bunun yerine bir banka script’ini okuyabilir)
+
+```ts title="İmza"
+GetSharedMoney(ownerType: "job" | "gang", ownerId: string, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = exports['ai-core']:GetSharedMoney('job', 'police', 'bank') -- sayı ya da nil
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ownerType: { type: '"job" | "gang"', description: 'Kimin hesabı: bir meslek ya da bir çete.', required: true },
+    ownerId: { type: 'string', description: 'Paneldeki meslek ya da çete adı (`police`, `ballas`).', required: true },
+    account: { type: 'string', description: 'Hesap tipi adı (`bank`, `cash`...).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number | null`: bakiye. Meslek ya da çete veya hesap tipi yoksa (ya da hesapları henüz yüklenmediyse) `null`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, online, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Bir patron menüsü mesleğin parasını gösterir; yalnızca mesleğin üyeleri sorabilir.
+onClientCallback("myscript:societyBalance", (source) => {
+  const job = online.dutyJob(source);
+  if (!job) return fail("NOT_ON_DUTY");
+  return { ok: true, balance: core.GetSharedMoney("job", job, "bank") ?? 0 };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:societyBalance', function(source)
+  local job = exports['ai-core']:GetDutyJob(source)
+  if not job then return aiLib.fail('NOT_ON_DUTY') end
+  return { ok = true, balance = exports['ai-core']:GetSharedMoney('job', job, 'bank') or 0 }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Panelin **Job and gang accounts** ayarı **The script's own accounts** olduğunda mesleğin ve çetenin `bank` hesapları o script’te yaşar: bu export o zaman script’in bakiyesini okur. Bkz. [Banka](/tr/docs/developers/api/core-server/banking).
+</Callout>
+
+### AddSharedMoney
+
+Bir mesleğin ya da çetenin hesabına para ekler.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+AddSharedMoney(
+  ownerType: "job" | "gang",
+  ownerId: string,
+  account: string,
+  amount: number,
+  reason?: string,
+): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:AddSharedMoney('job', 'mechanic', 'bank', 300, 'repair_fee')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ownerType: { type: '"job" | "gang"', description: 'Kimin hesabı: bir meslek ya da bir çete.', required: true },
+    ownerId: { type: 'string', description: 'Paneldeki meslek ya da çete adı.', required: true },
+    account: { type: 'string', description: 'Hesap tipi adı (`bank`...).', required: true },
+    amount: { type: 'number', description: 'Ne kadar ekleneceği. 0’ın üstünde bir tam sayı.', required: true },
+    reason: { type: 'string', description: 'Defterde saklanan kısa etiket ya da dil anahtarı.', default: 'çağıran resource’un adı' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: para eklendiğinde `true`. Meslek ya da çete veya hesap yoksa ya da `amount` 0’ın üstünde bir tam sayı değilse `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Bir NPC müşterinin yaptığı satış restoranın hesabına gider. */
+export function restaurantSale(job: string, price: number): void {
+  if (!core.AddSharedMoney("job", job, "bank", price, "npc_sale"))
+    console.log(`job ${job} has no bank account`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function RestaurantSale(job, price)
+  if not exports['ai-core']:AddSharedMoney('job', job, 'bank', price, 'npc_sale') then
+    print(('job %s has no bank account'):format(job))
+  end
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bir oyuncu mesleğe ödeme yaptığında oyuncunun hesabından mesleğinkine `TransferMoney` kullan: tek transaction, iki defter satırı.
+</Callout>
+
+### RemoveSharedMoney
+
+Bir mesleğin ya da çetenin hesabından para alır.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+RemoveSharedMoney(
+  ownerType: "job" | "gang",
+  ownerId: string,
+  account: string,
+  amount: number,
+  reason?: string,
+): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RemoveSharedMoney('job', 'police', 'bank', 2000, 'equipment')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    ownerType: { type: '"job" | "gang"', description: 'Kimin hesabı: bir meslek ya da bir çete.', required: true },
+    ownerId: { type: 'string', description: 'Paneldeki meslek ya da çete adı.', required: true },
+    account: { type: 'string', description: 'Hesap tipi adı (`bank`...).', required: true },
+    amount: { type: 'number', description: 'Ne kadar alınacağı. 0’ın üstünde bir tam sayı.', required: true },
+    reason: { type: 'string', description: 'Defterde saklanan kısa etiket ya da dil anahtarı.', default: 'çağıran resource’un adı' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: para alındığında `true`. Bakiye çok düşükse (ve negatif bakiyelere izin verilmiyorsa), meslek ya da çete veya hesap yoksa ya da `amount` 0’ın üstünde bir tam sayı değilse `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, online, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Bir meslek kendi hesabından malzeme sipariş eder.
+onClientCallback("myscript:orderSupplies", { lock: true }, (source) => {
+  const job = online.dutyJob(source);
+  if (!job) return fail("NOT_ON_DUTY");
+  if (!core.RemoveSharedMoney("job", job, "bank", 1500, "supplies")) return fail("SOCIETY_NO_MONEY");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:orderSupplies', function(source)
+  local job = exports['ai-core']:GetDutyJob(source)
+  if not job then return aiLib.fail('NOT_ON_DUTY') end
+  if not exports['ai-core']:RemoveSharedMoney('job', job, 'bank', 1500, 'supplies') then
+    return aiLib.fail('SOCIETY_NO_MONEY')
+  end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### TransferMoney
+
+Parayı bir hesaptan diğerine iki defter satırıyla birlikte **tek bir veritabanı transaction’ında** taşır. Her taraf yüklü bir oyuncunun hesabı ya da bir mesleğin veya çetenin hesabı olabilir. İki hesap arasındaki her ödeme için kullan: bir oyuncunun bir işletmeye ödemesi, bir banka transferi, şirkete bir yatırma.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** [`money.transfer`](/tr/docs/developers/api/lib-server/money#moneytransfer)
+
+```ts title="İmza"
+TransferMoney(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:TransferMoney(
+  { source = source, account = 'bank' },
+  { owner = 'job', id = 'mechanic', account = 'bank' },
+  750, 'repair', 0)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    from: { type: 'MoneyRef', description: 'Ödeyen hesap. `fee`’yi de öder.', required: true, typeDescription: '{ source: number; account: string } | { owner: "job" | "gang"; id: string; account: string }' },
+    to: { type: 'MoneyRef', description: '`amount`’u alan hesap.', required: true, typeDescription: '{ source: number; account: string } | { owner: "job" | "gang"; id: string; account: string }' },
+    amount: { type: 'number', description: '`to`’nun ne kadar aldığı. 0’ın üstünde bir tam sayı.', required: true },
+    reason: { type: 'string', description: 'İki defter satırında da saklanan kısa etiket ya da dil anahtarı.', default: 'çağıran resource’un adı' },
+    fee: { type: 'number', description: '`from`’un ödediği ve kimsenin almadığı ek miktar (bir banka ücreti). 0 ya da daha büyük bir tam sayı.', default: '0' },
+  }}
+/>
+
+`MoneyRef`, yüklü bir oyuncunun hesabı için `{ source, account }`, bir mesleğin ya da çetenin hesabı için `{ owner, id, account }`’tur. Bkz. [MoneyRef](/tr/docs/developers/api/types#moneyref).
+
+#### Dönüş değeri
+
+`boolean`: `from` `amount + fee` ödediğinde ve `to` `amount` aldığında `true`. Bir hesap eksikse (oyuncu yüklü değil, bilinmeyen meslek, bilinmeyen hesap tipi), iki taraf aynı hesapsa, `from` `amount + fee` ödeyemiyorsa, `amount` 0’ın üstünde bir tam sayı değilse ya da `fee` 0 ya da daha büyük bir tam sayı değilse `false`. `false` durumunda hiçbir şey değişmemiştir.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readInt } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Oyuncunun kendi çete hesabına %2 ücretle bir ATM yatırması.
+onClientCallback(
+  "myscript:gangDeposit",
+  { args: ([amount]) => { const n = readInt(amount, 1, 1_000_000); return n === null ? null : [n]; }, lock: true },
+  (source, amount) => {
+    const gang = core.GetActiveGang(source);
+    if (!gang) return fail("NO_GANG");
+    const fee = Math.ceil(amount * 0.02);
+    const ok = core.TransferMoney(
+      { source, account: "bank" },
+      { owner: "gang", id: gang, account: "bank" },
+      amount, "gang_deposit", fee,
+    );
+    return ok ? { ok: true } : fail("NOT_ENOUGH_MONEY");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:gangDeposit', function(source, amount)
+  if math.type(amount) ~= 'integer' or amount < 1 or amount > 1000000 then return aiLib.fail('BAD_AMOUNT') end
+  local gang = exports['ai-core']:GetActiveGang(source)
+  if not gang then return aiLib.fail('NO_GANG') end
+  local fee = math.ceil(amount * 0.02)
+  local ok = exports['ai-core']:TransferMoney(
+    { source = source, account = 'bank' },
+    { owner = 'gang', id = gang, account = 'bank' },
+    amount, 'gang_deposit', fee)
+  if not ok then return aiLib.fail('NOT_ENOUGH_MONEY') end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+İki taraf da her zamanki değişikliğini tetikler (oyuncu tarafı `ai-core:moneyChanged` tetikler). İki taraf iki oyuncu olabilir: `{ source: a, account: "bank" }`’tan `{ source: b, account: "bank" }`’a.
+</Callout>
+
+### GetAccountTypes
+
+Panelin Accounts listesindeki her hesap tipi; etiketi, başlangıç miktarı ve negatife düşüp düşemeyeceğiyle. Bir hesap menüsü kurmak ya da bir adı kontrol etmek için kullan.
+
+**Taraf:** Server · **Bekler:** hayır · **Lib:** yok
+
+```ts title="İmza"
+GetAccountTypes(): Record<string, AccountTypeDefinition>
+```
+
+```lua title="Lua"
+local types = exports['ai-core']:GetAccountTypes() -- hesap adına göre anahtarlanmış tablo
+```
+
+#### Parametreler
+
+Yok.
+
+#### Dönüş değeri
+
+`Record<string, AccountTypeDefinition>`: hesap adına göre anahtarlanmış bir kopya (`cash`, `bank`...). Her değerin `label`’ı (oyunculara gösterilir), `start`’ı (yeni bir karakterin aldığı) ve `allowNegative`’i vardır. Bkz. [AccountTypeDefinition](/tr/docs/developers/api/types#accounttypedefinition).
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Cüzdan ekranı her hesabı etiketi ve bakiyesiyle listeler.
+onClientCallback("myscript:wallet", (source) => {
+  const rows = Object.entries(core.GetAccountTypes()).map(([name, type]) => ({
+    name,
+    label: type.label,
+    balance: core.GetMoney(source, name) ?? 0,
+  }));
+  return { ok: true, rows };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:wallet', function(source)
+  local rows = {}
+  for name, accountType in pairs(exports['ai-core']:GetAccountTypes()) do
+    rows[#rows + 1] = { name = name, label = accountType.label, balance = exports['ai-core']:GetMoney(source, name) or 0 }
+  end
+  return { ok = true, rows = rows }
+end)
+```
+</Tab>
+</Tabs>

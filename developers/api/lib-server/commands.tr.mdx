@@ -1,0 +1,144 @@
+---
+title: Komutlar
+description: "addCommand: ayrıştırılmış argümanlar, ACE yetkileri, sohbet önerileri ve ai-core’un admin panelinde bir satırla sohbet komutları."
+icon: SquareTerminal
+---
+
+```ts title="TypeScript"
+import { addCommand } from "@aicore-fivem/lib/server";
+```
+
+### addCommand
+
+Bir sohbet komutu (ve konsol komutu) kaydeder. Argümanlar handler’ın çalışmadan önce ayrıştırılır ve kontrol edilir, yetki ACE ile kontrol edilir, sohbet önerileri yalnızca komutu kullanabilen oyunculara gider ve ai-core’un admin paneli onu Commands sekmesinde listeler. Her server komutu için çıplak bir `RegisterCommand` yerine bunu kullan.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+addCommand<P extends readonly CommandParam[]>(
+  name: string | string[],
+  options: CommandOptions<P>,
+  handler: (source: number, args: CommandArgs<P>, raw: string) => unknown,
+): void
+```
+
+```lua title="Lua"
+aiLib.addCommand(name, options, handler) -- handler(source, args, raw)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    name: { type: "string | string[]", description: "`/` olmadan komut adı. Bir liste takma adlar ekler: ilki ad, geri kalanlar aynı şekilde çalışır. Adlar küçük harfe çevrilir. Bir ad seçmeden önce `resources/` içinde grep yap: FiveM komut adları büyük/küçük harf duyarlı değildir ve aynı adı kullanan ikinci bir resource onu ele geçirir.", required: true },
+    options: { type: "CommandOptions<P>", description: "Yardım metni, argümanlar ve yetki. Alanlar aşağıda.", required: true },
+    handler: { type: "(source: number, args: CommandArgs<P>, raw: string) => unknown", description: "Yetki ve her argüman geçince çalışır. `source` oyuncunun server id’si ya da server konsolu için `0`’dır. `args` her param için adıyla bir değer tutar. `raw` yazılan satırın tamamıdır. Fırlatılan bir hata ya da reddedilen bir promise loglanır.", required: true },
+  }}
+/>
+
+#### CommandOptions
+
+<TypeTable
+  type={{
+    help: { type: "string", description: "Komutun ne yaptığı, zaten çevrilmiş halde. Sohbet önerisinde ve admin panelinde gösterilir.", default: '""' },
+    params: { type: "CommandParam[]", typeDescriptionLink: "/tr/docs/developers/api/types#commandparam", description: "Sırasıyla argümanlar. Alanlar aşağıda.", default: "[]" },
+    restricted: { type: "boolean | string | string[]", description: "Kimin kullanabileceği. `false`: herkes. `true`: ai-core admin’leri (ACE `ai.admin`). Bir string ya da liste: bu ACE yetkilerinden ya da principal’lardan herhangi birine izni olan oyuncular (`group.admin`, `ai.job.police`). Konsol her zaman kullanabilir. `command.<name>` de her zaman izin verir; böylece server.cfg ve txAdmin yetkileri çalışmaya devam eder.", default: "false" },
+  }}
+/>
+
+#### CommandParam
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Kullanım satırında, sohbet önerisinde ve `args` içindeki ad.", required: true },
+    type: { type: '"number" | "playerId" | "string" | "longString"', description: "`number`: herhangi bir sayı. `playerId`: çevrimiçi bir oyuncunun server id’si. `string`: tek kelime. `longString`: satırın geri kalanı, bu yüzden son param olmalıdır.", required: true },
+    help: { type: "string", description: "Sohbet önerisinde bu argüman için gösterilen çevrilmiş metin.", required: false },
+    optional: { type: "boolean", description: "Oyuncu onu boş bırakabilir; değeri o zaman `undefined` olur (Lua’da `nil`).", default: "false" },
+  }}
+/>
+
+#### Yanlış girdide oyuncunun gördüğü
+
+Handler çalışmadan önce lib, ai-core’un metinleriyle bir ai-core bildirimiyle (source 0 için bir konsol satırıyla) cevap verir:
+
+| Durum | Metin (İngilizce) |
+| --- | --- |
+| Yetki yok | You are not allowed to use this command. |
+| Zorunlu bir argüman eksik | `<name>` is missing. |
+| `number` / `playerId` bir sayı değil | `<name>` must be a number. |
+| `playerId` çevrimiçi bir oyuncu değil | No player is online with id `<value>`. |
+| Herhangi bir argüman hatasından sonra | Usage: `/name <required> [optional]` |
+
+#### Dönüş değeri
+
+`void`. TypeScript’te `name` boş bir liste ise hata fırlatır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, medical, notify, createLocale } from "@aicore-fivem/lib/server";
+
+const Locale = createLocale();
+
+addCommand(
+  ["heal", "h"],
+  {
+    help: Locale("CMD_HEAL"),
+    params: [{ name: "id", type: "playerId", help: Locale("CMD_P_ID"), optional: true }],
+    restricted: true,
+  },
+  (source, args) => {
+    const target = args.id ?? source; // args.id, number | undefined tipindedir
+    if (target === 0) return; // konsol bir oyuncu belirtmek zorunda
+    if (medical.heal(target) && source > 0) notify(source, Locale("HEALED"), "success");
+  },
+);
+
+addCommand(
+  "announce",
+  {
+    help: "Sends a message to everyone",
+    params: [{ name: "text", type: "longString" }],
+    restricted: ["group.admin", "ai.admin"],
+  },
+  (_source, { text }) => {
+    for (const player of getPlayers()) notify(Number(player), text, "info", 8000);
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.addCommand({ 'heal', 'h' }, {
+    help = Locale('CMD_HEAL'),
+    params = { { name = 'id', type = 'playerId', help = Locale('CMD_P_ID'), optional = true } },
+    restricted = true,
+}, function(source, args)
+    local target = args.id or source
+    if target == 0 then return end
+    -- Lua’da `medical` karşılığı yok: ai-core’un export’unu çağır.
+    if exports['ai-core']:HealPlayer(target) and source > 0 then aiLib.notify(source, Locale('HEALED'), 'success') end
+end)
+
+aiLib.addCommand('announce', {
+    help = 'Sends a message to everyone',
+    params = { { name = 'text', type = 'longString' } },
+    restricted = { 'group.admin', 'ai.admin' },
+}, function(_, args)
+    for _, player in ipairs(GetPlayers()) do aiLib.notify(tonumber(player), args.text, 'info', 8000) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Yetkileri asla handler içinde elle kontrol etme: bunu `restricted` yapar ve sohbet önerileri ona uyar. Bir principal listesi için ai-core her birine `command.<name>` verir; bunun için `permission.cfg` içinde `add_ace resource.ai-core command.add_ace allow` ve `add_ace resource.ai-core command.remove_ace allow` gerekir. Meslek ve çete rütbeleri principal’dır (`ai.job.police`); bu yüzden bir oyuncunun mesleği ya da çetesi değiştiğinde öneriler güncellenir.
+</Callout>
+
+<Callout type="info">
+TypeScript’te `args` tipini `params`’tan alır: `args.id` `number`’dır, isteğe bağlıysa `number | undefined`. Birkaç komutun paylaştığı bir param listesi `as const` ile tanımlanmalıdır; yoksa adlar ve tipler genişler ve `args` onları kaybeder.
+</Callout>

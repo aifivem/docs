@@ -1,0 +1,371 @@
+---
+title: Scheduling und Lebenszyklus
+description: "every, onStop, caller, ByResource, Reasons, sleep und waitFor: periodische Arbeit, Warten und Daten, die der Ressource gehören, die sie registriert hat."
+icon: Timer
+---
+
+```ts title="TypeScript"
+import { every, onStop, caller, ByResource, Reasons } from "@aicore-fivem/lib/fivem";
+import { sleep, waitFor } from "@aicore-fivem/lib/shared";
+```
+
+## Periodische Arbeit
+
+### every
+
+Führt eine Funktion alle `ms` Millisekunden aus (`0` = jeden Frame), aus dem einzigen Scheduler deiner Ressource. Nutze es statt `setInterval`, `setTick` oder einer `CreateThread`-Schleife mit `Wait`: Alle Jobs einer Ressource teilen sich einen Tick, und dieser Tick existiert nur, solange mindestens ein Job eingeschaltet ist, daher kostet eine untätige Ressource in resmon nichts.
+
+**Seite:** Client und Server · **Wartet:** nein
+
+```ts title="Signatur"
+every(ms: number, fn: () => unknown, options?: EveryOptions): Job
+```
+
+```lua title="Lua"
+local job = aiLib.every(ms, fn, options) -- job:set(active), job:stop(), job.running
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Intervall in Millisekunden. `0` führt es in jedem Frame aus. Brüche werden abgerundet, negative Werte zählen als 0.', required: true },
+    fn: { type: '() => unknown', description: 'Die Arbeit. Sie darf ein Promise zurückgeben; ein Wurf oder ein abgelehntes Promise wird geloggt, und der Job läuft weiter.', required: true },
+    options: { type: 'EveryOptions', description: 'Felder unten.' },
+  }}
+/>
+
+#### EveryOptions
+
+<TypeTable
+  type={{
+    active: { type: 'boolean', description: '`false` erstellt den Job ausgeschaltet. Schalte ihn später mit `job.set(true)` ein.', default: 'true' },
+    name: { type: 'string', description: 'Name im Fehler-Log.', default: "der Name der Funktion (TS), 'anonymous' (Lua)" },
+  }}
+/>
+
+#### Rückgabewert
+
+`Job`: ein Handle, um den Job ein- und auszuschalten.
+
+<TypeTable
+  type={{
+    running: { type: 'boolean (read only)', description: '`true`, solange der Job eingeschaltet ist.' },
+    'set(active)': { type: '(active: boolean) => void', description: 'Schaltet den Job ein oder aus. Eingeschaltet kommt der erste Lauf ein Intervall später (nächster Frame bei 0). Lua: `job:set(true)`.' },
+    'stop()': { type: '() => void', description: 'Schaltet den Job endgültig aus: `set(true)` tut danach nichts mehr. Lua: `job:stop()`.' },
+  }}
+/>
+
+#### Beispiel
+
+Ein Job pro Frame, der nur läuft, solange er etwas zu tun hat:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { every, cache, onCache } from "@aicore-fivem/lib/client";
+
+// Blendet das Fadenkreuz in jedem Frame aus, aber nur, solange eine Waffe in der Hand ist.
+const hideCrosshair = every(0, () => HideHudComponentThisFrame(14), {
+  active: cache.weapon !== false,
+  name: "hide crosshair",
+});
+
+onCache("weapon", (weapon) => hideCrosshair.set(weapon !== false));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Blendet das Fadenkreuz in jedem Frame aus, aber nur, solange eine Waffe in der Hand ist.
+local hideCrosshair = aiLib.every(0, function()
+    HideHudComponentThisFrame(14)
+end, { active = aiLib.cache.weapon ~= false, name = 'hide crosshair' })
+
+aiLib.cache.onChange('weapon', function(weapon)
+    hideCrosshair:set(weapon ~= false)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Ein Job darf nie warten: kein `Wait` in Lua, keine lange `await`-Kette in TypeScript, von der du erwartest, dass sie vor dem nächsten Lauf fertig ist. In Lua hält ein `Wait` in einem Job jeden anderen Job der Ressource auf; starte dafür aus dem Job einen Thread. Ein fehlschlagender Job wird höchstens einmal alle 10 Sekunden geloggt (die Fehler dazwischen werden in die nächste Zeile mitgezählt).
+</Callout>
+
+## Warten
+
+### sleep
+
+Wartet `ms` Millisekunden.
+
+**Seite:** Client, Server und NUI · **Wartet:** ja (Promise)
+
+```ts title="Signatur"
+sleep(ms: number): Promise<void>
+```
+
+**Lua:** kein Zwilling; nutze `Wait(ms)` innerhalb eines Threads.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Millisekunden, die gewartet wird.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`Promise<void>`, das nach `ms` Millisekunden erfüllt wird.
+
+#### Beispiel
+
+```ts
+import { sleep } from "@aicore-fivem/lib/shared";
+import { fadeOut, fadeIn } from "@aicore-fivem/lib/client";
+
+async function blink(): Promise<void> {
+  await fadeOut(300);
+  await sleep(1000);
+  await fadeIn(300);
+}
+```
+
+### waitFor
+
+Prüft eine Bedingung, bis sie einen Wert liefert, und gibt dann diesen Wert zurück. Nutze es, um auf etwas zu warten, das das Spiel in seinem eigenen Tempo tut: eine Entity, die existieren soll, ein Modell, das laden soll, ein Wert, der ankommen soll.
+
+**Seite:** Client, Server und NUI · **Wartet:** ja (Promise in TypeScript, hält in Lua den Thread an)
+
+```ts title="Signatur"
+waitFor<T>(check: () => T | undefined, timeoutMs?: number | false, intervalMs?: number): Promise<T>
+```
+
+```lua title="Lua"
+local value = aiLib.waitFor(check, timeout, interval) -- Wert, oder nil nach dem Timeout; innerhalb eines Threads aufrufen
+```
+
+#### Parameter
+
+<TypeTable
+  type={{
+    check: { type: '() => T | undefined', description: 'Läuft bei jeder Prüfung. Gib den Wert zurück, auf den du wartest, oder `undefined` (Lua: `nil`), um weiter zu warten. Um auf eine wahre Bedingung zu warten, gib `cond || undefined` zurück (Lua: `cond or nil`).', required: true },
+    timeoutMs: { type: 'number | false', description: 'Nach so vielen Millisekunden aufgeben. `false` wartet ewig.', default: '10000' },
+    intervalMs: { type: 'number', description: 'Millisekunden zwischen den Prüfungen. `0` prüft jeden Tick.', default: '0' },
+  }}
+/>
+
+#### Rückgabewert
+
+TypeScript: `Promise<T>`, das mit dem ersten Wert erfüllt wird, den `check` zurückgegeben hat und der nicht `undefined` war. Es wird nach dem Timeout mit `Error("waitFor timed out after <ms> ms")` **abgelehnt**.
+
+Lua: der Wert, oder `nil` nach dem Timeout (es wirft nicht).
+
+#### Beispiel
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { waitFor } from "@aicore-fivem/lib/shared";
+
+async function vehicleFromNet(netId: number): Promise<number | null> {
+  try {
+    return await waitFor(() => {
+      const vehicle = NetworkGetEntityFromNetworkId(netId);
+      return DoesEntityExist(vehicle) ? vehicle : undefined;
+    }, 5000);
+  } catch {
+    return null; // nicht innerhalb von 5 Sekunden gestreamt
+  }
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local vehicle = aiLib.waitFor(function()
+        local entity = NetworkGetEntityFromNetworkId(netId)
+        return DoesEntityExist(entity) and entity or nil
+    end, 5000)
+    if not vehicle then return end -- nicht innerhalb von 5 Sekunden gestreamt
+    SetVehicleEngineOn(vehicle, true, true, false)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Behandle in TypeScript immer die Ablehnung (`try` / `catch` oder `.catch()`) oder übergib `false` als Timeout. In Lua funktioniert `waitFor` nur innerhalb eines Threads.
+</Callout>
+
+## Lebenszyklus der Ressource
+
+### onStop
+
+Führt eine Funktion aus, wenn deine Ressource stoppt (auf der Seite, auf der der Code läuft). Nutze es, um zu löschen, was Natives erstellt haben und sonst nichts entfernt: Entities, die du gespawnt hast, Kameras, einen NUI-Fokus.
+
+**Seite:** Client und Server · **Wartet:** nein
+
+```ts title="Signatur"
+onStop(fn: () => void): void
+```
+
+**Lua:** kein Zwilling; nutze `AddEventHandler('onResourceStop', function(name) if name == GetCurrentResourceName() then ... end end)`.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    fn: { type: '() => void', description: 'Läuft einmal, wenn diese Ressource stoppt.', required: true },
+  }}
+/>
+
+#### Rückgabewert
+
+`void`.
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { onStop } from "@aicore-fivem/lib/server";
+
+const spawned = new Set<number>();
+
+onStop(() => {
+  for (const entity of spawned) if (DoesEntityExist(entity)) DeleteEntity(entity);
+});
+```
+
+<Callout type="info">
+Alle `onStop`, `ByResource` und `Reasons` einer Ressource teilen sich einen Stopp-Listener, daher kosten viele davon nichts extra.
+</Callout>
+
+### caller
+
+Der Name der Ressource, die den gerade laufenden Export aufgerufen hat. In deinem eigenen Code (nicht in einem Export-Aufruf) ist es der Name deiner Ressource.
+
+**Seite:** Client und Server · **Wartet:** nein
+
+```ts title="Signatur"
+caller(): string
+```
+
+**Lua:** kein Zwilling; nutze `GetInvokingResource() or GetCurrentResourceName()`.
+
+#### Rückgabewert
+
+`string`: der Name der aufrufenden Ressource, oder der Name dieser Ressource, wenn keine andere Ressource aufruft.
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { registerExport, caller } from "@aicore-fivem/lib/server";
+
+registerExport("Ping", () => {
+  console.log(`${caller()} asked for a ping`);
+  return true;
+});
+```
+
+### ByResource
+
+Eine Map, deren Einträge der Ressource gehören, die sie gesetzt hat. Wenn diese Ressource stoppt, werden ihre Einträge sofort entfernt (und `onDrop` läuft für jeden). Nutze sie für Dinge, die andere Ressourcen über deine Exports registrieren: Hooks, Prompts, Items, Menüeinträge.
+
+**Seite:** Client und Server · **Wartet:** nein
+
+```ts title="Signatur"
+new ByResource<K, V>(options?: { onDrop?: (resource: string, key: K, value: V) => void })
+```
+
+**Lua:** kein Zwilling.
+
+#### Parameter
+
+<TypeTable
+  type={{
+    'options.onDrop': { type: '(resource: string, key: K, value: V) => void', description: 'Läuft für jeden Eintrag, der entfernt wird, weil seine Ressource gestoppt ist (nicht bei `delete`).' },
+  }}
+/>
+
+#### Methoden
+
+<TypeTable
+  type={{
+    'set(key, value, owner?)': { type: '(key: K, value: V, owner?: string) => void', description: 'Speichert den Eintrag unter `owner` (Standard: `caller()`, die Ressource, die deinen Export aufruft). Einen Schlüssel zu setzen, der einer anderen Ressource gehört, überträgt ihn an den neuen Besitzer.' },
+    'get(key)': { type: '(key: K) => V | undefined', description: 'Der Eintrag, `undefined`, wenn es keinen gibt.' },
+    'ownerOf(key)': { type: '(key: K) => string | undefined', description: 'Die Ressource, der der Eintrag gehört.' },
+    'delete(key)': { type: '(key: K) => boolean', description: 'Entfernt den Eintrag. `false`, wenn es keinen gab.' },
+    'values()': { type: '() => Generator<V>', description: 'Jeder Wert.' },
+    'entries()': { type: '() => Generator<[K, V]>', description: 'Jeder Schlüssel und Wert.' },
+    size: { type: 'number (read only)', description: 'Anzahl der Einträge.' },
+    'dropResource(resource)': { type: '(resource: string) => void', description: 'Entfernt jetzt jeden Eintrag einer Ressource (`onDrop` pro Eintrag). Wird für dich aufgerufen, wenn eine Ressource stoppt.' },
+  }}
+/>
+
+#### Beispiel
+
+```ts title="resource/server/index.ts"
+import { ByResource, registerExport } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+type Hook = (source: number, text: string) => boolean;
+const hooks = new ByResource<string, Hook>({
+  onDrop: (resource, id) => console.log(`${resource} stopped: hook ${id} removed`),
+});
+
+// Eine andere Ressource: exports["my-chat"].AddHook("swear-filter", (source, text) => ...)
+registerExport("AddHook", (id: unknown, hook: unknown) => {
+  const name = readText(id, 64);
+  if (name === null || typeof hook !== "function") return false;
+  hooks.set(name, hook as Hook); // owner = die Ressource, die AddHook aufruft
+  return true;
+});
+
+export function allowed(source: number, text: string): boolean {
+  for (const hook of hooks.values()) if (!hook(source, text)) return false;
+  return true;
+}
+```
+
+### Reasons
+
+Ein Schalter, der an ist, solange mindestens ein Grund gesetzt ist. Jede Ressource setzt ihre eigenen benannten Gründe, und die Gründe einer stoppenden Ressource werden gelöscht. Nutze es für „das HUD ausblenden“, „die Synchronisation pausieren“, „das Menü sperren“: Mehrere Skripte können gleichzeitig fragen, und der Zustand springt erst zurück, wenn der letzte loslässt.
+
+**Seite:** Client und Server · **Wartet:** nein
+
+```ts title="Signatur"
+new Reasons()
+```
+
+**Lua:** kein Zwilling.
+
+#### Methoden
+
+<TypeTable
+  type={{
+    any: { type: 'boolean (read only)', description: '`true`, solange mindestens ein Grund irgendeiner Ressource gesetzt ist.' },
+    'set(reason, on, owner?)': { type: '(reason: string, on: boolean, owner?: string) => void', description: 'Setzt (`on = true`) oder löscht einen Grund von `owner` (Standard: `caller()`).' },
+    'has(reason, owner?)': { type: '(reason: string, owner?: string) => boolean', description: 'Ob dieser Grund von `owner` (Standard: `caller()`) gesetzt ist.' },
+    'onChange(handler)': { type: '(handler: (any: boolean) => void) => void', description: 'Läuft, wenn `any` umspringt (von aus nach an oder von an nach aus). Nicht bei jedem `set`.' },
+  }}
+/>
+
+#### Beispiel
+
+```ts title="resource/client/index.ts"
+import { Reasons, registerExport } from "@aicore-fivem/lib/client";
+import { readText } from "@aicore-fivem/lib/shared";
+
+const hidden = new Reasons();
+hidden.onChange((any) => SendNUIMessage({ action: "visible", value: !any }));
+
+// Andere Ressourcen: exports["my-hud"].Hide("cutscene") und exports["my-hud"].Show("cutscene")
+registerExport("Hide", (reason: unknown) => {
+  const name = readText(reason, 64);
+  if (name !== null) hidden.set(name, true);
+});
+registerExport("Show", (reason: unknown) => {
+  const name = readText(reason, 64);
+  if (name !== null) hidden.set(name, false);
+});
+```

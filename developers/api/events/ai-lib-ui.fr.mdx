@@ -1,0 +1,311 @@
+---
+title: Événements UI d’ai-lib
+description: Les événements client que déclenche ai-lib quand un joueur répond à un menu, une boîte de saisie, un sélecteur d’objets, un mini-jeu ou une invite, ou annule une barre de progression - pour les scripts qui appellent eux-mêmes les exports d’ai-lib.
+icon: MousePointerClick
+---
+
+ai-lib dessine l’interface joueur partagée : menus, boîtes de saisie, invites, barre de progression, mini-jeux, notifications. Quand le joueur répond, ai-lib déclenche l’un de ces événements locaux client.
+
+**La plupart des scripts ne les écoutent jamais.** `menu`, `input`, `itemPicker`, `skillCheck`, `lockpick`, `onPromptPressed` et `progress` de la lib (et les mêmes noms sur `aiLib`) ouvrent l’interface, attendent la réponse et vous la rendent comme valeur de retour. N’écoutez vous-même que si vous appelez directement les exports d’ai-lib (`OpenMenu`, `OpenInput`, `OpenMinigame`) ou `OpenItemPicker` d’ai-core.
+
+Chaque réponse transporte la **ressource** qui a ouvert l’interface et l’**id de requête** qu’elle a choisi. Vérifiez les deux : chaque ressource du client entend chaque réponse.
+
+### ai-lib:client:menuResult
+
+Le joueur a choisi une entrée de menu ou fermé le menu. Le même événement répond au sélecteur d’objets d’ai-core et aux mini-jeux d’ai-lib.
+
+**Côté :** Client · **Constante :** `MENU_EVENTS.menuResult`
+
+#### Arguments
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'La ressource qui a ouvert le menu. Ignorez les réponses destinées à d’autres ressources.', required: true },
+    requestId: { type: 'number', description: 'L’id que cette ressource a passé à l’ouverture du menu.', required: true },
+    value: { type: 'unknown', description: 'Menu : l’`id` de l’entrée choisie (string), `"__back"` (constante `MENU_BACK`) pour un appui bref sur Échap dans un sous-menu ouvert avec `back: true`, ou `null` à la fermeture. Sélecteur d’objets : une liste `PickedItem[]` ou `null`. Mini-jeu : son résultat.', required: true },
+  }}
+/>
+
+#### Écouteur
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/menu.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { MENU_EVENTS } from "@aicore-fivem/shared";
+
+const ui = resourceExport("ai-lib");
+const me = GetCurrentResourceName();
+let nextId = 0;
+const waiting = new Map<number, (value: unknown) => void>();
+
+on(MENU_EVENTS.menuResult, (resource: string, requestId: number, value: unknown) => {
+  if (resource !== me) return;
+  waiting.get(requestId)?.(value);
+  waiting.delete(requestId);
+});
+
+// menu() de la lib fait exactement ceci ; montré ici pour expliquer l’événement.
+export function pickColor(): Promise<string | null> {
+  const id = ++nextId;
+  return new Promise((resolve) => {
+    waiting.set(id, (value) => resolve(typeof value === "string" ? value : null));
+    ui.OpenMenu(id, {
+      title: "Color",
+      items: [
+        { id: "red", label: "Red" },
+        { id: "blue", label: "Blue" },
+      ],
+    });
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/menu.lua"
+local me = GetCurrentResourceName()
+local nextId = 0
+local waiting = {}
+
+AddEventHandler('ai-lib:client:menuResult', function(resource, requestId, value)
+  if resource ~= me or not waiting[requestId] then return end
+  waiting[requestId]:resolve(value)
+  waiting[requestId] = nil
+end)
+
+-- aiLib.menu.show fait exactement ceci ; montré ici pour expliquer l’événement. Appelez depuis un thread.
+local function pickColor()
+  nextId = nextId + 1
+  local p = promise.new()
+  waiting[nextId] = p
+  exports['ai-lib']:OpenMenu(nextId, {
+    title = 'Color',
+    items = { { id = 'red', label = 'Red' }, { id = 'blue', label = 'Blue' } },
+  })
+  local value = Citizen.Await(p)
+  return type(value) == 'string' and value or nil
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:menuHover
+
+Le pointeur ou le focus clavier est passé sur une entrée de menu. Utilisez-le pour des aperçus (afficher une couleur de véhicule pendant que le joueur la survole). Le menu reste ouvert.
+
+**Côté :** Client · **Constante :** `MENU_EVENTS.menuHover` · **Lib :** `menu(request, { onHover })`
+
+#### Arguments
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'La ressource qui a ouvert le menu.', required: true },
+    requestId: { type: 'number', description: 'L’id de ce menu.', required: true },
+    itemId: { type: 'string', description: 'L’`id` de l’entrée sous le pointeur ou le focus.', required: true },
+  }}
+/>
+
+#### Écouteur
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/preview.ts"
+import { menu } from "@aicore-fivem/lib/client";
+
+// La lib transmet les survols de son propre menu à onHover.
+export async function chooseColor(): Promise<string | null> {
+  return menu(
+    { title: "Color", items: [{ id: "red", label: "Red" }, { id: "blue", label: "Blue" }] },
+    { onHover: (item) => console.log(`previewing ${item}`) },
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/preview.lua"
+-- aiLib transmet les survols de son propre menu à onHover. Appelez depuis un thread.
+local function chooseColor()
+  return aiLib.menu.show(
+    { title = 'Color', items = { { id = 'red', label = 'Red' }, { id = 'blue', label = 'Blue' } } },
+    { onHover = function(item) print(('previewing %s'):format(item)) end }
+  )
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:menuToggle
+
+Le joueur a basculé une ligne interrupteur (une entrée avec `checked`). L’interrupteur bascule sur place et le menu reste ouvert.
+
+**Côté :** Client · **Constante :** `MENU_EVENTS.menuToggle` · **Lib :** `menu(request, { onToggle })`
+
+#### Arguments
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'La ressource qui a ouvert le menu.', required: true },
+    requestId: { type: 'number', description: 'L’id de ce menu.', required: true },
+    itemId: { type: 'string', description: 'L’`id` de la ligne interrupteur.', required: true },
+    checked: { type: 'boolean', description: 'Le nouvel état de l’interrupteur.', required: true },
+  }}
+/>
+
+#### Écouteur
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/settings.ts"
+import { menu } from "@aicore-fivem/lib/client";
+
+let sounds = true;
+
+export async function openSettings(): Promise<void> {
+  await menu(
+    { title: "Settings", items: [{ id: "sounds", label: "Sounds", checked: sounds }] },
+    { onToggle: (item, checked) => { if (item === "sounds") sounds = checked; } },
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/settings.lua"
+local sounds = true
+
+-- Appelez depuis un thread.
+local function openSettings()
+  aiLib.menu.show(
+    { title = 'Settings', items = { { id = 'sounds', label = 'Sounds', checked = sounds } } },
+    { onToggle = function(item, checked) if item == 'sounds' then sounds = checked end end }
+  )
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:inputResult
+
+Le joueur a confirmé ou fermé une boîte de saisie.
+
+**Côté :** Client · **Constante :** `MENU_EVENTS.inputResult` · **Lib :** `input(request)`
+
+#### Arguments
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'La ressource qui a ouvert la boîte de dialogue.', required: true },
+    requestId: { type: 'number', description: 'L’id de cette boîte de dialogue.', required: true },
+    values: { type: 'Record<string, string | number> | null', description: 'Les valeurs par `name` de champ en cas de confirmation, `null` à la fermeture.', required: true },
+  }}
+/>
+
+#### Écouteur
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/rename.ts"
+import { input } from "@aicore-fivem/lib/client";
+
+// input() de la lib écoute ai-lib:client:inputResult pour vous.
+export async function askName(): Promise<string | null> {
+  const values = await input({
+    title: "Rename",
+    confirm: "Save",
+    fields: [{ name: "name", label: "Name", type: "text", maxLength: 32 }],
+  });
+  return values && typeof values.name === "string" ? values.name : null;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/rename.lua"
+-- aiLib.input écoute ai-lib:client:inputResult pour vous. Appelez depuis un thread.
+local function askName()
+  local values = aiLib.input({
+    title = 'Rename',
+    confirm = 'Save',
+    fields = { { name = 'name', label = 'Name', type = 'text', maxLength = 32 } },
+  })
+  return values and values.name or nil
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:promptPressed
+
+Le joueur a appuyé sur la touche d’interaction pendant qu’une invite était en haut de la liste. Seule la ressource qui a affiché cette invite doit réagir.
+
+**Côté :** Client · **Constante :** `LIB_UI.promptPressedEvent` · **Lib :** `onPromptPressed(handler)`
+
+#### Arguments
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'La ressource qui a affiché l’invite.', required: true },
+    id: { type: 'string', description: 'L’id d’invite que cette ressource a passé à `showPrompt`.', required: true },
+  }}
+/>
+
+#### Écouteur
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/atm.ts"
+import { onPromptPressed, showPrompt } from "@aicore-fivem/lib/client";
+
+showPrompt("atm", "Use ATM");
+// onPromptPressed filtre sur votre ressource pour vous.
+onPromptPressed((id) => {
+  if (id === "atm") console.log("open the ATM");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/atm.lua"
+aiLib.showPrompt('atm', 'Use ATM')
+-- aiLib.onPromptPressed filtre sur votre ressource pour vous.
+aiLib.onPromptPressed(function(id)
+  if id == 'atm' then print('open the ATM') end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:cancelProgress
+
+Le joueur a appuyé sur la touche d’annulation d’ai-lib pendant l’affichage de la barre de progression. `progress` de la lib avec `canCancel: true` écoute et termine la barre avec `false`.
+
+**Côté :** Client · **Constante :** `LIB_UI.cancelProgressEvent`
+
+#### Arguments
+
+Aucun.
+
+#### Écouteur
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { LIB_UI } from "@aicore-fivem/shared";
+
+// Nécessaire seulement si vous lancez vous-même ShowProgress d’ai-lib au lieu de progress() de la lib.
+on(LIB_UI.cancelProgressEvent, () => console.log("player cancelled the bar"));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- Nécessaire seulement si vous lancez vous-même ShowProgress d’ai-lib au lieu d’aiLib.progress.
+AddEventHandler('ai-lib:client:cancelProgress', function() print('player cancelled the bar') end)
+```
+</Tab>
+</Tabs>
+
+## Événements internes d’ai-lib
+
+`Zones` et `Points` de la lib confient leurs vérifications à ai-lib et reçoivent la réponse par ces événements. Ne les déclenchez pas ; utilisez `Zones` et `Points`.
+
+| Événement | Constante | Arguments |
+| --- | --- | --- |
+| `ai-lib:client:zone` | `LIB_UI.zoneEvent` | `(owner: string, key: string, inside: boolean)` le joueur est entré dans une zone ou en est sorti, zone qu’ai-lib vérifie pour `owner`. |
+| `ai-lib:client:modelPoint` | `LIB_UI.modelPointEvent` | `(owner: string, key: string, entity: number)` l’objet le plus proche d’un point de modèle a changé (`0` = aucun à proximité). |

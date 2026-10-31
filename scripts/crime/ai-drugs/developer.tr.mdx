@@ -1,0 +1,84 @@
+---
+title: Geliştiriciler için ai-drugs
+description: ai-drugs’ın bitki tablosu, ihbarları ve hesap defteri sebebi, bildiği uyuşturucuları başka bir script’ten nasıl satacağın ve özel event’leri.
+icon: Code
+---
+
+ai-drugs’ın **hiç export’u yoktur**. Satışlara ve hasatlara kendi server’ında karar verilir; eşyalar, para ve ihbarlar AI Core üzerinden gider. Başka bir script’in kullanabileceği şeyler aşağıda listelenmiştir.
+
+## Veritabanı tablosu `ai_drugs_plants`
+
+Dünyadaki her kenevir bitkisi için bir satır. Açılışta oluşturulur (`sql/main.sql`, ai-core’un tablo kurucusu üzerinden). Tüm satırlar açılışta bir kez yüklenir ve bellekte tutulur; çürüyen bitkileri server siler, bu yüzden tablo küçük kalır.
+
+| Sütun | Tip | Ne tutar |
+| --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | Bitki id’si (otomatik artan). |
+| `owner` | `INT UNSIGNED` | Dikenin `ai_core_characters.id` değeri (karakter başına bitki sayısı buna göre sayılır). |
+| `x`, `y`, `z` | `FLOAT` | Bitkinin durduğu yer. |
+| `planted_at` | `DATETIME` | Ne zaman dikildiği; büyüme ve çürüme buradan itibaren sayılır. |
+
+<Callout type="warn">
+ai-drugs tabloyu sadece açılışta okur, sonra bitkilerini bellekte tutar. Çalışırken başka bir resource’un eklediği, değiştirdiği ya da sildiği bir satır bir sonraki yeniden başlatmaya kadar görülmez. Bitkileri sadece ai-drugs durdurulmuşken değiştir.
+</Callout>
+
+## Polis ihbarları
+
+Bir satış (paneldeki **Police alert chance** değerine göre) lib’in `dispatch.alert` fonksiyonu üzerinden bir ihbar gönderebilir: kod `10-31`, "Suspicious hand-off reported" metni, satıcının konumunda, ikon `cannabis`, kırmızı 51 numaralı blip sprite’ı. Hangi ihbar script’i çalışıyorsa ona ulaşır.
+
+## Para
+
+Satış parası paneldeki **Money account** hesabına `drugs:sale` hesap defteri sebebiyle (ledger reason) gider.
+
+## Eşyalar
+
+Yabancıların satın aldığı uyuşturucular paneldeki **Drugs** listesidir (varsayılan olarak `weed_bud`, `coke_baggy`, `meth_baggy`). Sokak satışlarını kendi uyuşturucu laboratuvarından beslemek için oyuncuya bu eşyalardan birini ver: ai-drugs oyuncunun taşıdığı listedeki her eşyayı satar.
+
+#### Örnek
+
+5 `weed_bud`’ı bir `coke_baggy`’ye çeviren bir laboratuvar script’i (uydurma bir tarif):
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, onClientCallback, progressFor } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+onClientCallback("mylab:cook", async (source) => {
+  if (!inventory.hasItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  const done = await progressFor(source, { label: "Cooking", duration: 10_000 });
+  if (!done) return fail("LAB_ERR_CANCELLED");
+  if (!inventory.removeItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  inventory.addItem(source, "coke_baggy", 1);
+  notify(source, "You made a baggy", "success");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+RegisterNetEvent('mylab:cook', function()
+  local source = source
+  if not aiLib.inventory.hasItem(source, 'weed_bud', 5) then return end
+  CreateThread(function()
+    local done = aiLib.progressFor(source, { label = 'Cooking', duration = 10000 })
+    if not done then return end
+    if not aiLib.inventory.removeItem(source, 'weed_bud', 5) then return end
+    aiLib.inventory.addItem(source, 'coke_baggy', 1)
+    aiLib.notify(source, 'You made a baggy', 'success')
+  end)
+end)
+```
+</Tab>
+</Tabs>
+
+## Özel event’ler ve callback’ler
+
+Script’in kendi sözleşmesi (`resource/common/drugs.ts`). Server her çağrıda alıcıyı, mesafeyi ve bekleme sürelerini kontrol eder. Sürümler arasında değişebilirler: başka resource’lardan tetikleme ya da dinleme.
+
+| Ad | Yön | Ne taşır |
+| --- | --- | --- |
+| `ai-drugs:sell` | client callback’i | `(buyerNetId)`: oyuncunun yanındaki yabancıya sat; `{ ok, count, price }` ile cevap verir. |
+| `ai-drugs:area` | client -> server | `(cellX, cellY)`: oyuncunun bitki hücresi değişti. |
+| `ai-drugs:client:plants` | server -> player | `(reset, puts, removes, serverNow, growMinutes)`: oyuncunun etrafındaki bitkiler (çevresindeki 128 m’lik 3x3 hücre, ardından değişiklikler). |
+| `ai-drugs:harvest` | client callback’i | `(plantId)`: hazır bir bitkiyi hasat et ya da (polis) yok et. |

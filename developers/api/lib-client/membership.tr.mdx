@@ -1,0 +1,391 @@
+---
+title: Üyelik ve oyuncu verisi
+description: hasJob, inGang, onDutyIn, allows, onMembershipChange, getPlayerData, onPlayerData ve seedPlayerData - ai-core’un gönderdiği haliyle yerel oyuncunun karakteri, parası, meslekleri, görev durumu ve çeteleri.
+icon: BadgeCheck
+---
+
+ai-core yerel oyuncunun kendi verisini onun client’ına gönderir: karakter yüklendiğinde bir snapshot, sonra yalnızca değişen değerler. Bu yardımcılar o kopyayı okur; bu yüzden bir kontrol bir bellek okumasına mal olur ve asla server’a sormaz.
+
+Onları oyuncunun **gördükleri** için kullan (bir noktanın `canShow`’u, bir radyal öğesi, bir menü satırı). Oyuncunun aynı veriyle ne **yapabileceğine** server karar verir ([Oyuncular ve karakterler](/tr/docs/developers/api/lib-server/players) sayfasındaki `online`): bir client kontrolü asla kanıt değildir.
+
+## Oyuncu verisi
+
+ai-core’un tuttuğu değerler, anahtara göre ([`AiPlayerData`](/tr/docs/developers/api/types#aiplayerdata)):
+
+<TypeTable
+  type={{
+    character: { type: 'CharacterInfo | null', description: 'Yüklü karakter (id’ler, ad); bir karakter seçilmeden önce null.' },
+    money: { type: 'Record<string, number>', description: 'Hesap adı başına bakiye (cash, bank).' },
+    jobs: { type: 'JobMembership[]', description: 'Karakterin tuttuğu her meslek: { job: string; grade: number }.' },
+    duty: { type: 'string | null', description: 'Karakterin görevde olduğu meslek; görevde değilken null.' },
+    job: { type: 'JobMembership', description: 'Diğer script’lerin "asıl" meslek olarak gördüğü meslek: görevdeki, yoksa son görevde olunan, yoksa ilki, yoksa işsiz.' },
+    gangs: { type: 'GangMembership[]', description: 'Karakterin içinde olduğu her çete: { gang: string; grade: number }.' },
+    activeGang: { type: 'string | null', description: 'Karakterin şu an adına hareket ettiği çete; hiçbiri yoksa null.' },
+    metadata: { type: 'Record<string, unknown>', description: 'Karakterin serbest biçimli metadata’sı (framework köprüleri QB / ESX metadata’sını burada tutar). Anahtar başına yamalanır.' },
+  }}
+/>
+
+Üye tipleri [`CharacterInfo`](/tr/docs/developers/api/types#characterinfo), [`JobMembership`](/tr/docs/developers/api/types#jobmembership) ve [`GangMembership`](/tr/docs/developers/api/types#gangmembership)’dir.
+
+### getPlayerData
+
+Tek bir anahtarın son değeri. Resource’undaki ilk kullanımda ai-core’un zaten gönderdiği her şeyi de okur (ai-core’un `GetPlayerData` export’undan); böylece oyuncu yüklendikten sonra yeniden başlatılan bir resource değerlere hemen sahip olur.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+getPlayerData<K extends keyof AiPlayerData>(key: K): AiPlayerData[K] | undefined
+```
+
+```lua title="Lua"
+local value = aiLib.playerData.get(key)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    key: { type: '"character" | "money" | "jobs" | "duty" | "job" | "gangs" | "activeGang" | "metadata"', description: 'Hangi değer.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`AiPlayerData[K] | undefined`: değer ya da henüz hiçbir şey gelmediyse (yüklü karakter yok, ai-core başlamadı) `undefined` (Lua’da `nil`).
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { getPlayerData, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "whoami",
+  () => {
+    const character = getPlayerData("character");
+    const job = getPlayerData("job");
+    const cash = getPlayerData("money")?.cash ?? 0;
+    if (!character) return notify("No character loaded", "error");
+    notify(`${job?.job ?? "unemployed"} (${job?.grade ?? 0}), $${cash}`, "info");
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('whoami', function()
+    local job = aiLib.playerData.get('job')
+    local money = aiLib.playerData.get('money') or {}
+    aiLib.notify(('%s (%d), $%d'):format(job and job.job or 'unemployed', job and job.grade or 0, money.cash or 0), 'info')
+end, false)
+```
+</Tab>
+</Tabs>
+
+### onPlayerData
+
+ai-core bu oyuncu için bir anahtar gönderdiğinde her seferinde bir handler çalıştırır.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+onPlayerData<K extends keyof AiPlayerData>(key: K, handler: (value: AiPlayerData[K]) => void): () => void
+```
+
+```lua title="Lua"
+aiLib.playerData.onChange(key, function(value) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    key: { type: 'keyof AiPlayerData', description: 'Takip edilecek değer.', required: true },
+    handler: { type: '(value: AiPlayerData[K]) => void', description: 'Yeni değeri alır. Yamalanan bir anahtar (metadata) için birleştirilmiş nesnenin tamamıdır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+TypeScript: `() => void`, handler’ı kaldıran bir fonksiyon. Lua hiçbir şey döndürmez.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onPlayerData } from "@aicore-fivem/lib/client";
+
+const stop = onPlayerData("money", (money) => {
+  SendNUIMessage({ action: "money", data: { cash: money.cash ?? 0, bank: money.bank ?? 0 } });
+});
+// HUD tamamen kapandığında stop()
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.playerData.onChange('money', function(money)
+    SendNUIMessage({ action = 'money', data = { cash = money.cash or 0, bank = money.bank or 0 } })
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Resource’un başlamadan önce gönderilen değerler handler’a yeniden oynatılmaz. Açılışta güncel değeri `getPlayerData` ile bir kez oku, sonra değişiklikleri `onPlayerData` ile takip et.
+</Callout>
+
+### seedPlayerData
+
+Değerleri elle doldurur. Zaten değeri olan anahtarlar korunur. Buna ihtiyacın yok: lib ilk kullanımda kendini ai-core’dan doldurur.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+seedPlayerData(data: Partial<AiPlayerData>): void
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    data: { type: 'Partial<AiPlayerData>', description: 'Anahtara göre değerler. Yalnızca henüz değeri olmayan anahtarlar ayarlanır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+import { seedPlayerData } from "@aicore-fivem/lib/client";
+
+// ai-core olmayan bir test düzeneği.
+seedPlayerData({ jobs: [{ job: "police", grade: 3 }], duty: "police" });
+```
+
+## Üyelik kontrolleri
+
+### hasJob
+
+Görevde olsun ya da olmasın oyuncunun mesleklerden birini minimum bir rütbede tutup tutmadığı.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+hasJob(jobs: readonly string[], minGrade?: number): boolean
+```
+
+Lua karşılığı yok: `aiLib.playerData.get('jobs')`’u dolaş (bkz. [`points.add`](/tr/docs/developers/api/lib-client/points#pointsadd) Lua örneği).
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Meslek adları. Boş bir liste herkes demektir.', required: true },
+    minGrade: { type: 'number', description: 'Sayılan en düşük rütbe.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: liste boşsa ya da oyuncu `jobs`’tan birini `minGrade` veya üstünde tutuyorsa `true`.
+
+#### Örnek
+
+```ts
+import { hasJob, onMembershipChange, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+points.add("armory", {
+  coords: { x: 482.6, y: -995.2, z: 30.7 },
+  label: "Armory",
+  canShow: () => hasJob(["police", "sheriff"], 1),
+  onPressed: () => emitNet("mypolice:armory"),
+});
+onMembershipChange(() => points.refresh());
+```
+
+### inGang
+
+Oyuncunun çetelerden birinde minimum bir rütbede olup olmadığı.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+inGang(gangs: readonly string[], minGrade?: number): boolean
+```
+
+Lua karşılığı yok: `aiLib.playerData.get('gangs')`’i dolaş.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    gangs: { type: 'string[]', description: 'Çete adları. Boş bir liste herkes demektir.', required: true },
+    minGrade: { type: 'number', description: 'Sayılan en düşük rütbe.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: liste boşsa ya da oyuncu `gangs`’ten birinde `minGrade` veya üstündeyse `true`.
+
+#### Örnek
+
+```ts
+import { inGang, radial } from "@aicore-fivem/lib/client";
+
+radial.add({
+  id: "mygang:stash",
+  label: "Gang stash",
+  icon: "box",
+  canShow: () => inGang(["ballas", "vagos"], 2),
+  onPressed: () => emitNet("mygang:stash"),
+});
+```
+
+### onDutyIn
+
+Oyuncunun mesleklerden birinde görevde olup olmadığı.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+onDutyIn(jobs: readonly string[]): boolean
+```
+
+Lua karşılığı yok: `aiLib.playerData.get('duty')` görevdeki meslektir.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Meslek adları. hasJob’un aksine boş bir liste hiç kimse demektir.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: oyuncunun görevdeki mesleği `jobs` içindeyse `true`.
+
+#### Örnek
+
+```ts
+import { onDutyIn, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+points.addVehicle("mymech:repair", {
+  label: "Repair",
+  icon: "wrench",
+  canShow: () => onDutyIn(["mechanic"]),
+  onPressed: (vehicle) => emitNet("mymech:repair", NetworkGetNetworkIdFromEntity(vehicle)),
+});
+```
+
+### onMembershipChange
+
+Oyuncunun meslekleri, görev durumu ya da çeteleri değiştiğinde bir fonksiyon çalıştırır. `canShow`’u bunları okuyan noktaları ve blip’leri yenilemek için kullan.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+onMembershipChange(fn: () => void): void
+```
+
+Lua karşılığı yok: `jobs`, `duty` ve `gangs` için `aiLib.playerData.onChange`.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    fn: { type: '() => void', description: 'Meslekler, görev durumu ya da çetelerdeki her değişiklikten sonra çalışır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+import { onMembershipChange, Points, radial } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+onMembershipChange(() => {
+  points.refresh();
+  radial.refresh();
+});
+```
+
+### allows
+
+Yerel oyuncunun bir erişim kuralı olan bir yeri kullanıp kullanamayacağı. Server’ın `online.allows(source, rule)`’u aynı kuralla karar verir; böylece oyuncunun gördüğü, server’ın kullanmasına izin verdiğiyle tam olarak aynıdır. Kuralı bir panel kaydından `readAccess(record)` (`@aicore-fivem/lib/shared`) ile oku.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+allows(rule: AccessRule): boolean
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'Yeri kimin kullanabileceği. Alanlar aşağıda.', required: true },
+  }}
+/>
+
+#### AccessRule
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Yeri kullanabilen meslekler.', required: true },
+    gangs: { type: 'string[]', description: 'Yeri kullanabilen çeteler.', required: true },
+    grades: { type: 'Record<string, number>', description: 'Meslek ya da çete adı başına minimum rütbe. Olmayan bir ad 0 rütbesi demektir.', required: true },
+    onDuty: { type: 'boolean', description: 'Meslek üyeleri o meslekte görevde olmalıdır. Çete üyeleri etkilenmez.', required: true },
+  }}
+/>
+
+Tipi [`AccessRule`](/tr/docs/developers/api/types#accessrule)’dır.
+
+#### Dönüş değeri
+
+`boolean`: iki liste de boşsa (herkes); oyuncu `gangs`’ten birinde minimum rütbesindeyse; ya da oyuncu `jobs`’tan birini minimum rütbesinde tutuyorsa (ve `onDuty` ise o meslekte görevdeyse) `true`. Aksi halde `false`.
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { AdminWorld, allows, callAction, onMembershipChange, Points } from "@aicore-fivem/lib/client";
+import { readAccess, readVec3, RecordObjects, type AccessRule } from "@aicore-fivem/lib/shared";
+
+const world = new AdminWorld(["stashes"]);
+const points = new Points();
+
+interface Stash { coords: { x: number; y: number; z: number }; access: AccessRule }
+const readStash = (_key: string, raw: Record<string, unknown>): Stash | null => {
+  const coords = readVec3(raw.coords);
+  return coords ? { coords, access: readAccess(raw) } : null;
+};
+
+new RecordObjects(world, "stashes", readStash, (id, stash) => {
+  points.add(id, {
+    coords: stash.coords,
+    label: "Stash",
+    canShow: () => allows(stash.access),
+    onPressed: () => callAction("mystash:open", [id], { fallback: "STASH_FAILED" }),
+  });
+  return () => points.remove(id);
+});
+
+onMembershipChange(() => points.refresh());
+```

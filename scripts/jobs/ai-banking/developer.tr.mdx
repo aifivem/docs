@@ -1,0 +1,226 @@
+---
+title: Geliştiriciler için ai-banking
+description: ai-banking’in meslek şirket parası export’ları (qb-banking ve Renewed-Banking adlarıyla da) ve yeni kodda onların yerine kullanılacak lib çağrıları.
+icon: Code
+---
+
+<Callout type="info">
+ai-banking kendine ait para tutmaz. Yeni kodda meslek ve çete parasını ai-core’un ortak para export’larıyla (`GetSharedMoney`, `AddSharedMoney`, `RemoveSharedMoney`) ya da lib’in `money.transfer` fonksiyonuyla taşı, banka ekranını da lib’in `banking.open(source)` fonksiyonuyla aç. Bunlar her banka script’iyle çalışır. Aşağıdaki export’lar, qb-banking ya da Renewed-Banking için yazılmış QBCore script’leri çalışmaya devam etsin diye vardır.
+</Callout>
+
+## Lib fonksiyonları (önerilen)
+
+### banking.open
+
+Etkin banka script’inin ekranını bir oyuncu için açar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+banking.open(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.banking.open(source)
+```
+
+#### Dönüş değeri
+
+Ekran açıldıysa `true`. Banka script’i dışarıdan açılamıyorsa ya da hiçbiri çalışmıyorsa `false`.
+
+<Callout type="warn">
+Her banka script’i başka bir resource’tan açılamaz. Oyuncuya bir şey söylemeden önce `banking.open` fonksiyonunun ne cevap verdiğine bak.
+</Callout>
+
+### money.transfer
+
+Parayı iki hesap arasında tek bir veritabanı transaction’ında taşır ve iki hesap defteri satırını da yazar. ai-banking her para yatırma, çekme ve havale için bunu kullanır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:TransferMoney(from, to, amount, reason, fee)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    from: { type: 'MoneyRef', description: 'Paranın çıktığı hesap: bir oyuncu için `{ source, account }`, bir meslek ya da çete için `{ owner, id, account }`.', required: true },
+    to: { type: 'MoneyRef', description: 'Paranın gittiği hesap, aynı biçimde.', required: true },
+    amount: { type: 'number', description: '$ cinsinden tutar.', required: true },
+    reason: { type: 'string', description: 'Geçmişte gösterilen hesap defteri sebebi (ledger reason).' },
+    fee: { type: 'number', description: '`from` hesabının üstüne ödediği ek tutar (`to` hesabına eklenmez).' },
+  }}
+/>
+
+#### MoneyRef
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncu biçimi: oyuncunun server id’si.' },
+    owner: { type: '"job" | "gang"', description: 'Ortak biçim: hesabın kime ait olduğu.' },
+    id: { type: 'string', description: 'Ortak biçim: meslek ya da çete adı.' },
+    account: { type: 'string', description: 'Hesap adı (`cash`, `bank`...).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Para taşındıysa `true`. Bir hesap yoksa, iki hesap aynıysa ya da `from` ödeyemiyorsa `false`.
+
+#### Örnek
+
+Bir patron meslek hesabından bir üyenin bankasına prim öder:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, notify } from "@aicore-fivem/lib/server";
+
+function payBonus(boss: number, member: number, amount: number): void {
+  const ok = money.transfer(
+    { owner: "job", id: "police", account: "bank" },
+    { source: member, account: "bank" },
+    amount,
+    "bonus",
+  );
+  notify(boss, ok ? "Bonus paid" : "The job account cannot pay", ok ? "success" : "error");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function payBonus(boss, member, amount)
+  local ok = exports['ai-core']:TransferMoney(
+    { owner = 'job', id = 'police', account = 'bank' },
+    { source = member, account = 'bank' },
+    amount, 'bonus')
+  aiLib.notify(boss, ok and 'Bonus paid' or 'The job account cannot pay', ok and 'success' or 'error')
+end
+```
+</Tab>
+</Tabs>
+
+## Server export’ları
+
+Üçü de bir **mesleğin** ai-core’daki `bank` hesabı üzerinde çalışır (hesap adı meslek adıdır). Ayrıca `exports['qb-banking']:<aynı ad>` olarak ve Renewed-Banking’in `getAccountMoney`, `addAccountMoney` ve `removeAccountMoney` adlarıyla da cevap verirler. `@aicore-fivem/shared` içinde tipleri yoktur: TypeScript’te `callExport("ai-banking", name, ...args)` kullan. Her export küçük harfli ikiziyle de cevap verir (`getAccountBalance`).
+
+### GetAccountBalance
+
+Bir mesleğin şirket bakiyesi.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+GetAccountBalance(job: string): number
+```
+
+```lua title="Lua"
+local balance = exports['ai-banking']:GetAccountBalance('police')
+-- aynısı: exports['qb-banking']:GetAccountBalance('police')
+-- aynısı: exports['Renewed-Banking']:getAccountMoney('police')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Meslek adı (`police`).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+$ cinsinden bakiye. Mesleğin hesabı yoksa ya da `job` bir metin değilse `0`.
+
+### AddMoney
+
+Bir mesleğin şirket hesabına para ekler. Banka ekranı açık her patron yeni bakiyeyi görür.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+AddMoney(job: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-banking']:AddMoney('police', 500, 'fine')
+-- aynısı: exports['Renewed-Banking']:addAccountMoney('police', 500, 'fine')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Meslek adı.', required: true },
+    amount: { type: 'number', description: '$ cinsinden tutar, 0’dan büyük.', required: true },
+    reason: { type: 'string', description: 'Geçmişte gösterilen hesap defteri sebebi.', default: '"script"' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Para eklendiyse `true`. `job` bir metin değilse, `amount` 0’dan büyük değilse ya da ai-core reddettiyse (böyle bir meslek hesabı yoksa) `false`.
+
+### RemoveMoney
+
+Bir mesleğin şirket hesabından para alır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+RemoveMoney(job: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-banking']:RemoveMoney('mechanic', 1200, 'parts')
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Meslek adı.', required: true },
+    amount: { type: 'number', description: '$ cinsinden tutar, 0’dan büyük.', required: true },
+    reason: { type: 'string', description: 'Geçmişte gösterilen hesap defteri sebebi.', default: '"script"' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Para alındıysa `true`. Hesap ödeyemiyorsa, yoksa ya da argümanlar yanlışsa `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+// Bir mekanik script’i meslek hesabından parça satın alır.
+function buyParts(cost: number): boolean {
+  return callExport("ai-banking", "RemoveMoney", "mechanic", cost, "parts") === true;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function buyParts(cost)
+  return exports['ai-banking']:RemoveMoney('mechanic', cost, 'parts') == true
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bu export’lar sadece **meslek** hesaplarına ulaşır. Bir çete hesabı için ai-core’un `AddSharedMoney('gang', name, 'bank', amount, reason)` ve benzeri export’larını kullan. Doğrudan ai-core’un export’larıyla değiştirilen para da aynı paradır, ama açık banka ekranları sadece ai-banking üzerinden yapılan değişikliklerde anında güncellenir.
+</Callout>
+
+## Özel callback’ler
+
+Banka ekranının çağrıları (`resource/common/bank.ts`): açma, geçmiş sayfaları, para yatırma, çekme, havale ve kapatma. Server her çağrıda şube ya da ATM konumunu kontrol eder. Sürümler arasında değişebilirler: başka resource’lardan çağırma.

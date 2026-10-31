@@ -1,0 +1,611 @@
+---
+title: Véhicules
+description: "spawnVehicle, vehicleType, randomPlate, véhicules les plus proches, entités depuis les net ids du client, vehicleKeys, carburant et garages."
+icon: Car
+---
+
+```ts title="TypeScript"
+import { spawnVehicle, vehicleKeys, fuel, garages, vehicleFromNet } from "@aicore-fivem/lib/server";
+```
+
+## Faire apparaître
+
+### spawnVehicle
+
+Crée un véhicule réseau sur le serveur et le configure en un seul appel : plaque, carburant, apparence, verrouillage, routing bucket, clés pour le bon usage, un conducteur et des passagers. Utilisez-la pour chaque véhicule de script (véhicules de métier, locations, véhicules de garage, apparitions par un admin).
+
+**Côté :** serveur · **Attend :** oui (Promise en TypeScript, cède la main (yield) dans le thread en Lua)
+
+```ts title="Signature"
+spawnVehicle(options: SpawnVehicleOptions): Promise<number | null>
+```
+
+```lua title="Lua"
+local vehicle = aiLib.spawnVehicle(options) -- entité ou nil, à appeler dans un thread
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    options: { type: "SpawnVehicleOptions", description: "Quoi faire apparaître et comment le configurer. Champs ci-dessous.", required: true },
+  }}
+/>
+
+#### SpawnVehicleOptions
+
+<TypeTable
+  type={{
+    model: { type: "string", description: "Nom d’apparition du modèle (`taxi`, `adder`).", required: true },
+    coords: { type: "{ x: number; y: number; z: number; heading: number }", description: "Où et dans quelle direction (cap en degrés). Lua accepte aussi un `vector4` ou `{ x, y, z, w }`.", required: true },
+    asker: { type: "number", description: "Un joueur dont le client indique le type d’apparition et si le modèle existe (ai-core répond côté client). Passez le joueur qui a demandé le véhicule.", required: false },
+    type: { type: "string", description: "Le type `CreateVehicleServerSetter` quand il n’y a pas d’`asker` : `automobile`, `bike`, `boat`, `heli`, `plane`, `submarine`, `trailer`, `train`.", default: '"automobile"' },
+    plate: { type: "string", description: "Texte de la plaque, jusqu’à 8 caractères (au-delà, il est coupé). Sans lui, une plaque aléatoire façon jeu est appliquée.", required: false },
+    fuel: { type: "number", description: "Niveau de carburant de 0 à 100, appliqué via la couche carburant d’ai-core (l’équivalent Lua écrit le state bag `fuel`).", required: false },
+    keysTo: { type: "number", description: "Id serveur d’un joueur qui reçoit les clés via la couche clés d’ai-core.", required: false },
+    purpose: { type: '"purchase" | "garage" | "job" | "rental" | "temporary"', typeDescriptionLink: "/fr/docs/developers/api/types#keypurpose", description: "Pourquoi le joueur reçoit les clés. Les scripts de clés se comportent différemment selon l’usage.", default: '"temporary"' },
+    driver: { type: "number", description: "Id serveur d’un joueur placé au volant.", required: false },
+    seats: { type: "Array<{ source: number; seat: number }>", description: "Joueurs placés sur les autres sièges : 0 passager avant, 1 et 2 à l’arrière, et ainsi de suite.", required: false },
+    props: { type: "VehicleProps", typeDescriptionLink: "/fr/docs/developers/api/types#vehicleprops", description: "Une apparence et un tuning enregistrés (un véhicule de garage). ai-core les applique sur le client propriétaire de l’entité.", required: false },
+    setup: { type: "VehicleSetup", typeDescriptionLink: "/fr/docs/developers/api/types#vehiclesetup", description: "Extras pour un véhicule neuf : `maxed` (chaque mod de performance au niveau maximum), `colors` (index de couleurs GTA), `primary` / `secondary` (RGB 0-255), `livery`, `windowTint`, `dirt` (0 propre à 15), `engineOn`.", required: false },
+    locked: { type: "boolean", description: "Portes verrouillées pour tout le monde ; les clés les déverrouillent.", default: "false" },
+    bucket: { type: "number", description: "Routing bucket dans lequel vit le véhicule. Les joueurs que vous installez doivent être dans le même bucket.", required: false },
+    persistent: { type: "boolean", description: "Le véhicule reste quand son client propriétaire part (orphan mode 2).", default: "true" },
+    bags: { type: "Record<string, unknown>", description: "Valeurs de state bag répliquées, fixées juste après la création.", required: false },
+  }}
+/>
+
+#### Retour
+
+`Promise<number | null>` : le handle d’entité du véhicule. `null` quand le modèle n’existe pas (le client `asker` l’a dit), que l’entité n’a pas été créée en 5 secondes, ou que le type est inconnu.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, spawnVehicle, hasCharacter, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const DEPOT = { x: 895.4, y: -179.3, z: 74.7 };
+
+onClientCallback(
+  "my-taxi:start",
+  async (source) => {
+    const vehicle = await spawnVehicle({
+      model: "taxi",
+      coords: { x: 899.1, y: -180.6, z: 73.8, heading: 238 },
+      asker: source,
+      keysTo: source,
+      purpose: "job",
+      driver: source,
+      fuel: 100,
+      setup: { dirt: 0 },
+    });
+    if (!vehicle) return fail("SPAWN_FAILED");
+    return { ok: true, netId: NetworkGetNetworkIdFromEntity(vehicle) };
+  },
+  { guards: [hasCharacter(), near(DEPOT, 5)], lock: true },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local DEPOT = vector3(895.4, -179.3, 74.7)
+
+aiLib.onClientCallback('my-taxi:start', function(source)
+    if #(GetEntityCoords(GetPlayerPed(source)) - DEPOT) > 5.0 then return aiLib.fail('TOO_FAR') end
+    local vehicle = aiLib.spawnVehicle({
+        model = 'taxi',
+        coords = vector4(899.1, -180.6, 73.8, 238.0),
+        asker = source,
+        keysTo = source,
+        purpose = 'job',
+        driver = source,
+        fuel = 100,
+    })
+    if not vehicle then return aiLib.fail('SPAWN_FAILED') end
+    return { ok = true, netId = NetworkGetNetworkIdFromEntity(vehicle) }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Les clés attendent (jusqu’à 3 secondes) que le serveur lise la plaque : avant la première synchronisation du client propriétaire, le serveur lit une plaque vide. Les joueurs installés sont replacés pendant jusqu’à 2 secondes, jusqu’à ce qu’ils soient assis. En TypeScript, le type d’un modèle donné par un client ne sert qu’à ce joueur jusqu’à ce que le client d’un deuxième joueur donne la même réponse ; l’équivalent Lua garde la première réponse reçue.
+</Callout>
+
+### vehicleType
+
+Le type d’apparition d’un modèle, demandé au client d’un joueur. Utilisez-la pour vérifier qu’un modèle existe avant de prendre l’argent.
+
+**Côté :** serveur · **Attend :** oui (Promise)
+
+```ts title="Signature"
+vehicleType(model: string, asker: number): Promise<string | null>
+```
+
+Pas d’équivalent Lua : `aiLib.spawnVehicle` avec `asker` le vérifie et renvoie `nil` pour un modèle inconnu.
+
+<TypeTable
+  type={{
+    model: { type: "string", description: "Nom d’apparition du modèle.", required: true },
+    asker: { type: "number", description: "Id serveur du joueur dont le client répond.", required: true },
+  }}
+/>
+
+#### Retour
+
+`Promise<string | null>` : `automobile`, `bike`, `boat`, `heli`, `plane`, `submarine`, `trailer` ou `train` ; `null` quand le jeu n’a pas ce véhicule ou que le client n’a donné aucune réponse valide. Une réponse est gardée pour tout le monde dès que les clients de deux joueurs différents sont d’accord, si bien qu’un client modifié ne peut casser que ses propres apparitions.
+
+#### Exemple
+
+```ts
+import { onClientCallback, vehicleType } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readText } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-dealer:buy", { args: oneArg((v) => readText(v, 32)), lock: true }, async (source, model) => {
+  if (!(await vehicleType(model, source))) return fail("UNKNOWN_MODEL");
+  // prendre l’argent, puis spawnVehicle(...)
+  return { ok: true };
+});
+```
+
+### randomPlate
+
+Une plaque aléatoire comme celles du jeu (deux chiffres, trois lettres, trois chiffres), ou votre préfixe suivi de chiffres.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+randomPlate(prefix?: string): string
+```
+
+Pas d’équivalent Lua (`aiLib.spawnVehicle` applique une plaque aléatoire quand vous n’en passez pas).
+
+<TypeTable
+  type={{
+    prefix: { type: "string", description: "Texte par lequel commence la plaque ; le reste est complété par des chiffres jusqu’à 8 caractères. Au-delà de 8, il est coupé.", required: false },
+  }}
+/>
+
+**Retour** une plaque de 8 caractères (`42ABC123`, ou `TAXI1234` pour `randomPlate("TAXI")`). Son unicité n’est pas vérifiée : vérifiez votre propre table avant de l’enregistrer.
+
+```ts
+const plate = randomPlate("RENT");
+```
+
+## Trouver des véhicules
+
+### nearestVehicleTo
+
+Le véhicule le plus proche dans un rayon de `metres` autour d’un joueur qui passe votre filtre. Le véhicule dans lequel le joueur est assis passe en premier.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+nearestVehicleTo(source: number, metres: number, filter?: (vehicle: number) => boolean): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.nearestVehicleTo(source, metres, filter) -- entité ou 0
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id serveur du joueur.", required: true },
+    metres: { type: "number", description: "Rayon de recherche en mètres.", required: true },
+    filter: { type: "(vehicle: number) => boolean", description: "Ignore les véhicules pour lesquels il répond `false` (portes verrouillées, un modèle).", required: false },
+  }}
+/>
+
+**Retour** l’entité du véhicule, ou `0` s’il n’y en a aucun.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = nearestVehicleTo(source, 5);
+if (!vehicle) return fail("NO_VEHICLE");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = aiLib.nearestVehicleTo(source, 5.0)
+if vehicle == 0 then return aiLib.fail('NO_VEHICLE') end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Elle parcourt tous les véhicules du serveur : utilisez-la pour des commandes et des actions (avec limite de fréquence), jamais dans un tick.
+</Callout>
+
+### nearestVehicleAt
+
+Le véhicule le plus proche dans un rayon de `metres` autour d’un point. Utilisez-la pour vérifier qu’un emplacement d’apparition est libre.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+nearestVehicleAt(point: { x: number; y: number; z: number }, metres: number, filter?: (vehicle: number) => boolean): number
+```
+
+Pas d’équivalent Lua.
+
+**Retour** l’entité du véhicule, ou `0` s’il n’y en a aucun. Parcourt tous les véhicules, comme `nearestVehicleTo`.
+
+```ts
+const SPOT = { x: 899.1, y: -180.6, z: 73.8 };
+if (nearestVehicleAt(SPOT, 3)) return fail("SPOT_BLOCKED");
+```
+
+## Entités depuis une entrée client
+
+Un client envoie un network id, jamais un handle d’entité. Ces fonctions transforment un net id en entité serveur vivante et la vérifient, pour que vous n’appeliez jamais `NetworkGetEntityFromNetworkId` + `DoesEntityExist` + `GetEntityType` à la main.
+
+### entityFromNet
+
+L’entité vivante derrière le network id d’un client.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+entityFromNet(netId: unknown, type?: 1 | 2 | 3): number
+```
+
+Pas d’équivalent Lua (Lua a `vehicleFromNet`).
+
+<TypeTable
+  type={{
+    netId: { type: "unknown", description: "La valeur brute venant du client.", required: true },
+    type: { type: "1 | 2 | 3", description: "Type d’entité exigé : 1 ped, 2 véhicule, 3 objet. N’importe quel type s’il est omis.", required: false },
+  }}
+/>
+
+**Retour** l’entité, ou `0` quand la valeur n’est pas un nombre entier positif, n’est pas en réseau, a disparu ou est d’un autre type.
+
+```ts
+const prop = entityFromNet(rawNetId, 3);
+if (!prop) return fail("NOT_FOUND");
+```
+
+### pedFromNet
+
+`entityFromNet(netId, 1)` : le ped vivant, ou `0`.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+pedFromNet(netId: unknown): number
+```
+
+Pas d’équivalent Lua.
+
+```ts
+const ped = pedFromNet(rawNetId);
+```
+
+### vehicleFromNet
+
+`entityFromNet(netId, 2)` : le véhicule vivant, ou `0`.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+vehicleFromNet(netId: unknown): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.vehicleFromNet(netId) -- entité ou 0
+```
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = vehicleFromNet(rawNetId);
+if (!vehicle) return fail("NO_VEHICLE");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = aiLib.vehicleFromNet(netId)
+if vehicle == 0 then return aiLib.fail('NO_VEHICLE') end
+```
+</Tab>
+</Tabs>
+
+### vehicleNearPlayer
+
+Le véhicule derrière le network id d’un client, mais seulement quand le joueur est près de lui (ou au volant).
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+vehicleNearPlayer(source: number, netId: unknown, options?: { metres?: number; driver?: boolean }): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.vehicleNearPlayer(source, netId, options) -- entité ou 0
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id serveur du joueur.", required: true },
+    netId: { type: "unknown", description: "Le net id brut venant du client.", required: true },
+    "options.metres": { type: "number", description: "Distance maximale entre le joueur et le véhicule.", default: "5" },
+    "options.driver": { type: "boolean", description: "Exige que le joueur soit au volant au lieu d’une distance.", default: "false" },
+  }}
+/>
+
+**Retour** le véhicule, ou `0` quand l’id est mauvais, que le véhicule a disparu, ou que le joueur est trop loin / n’est pas le conducteur.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onClientCallback("my-tow:hook", { args: oneArg(readId), lock: true }, (source, netId) => {
+  const vehicle = vehicleNearPlayer(source, netId, { metres: 6 });
+  if (!vehicle) return fail("TOO_FAR");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-tow:hook', function(source, netId)
+    local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 6 })
+    if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+## Clés
+
+`vehicleKeys` passe par la couche clés d’ai-core : le script de clés que le serveur utilise (ai-vehiclekeys, ou un autre choisi par le propriétaire du serveur) répond. Un véhicule est un handle d’entité serveur ou une plaque.
+
+### vehicleKeys.give
+
+Donne à un joueur les clés d’un véhicule.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+vehicleKeys.give(source: number, vehicle: number | string, purpose?: KeyPurpose): void
+```
+
+```lua title="Lua"
+aiLib.vehicleKeys.give(source, vehicle, purpose)
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id serveur du joueur.", required: true },
+    vehicle: { type: "number | string", description: "Handle d’entité serveur ou plaque.", required: true },
+    purpose: { type: '"purchase" | "garage" | "job" | "rental" | "temporary"', typeDescriptionLink: "/fr/docs/developers/api/types#keypurpose", description: "`purchase` : acheté, une nouvelle clé. `garage` : un véhicule possédé sorti du garage. `job` : un véhicule de travail. `rental` : une location. `temporary` : apparition par un admin, essai, braquage.", default: '"temporary"' },
+  }}
+/>
+
+**Retour** `void`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicleKeys.give(source, vehicle, "rental");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.vehicleKeys.give(source, vehicle, 'rental')
+```
+</Tab>
+</Tabs>
+
+### vehicleKeys.remove
+
+Retire à un joueur les clés d’un véhicule.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+vehicleKeys.remove(source: number, vehicle: number | string): void
+```
+
+```lua title="Lua"
+aiLib.vehicleKeys.remove(source, vehicle)
+```
+
+**Retour** `void`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicleKeys.remove(source, "RENT1234");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.vehicleKeys.remove(source, 'RENT1234')
+```
+</Tab>
+</Tabs>
+
+### vehicleKeys.has
+
+Indique si un joueur possède les clés.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+vehicleKeys.has(source: number, vehicle: number | string): boolean
+```
+
+```lua title="Lua"
+local has = aiLib.vehicleKeys.has(source, vehicle)
+```
+
+**Retour** `boolean`. `true` aussi quand le script de clés ne peut pas le dire ou qu’aucun ne tourne, ne l’utilisez donc pas comme seule protection pour quelque chose de précieux.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (!vehicleKeys.has(source, vehicle)) return fail("NO_KEYS");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if not aiLib.vehicleKeys.has(source, vehicle) then return aiLib.fail('NO_KEYS') end
+```
+</Tab>
+</Tabs>
+
+## Carburant
+
+`fuel` lit et fixe le carburant d’un véhicule (de 0 à 100) via la couche carburant d’ai-core, quel que soit le script de carburant qui tourne. Pas d’équivalent Lua côté serveur : appelez les exports d’ai-core `GetVehicleFuel` / `SetVehicleFuel`.
+
+### fuel.get
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+fuel.get(vehicle: number): number | null
+```
+
+**Retour** le niveau d’une entité de véhicule serveur (de 0 à 100), ou `null` quand il n’en a pas.
+
+```ts
+const level = fuel.get(vehicle) ?? 0;
+```
+
+### fuel.set
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+fuel.set(vehicle: number, level: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Entité de véhicule serveur.", required: true },
+    level: { type: "number", description: "Nouveau niveau, ramené entre 0 et 100.", required: true },
+  }}
+/>
+
+**Retour** `true` quand il est fixé, `false` pour un véhicule incorrect.
+
+```ts
+fuel.set(vehicle, 100);
+```
+
+### fuel.provider
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+fuel.provider(): string | null
+```
+
+**Retour** le nom de ressource du script de carburant qui répond (`ai-fuel`, `ox_fuel`, `LegacyFuel`...), ou `null` quand aucun ne tourne.
+
+```ts
+console.log(`fuel through ${fuel.provider() ?? "nothing"}`);
+```
+
+## Garages
+
+`garages` passe par la couche garage d’ai-core, quel que soit le script de garage qui tourne ; chaque script ne répond qu’à ce qu’il expose. Pas d’équivalent Lua.
+
+### garages.impound
+
+Envoie un véhicule à la fourrière, ou ouvre le formulaire de fourrière du script de garage pour `by`.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+garages.impound(vehicle: number, by?: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Entité de véhicule serveur.", required: true },
+    by: { type: "number", description: "Id serveur du joueur qui met en fourrière (les scripts avec un formulaire l’ouvrent pour ce joueur).", required: false },
+  }}
+/>
+
+**Retour** `true` quand le script de garage l’a pris en charge. `false` quand rien ne l’a pris : supprimez le véhicule vous-même.
+
+```ts
+if (!garages.impound(vehicle, source)) DeleteEntity(vehicle);
+```
+
+### garages.store
+
+Range un véhicule dans un garage.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+garages.store(vehicle: number, garage?: string | null, by?: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Entité de véhicule serveur.", required: true },
+    garage: { type: "string | null", description: "L’id de garage propre au script de garage.", default: "null" },
+    by: { type: "number", description: "Id serveur du joueur qui le range.", required: false },
+  }}
+/>
+
+**Retour** `true` quand il est rangé, `false` quand rien ne l’a pris.
+
+```ts
+if (!garages.store(vehicle, "legion", source)) return fail("STORE_FAILED");
+```
+
+### garages.open
+
+Ouvre le menu de garage du script de garage pour un joueur.
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+garages.open(source: number, garage?: string | null): boolean
+```
+
+**Retour** `true` quand il s’ouvre, `false` quand le script n’a pas ce menu.
+
+```ts
+garages.open(source, "pillbox");
+```
+
+### garages.stored
+
+Les véhicules d’un joueur dans les garages ou à la fourrière.
+
+**Côté :** serveur · **Attend :** oui (Promise)
+
+```ts title="Signature"
+garages.stored(source: number): Promise<GaragedVehicle[] | null>
+```
+
+**Retour** [`GaragedVehicle[]`](/fr/docs/developers/api/types#garagedvehicle) (`plate`, `model`, `garage`, `impounded`), ou `null` quand le script ne peut pas le dire ou qu’ai-core est arrêté.
+
+```ts
+const list = await garages.stored(source);
+const impounded = list?.filter((v) => v.impounded).length ?? 0;
+```
+
+### garages.provider
+
+**Côté :** serveur · **Attend :** non
+
+```ts title="Signature"
+garages.provider(): string | null
+```
+
+**Retour** le script de garage qui répond, ou `null` quand aucun ne tourne.
+
+```ts
+if (!garages.provider()) console.warn("no garage script runs");
+```

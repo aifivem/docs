@@ -1,0 +1,92 @@
+---
+title: ai-police pour les développeurs
+description: Le state bag de menottes d’ai-police, comment ses actions atteignent les autres scripts à travers AI Core, et ses events privés.
+icon: Code
+---
+
+ai-police n’a **aucun export**. Ses amendes, fiches, peines de prison, alertes, fouilles et mises en fourrière passent toutes par les couches d’AI Core, donc un autre script n’appelle jamais ai-police. Ce qu’un autre script peut lire, c’est l’état `cuffed`.
+
+## State bag `cuffed`
+
+`true` sur le state bag d’un joueur tant qu’ai-police le garde menotté ; `false` (ou absent) sinon. Le serveur l’écrit ; chaque client peut le lire. Le nom de la clé est `PLAYER_BAGS.cuffed` dans `@aicore-fivem/shared`.
+
+**Côté :** serveur et client (lecture) · **Attend :** non
+
+```ts title="Signature"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- serveur
+local cuffed = LocalPlayer.state.cuffed == true      -- client, le joueur local
+```
+
+#### Retour
+
+`true` tant qu’il est menotté. `false` après avoir été démenotté, `undefined` / `nil` quand le joueur n’a jamais été menotté pendant cette session.
+
+#### Exemple
+
+Refuser un objet tant que le joueur est menotté :
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... ouvrir la radio
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua : shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... ouvrir la radio
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Ne réglez pas `cuffed` vous-même : ai-police garde sa propre liste de joueurs menottés et escortés sur le serveur et ne fait que la refléter dans le state bag. Une valeur écrite par un autre script n’est pas un vrai menottage et est écrasée à la prochaine action de menottes.
+</Callout>
+
+## Ce qu’ai-police envoie à travers AI Core
+
+| Action | Couche utilisée | Ce qui y arrive |
+| --- | --- | --- |
+| Verbaliser | `billing.send` de la lib | Une facture du métier en service de l’agent, libellé « Police fine ». |
+| Verbaliser | `mdt.record` de la lib | Une fiche `fine` avec le montant. |
+| Envoyer en prison | `prison.jail` de la lib | La peine, avec l’agent comme `by`. |
+| Envoyer en prison | `mdt.record` de la lib | Une fiche `arrest` avec les minutes. |
+| Tirs | `dispatch.alert` de la lib | Une alerte par zone de 150 m toutes les 30 s, aux métiers de police du panneau. |
+| Fouiller | `inventory.openInventory` de la lib | L’inventaire de la cible s’ouvre pour l’agent. |
+| Fourrière | `garages.impound` de la lib | Le script de garage prend le véhicule ; s’il refuse, le véhicule est supprimé. |
+
+Pour réagir à l’une de ces actions, écoutez du côté de la couche (votre script de facturation, de MDT, de prison ou d’alerte), pas sur ai-police.
+
+## Events et callbacks privés
+
+Le contrat client-serveur propre au script (`resource/common/police.ts`). Le serveur vérifie le service, la distance et l’état menotté à chaque appel. Ils peuvent changer d’une version à l’autre : ne les déclenchez pas et ne les écoutez pas depuis d’autres ressources.
+
+| Nom | Direction | Ce qu’il transporte |
+| --- | --- | --- |
+| `ai-police:act` | callback client | `(action, target, extra?)` : un agent agit sur le joueur le plus proche (id serveur) ou le véhicule le plus proche (net id). Répond `{ ok }`. |
+| `ai-police:duty` | callback client | `(stationId)` : prendre ou quitter le service dans un commissariat. Répond `{ ok, onDuty }`. |
+| `ai-police:shot` | client -> serveur | `(x, y, z)` : le joueur a tiré avec une arme (débit limité, seuls les non-policiers comptent). |
+| `ai-police:client:cuffed` | serveur -> cible | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | serveur -> cible | `(officerNetId \| null)` : s’attacher à l’agent, ou être lâché. |
+| `ai-police:client:seat` | serveur -> cible | `(vehicleNetId \| null)` : s’asseoir à l’arrière d’un véhicule, ou en sortir. |

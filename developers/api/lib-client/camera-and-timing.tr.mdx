@@ -1,0 +1,508 @@
+---
+title: Kamera ve zamanlama
+description: ScriptCamera, TickLoop, AreaFollower ve ServerClock - script kameraları, yalnızca gerektiğinde çalışan kare başı görevler, oyuncunun alanını server’a bildirmek ve server’ın saatini client’ta kullanmak.
+icon: Camera
+---
+
+Galeriler ve sahneler için bir script kamerası, yalnızca gerektiğinde açtığın kare başı bir görev, server’ın alan yayınının client yarısı ve geri sayımlar için server’ın saati. Genel olarak periyodik işler `every(ms, fn)`’dir (bkz. [Lib: shared ve fivem](/tr/docs/developers/api/lib-shared)); asla `setInterval` ya da çıplak bir `setTick` değil.
+
+## ScriptCamera
+
+### new ScriptCamera
+
+Bir script kamerası: bir marketin galeri görünümü, bir editör, bir sahne, bir dürbün. `start` onu oluşturur ve gösterir, diğer metotlar onu hareket ettirir ve değiştirir, `stop` yumuşakça oyun kamerasına döner ve onu yok eder. Resource’un durduğunda hâlâ çalışan bir kamera hemen geri verilir; böylece oyuncu asla içinde sıkışıp kalmaz.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+new ScriptCamera(type?: string)
+```
+
+Lua karşılığı yok: Lua resource’ları `CreateCam`, `RenderScriptCams` ve `DestroyCam` kullanır.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    type: { type: 'string', description: 'Oyun kamerası adı. Elde tutulan bir görünüm için DEFAULT_SCRIPTED_FLY_CAMERA.', default: '"DEFAULT_SCRIPTED_CAMERA"' },
+  }}
+/>
+
+#### CameraView
+
+Bir kameranın nereye baktığı; `start`, `move` ve `glideTo` tarafından kullanılır:
+
+<TypeTable
+  type={{
+    pointAt: { type: 'Vec3', description: 'Kameranın bakmaya devam ettiği bir nokta.' },
+    rotation: { type: 'Vec3', description: 'pointAt yokken derece cinsinden sabit bir rotasyon.' },
+    fov: { type: 'number', description: 'Derece cinsinden görüş alanı.' },
+  }}
+/>
+
+#### Üyeler
+
+<TypeTable
+  type={{
+    active: { type: 'boolean', description: 'Salt okunur özellik: kameranın var olup olmadığı (başlatılmış ve durdurulmamış).' },
+    cam: { type: 'number', description: 'Salt okunur özellik: oyun kamerası handle’ı (durmuşken 0); sınıfın sarmadığı native’ler için.' },
+  }}
+/>
+
+#### Örnek
+
+```ts
+import { ScriptCamera } from "@aicore-fivem/lib/client";
+
+const camera = new ScriptCamera();
+const CAR = { x: -44.4, y: -1097.1, z: 26.4 };
+
+export function openShowroom(): void {
+  camera.start({ x: -40.2, y: -1100.5, z: 27.6 }, { pointAt: CAR, fov: 50 }, 800);
+}
+
+export function frontView(): void {
+  camera.glideTo({ x: -47.5, y: -1093.8, z: 27.2 }, { pointAt: CAR, fov: 45 }, 1200);
+}
+
+export function closeShowroom(): void {
+  camera.stop(800);
+}
+```
+
+### camera.start
+
+Kamerayı oluşturur (henüz yoksa), bir noktaya koyar ve oyun kamerasından yumuşak geçişle görünüm yapar.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.start(at: Vec3, view?: CameraView, easeMs?: number): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    at: { type: 'Vec3', description: 'Kamera konumu.', required: true },
+    view: { type: 'CameraView', description: 'Nereye baktığı ve görüş alanı.', default: '{}' },
+    easeMs: { type: 'number', description: 'Oyun kamerasından geçişin milisaniyesi. 0 hemen keser.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. Sınıf örneğine bak.
+
+### camera.move
+
+Kamerayı hemen ya da kayarak (oyun ara değerleri hesaplar) hareket ettirir. Durmuşken hiçbir şey yapmaz.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.move(at: Vec3, view?: CameraView, ms?: number): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    at: { type: 'Vec3', description: 'Yeni konum.', required: true },
+    view: { type: 'CameraView', description: 'Yeni bakış. Verilmezse rotasyon ve fov korunur.', default: '{}' },
+    ms: { type: 'number', description: 'Oraya kaymanın milisaniyesi. 0 hemen atlar.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+camera.move({ x: -42.0, y: -1099.0, z: 28.5 }, { pointAt: CAR }, 600);
+```
+
+### camera.glideTo
+
+Yeni bir çekime geçiş yapar: yeni yerdeki ikinci bir kamera bundan devralır ve eskisi geçişten sonra yok edilir. Sarsıntı ve bulanıklık aktarılır. Kamera durmuşsa (ya da `ms` 0 ise) onu başlatır.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.glideTo(at: Vec3, view: CameraView, ms: number): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    at: { type: 'Vec3', description: 'Yeni konum.', required: true },
+    view: { type: 'CameraView', description: 'Yeni bakış.', required: true },
+    ms: { type: 'number', description: 'Geçişin milisaniye cinsinden uzunluğu.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. Sınıf örneğine bak.
+
+### camera.attach
+
+Kameranın bir entity’yi, entity’nin kendi uzayında bir ofsetle takip etmesini sağlar.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.attach(entity: number, offset: Vec3, relative?: boolean): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    entity: { type: 'number', description: 'Takip edilecek entity.', required: true },
+    offset: { type: 'Vec3', description: 'Entity’den ofset, metre cinsinden, entity’nin kendi uzayında.', required: true },
+    relative: { type: 'boolean', description: 'Entity ile birlikte dön.', default: 'true' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+import { cache, ScriptCamera } from "@aicore-fivem/lib/client";
+
+const chase = new ScriptCamera();
+if (cache.vehicle !== false) {
+  chase.start({ x: 0, y: 0, z: 0 });
+  chase.attach(cache.vehicle, { x: 0, y: -6, z: 2 });
+}
+```
+
+### camera.pointAt
+
+Kameranın bir noktaya bakmaya devam etmesini sağlar.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.pointAt(target: Vec3): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    target: { type: 'Vec3', description: 'Bakılacak nokta.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+### camera.setFov
+
+Görüş alanını (yakınlaştırmayı) değiştirir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.setFov(fov: number): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    fov: { type: 'number', description: 'Derece cinsinden görüş alanı. Küçük değer yakınlaştırır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+// Dürbün: fare tekerleğiyle yakınlaştır.
+let fov = 40;
+export function zoom(step: number): void {
+  fov = Math.min(70, Math.max(5, fov + step));
+  camera.setFov(fov);
+}
+```
+
+### camera.shake
+
+Oyunun kamera sarsıntısını ekler. Genlik 0 onu durdurur.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.shake(type: string, amplitude: number): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    type: { type: 'string', description: 'Oyunun sarsıntı adı: HAND_SHAKE, ROAD_VIBRATION_SHAKE...', required: true },
+    amplitude: { type: 'number', description: 'Şiddet. 0 sarsıntıyı durdurur.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+camera.shake("HAND_SHAKE", 0.3);
+```
+
+### camera.blur
+
+Alan derinliği: iki mesafe arası net, dışı bulanık. Hiçbiri için `null` geçir. Kare başı bir native’e ihtiyaç duyar; bu native yalnızca bir bulanıklık ayarlıyken çalışır.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.blur(dof: CameraBlur | null): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    dof: { type: 'CameraBlur | null', description: '{ near: number; far: number; strength: number }: near ile far metre arası net, strength 0-1. null bulanıklığı kaldırır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+camera.blur({ near: 2, far: 8, strength: 0.8 });
+```
+
+### camera.stop
+
+Görünümü oyun kamerasına geri verir (`easeMs` boyunca yumuşak geçişle) ve kamerayı yok eder. Sarsıntı ve bulanıklık da biter. Durmuşken hiçbir şey yapmaz.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+camera.stop(easeMs?: number): void
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    easeMs: { type: 'number', description: 'Geri geçişin milisaniyesi. 0 hemen keser.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. Sınıf örneğine bak.
+
+## TickLoop
+
+### new TickLoop
+
+Sen açana kadar kapalı olan kare başı bir görev (resource’unun tek zamanlayıcısında `every(0, fn)`). Yalnızca bazen her karede çalışması gereken her şey için kullan: yakındayken bir marker çizmek, bir yerleştirme önizlemesi, bir arkadaşa nişan alırken ateş etmeyi kapatmak.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+new TickLoop(onFrame: () => void, name?: string)
+```
+
+Lua karşılığı yok: `aiLib.every(0, fn, { active = false, name = name })` ve `job:set(active)`.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    onFrame: { type: '() => void', description: 'Döngü açıkken her karede çalışır. Fırlatılan bir hata loglanır (en fazla 10 sn’de bir) ve döngü çalışmaya devam eder.', required: true },
+    name: { type: 'string', description: 'Hata loglarında gösterilen bir ad.' },
+  }}
+/>
+
+#### Üyeler
+
+<TypeTable
+  type={{
+    running: { type: 'boolean', description: 'Salt okunur özellik: döngünün açık olup olmadığı.' },
+    'set(active)': { type: '(active: boolean) => void', description: 'Döngüyü açar (true) ya da kapatır (false).' },
+  }}
+/>
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { TickLoop, Zones } from "@aicore-fivem/lib/client";
+
+const SPOT = { x: 215.8, y: -810.1, z: 30.7 };
+const light = new TickLoop(() => {
+  DrawLightWithRange(SPOT.x, SPOT.y, SPOT.z + 2, 61, 247, 158, 8, 4);
+}, "garageLight");
+
+const zones = new Zones();
+zones.add("garage", {
+  shape: { type: "sphere", center: SPOT, radius: 25 },
+  onEnter: () => light.set(true),
+  onExit: () => light.set(false),
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local SPOT = vector3(215.8, -810.1, 30.7)
+local light = aiLib.every(0, function()
+    DrawLightWithRange(SPOT.x, SPOT.y, SPOT.z + 2.0, 61, 247, 158, 8.0, 4.0)
+end, { active = false, name = 'garageLight' })
+
+local zones = aiLib.Zones.new()
+zones:add('garage', {
+    shape = { type = 'sphere', center = SPOT, radius = 25.0 },
+    onEnter = function() light:set(true) end,
+    onExit = function() light:set(false) end,
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Resource’unun her görevi, yalnızca bir görev açıkken var olan tek bir `setTick`’ten çalışır. Döngüyü dosyanın en üstünde bir kez oluştur ve her başlatmada yenisini oluşturmak yerine onu aç kapa.
+</Callout>
+
+## AreaFollower
+
+### new AreaFollower
+
+Bir server `AreaStream`’inin client yarısı ([Alan yayını](/tr/docs/developers/api/lib-server/area-stream)): oyuncunun durduğu ızgara hücresi değiştiğinde bunu server’a söyler (başlatılmışken 2 saniyede bir kontrol edilir); böylece server yalnızca oyuncunun etrafındaki dünya nesnelerini (yere atılanlar, bitkiler, yerleştirilmiş prop’lar) gönderir. Dosyanın en üstünde bir tane oluştur.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+new AreaFollower(event: string, cellSize?: number)
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    event: { type: 'string', description: 'Server’ın dinlediği net event; hücre koordinatlarını (cx, cy) alır.', required: true },
+    cellSize: { type: 'number', description: 'Metre cinsinden hücre boyutu. Server yayınının cellSize değeriyle aynı olmalıdır.', default: '64' },
+  }}
+/>
+
+#### Üyeler
+
+<TypeTable
+  type={{
+    'start()': { type: '() => void', description: 'Güncel hücreyi şimdi ve her değişiklikte gönderir.' },
+    'stop()': { type: '() => void', description: 'Bildirmeyi durdurur.' },
+  }}
+/>
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { AreaFollower, onServerEvent } from "@aicore-fivem/lib/client";
+
+const follower = new AreaFollower("myplants:cell");
+follower.start();
+
+const plants = new Map<number, unknown>();
+
+// Yayın (reset, puts, removes) gönderir: reset true ile bir snapshot, sonra yalnızca değişiklikler.
+onServerEvent(
+  "myplants:area",
+  {
+    args: ([reset, puts, removes]) =>
+      typeof reset === "boolean" && Array.isArray(puts) && Array.isArray(removes)
+        ? ([reset, puts, removes] as const)
+        : null,
+  },
+  (reset, puts, removes) => {
+    if (reset) plants.clear();
+    for (const plant of puts as Array<{ id?: unknown } | null>)
+      if (typeof plant?.id === "number") plants.set(plant.id, plant);
+    for (const id of removes) if (typeof id === "number") plants.delete(id);
+  },
+);
+```
+
+<Callout type="warn">
+Server bildirilen bir hücreyi oyuncunun gerçek konumuyla karşılaştırır (`followReported` yalnızca ped’e bir hücre uzaklıktaki hücreleri kabul eder); böylece bir hileci uzak bir alanı isteyemez.
+</Callout>
+
+## ServerClock
+
+### new ServerClock
+
+Server’ın saati, client’ta. Client ve server saatleri farklı olabilir; bu yüzden bir server zamanına geri sayım (bir soygun cooldown’ı, bir açık artırmanın bitişi) önce yerel zamana çevrilmelidir. Bir snapshot ya da başlangıç mesajı geldiğinde her seferinde server’ın `Date.now()` değeriyle `sync`’i çağır.
+
+**Taraf:** Client (`@aicore-fivem/lib/shared`’dan) · **Bekler:** hayır
+
+```ts title="Signature"
+new ServerClock()
+```
+
+Lua karşılığı yok.
+
+#### Üyeler
+
+<TypeTable
+  type={{
+    'sync(serverNow)': { type: '(serverNow: number) => void', description: 'Ofseti az önce alınan server Date.now() değerinden alır.' },
+    'now()': { type: '() => number', description: 'Şu anki server Date.now() değeri.' },
+    'toLocal(serverTime)': { type: '(serverTime: number) => number', description: 'Yerel saatteki geri sayımlar için bir server zamanını yerel bir Date.now() zamanı olarak verir.' },
+  }}
+/>
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { every, onServerEvent } from "@aicore-fivem/lib/client";
+import { ServerClock } from "@aicore-fivem/lib/shared";
+
+const clock = new ServerClock();
+let endsAt = 0; // yerel zaman
+
+onServerEvent(
+  "myauction:state",
+  { args: ([now, ends]) => (typeof now === "number" && typeof ends === "number" ? [now, ends] : null) },
+  (now, ends) => {
+    clock.sync(now);
+    endsAt = clock.toLocal(ends);
+  },
+);
+
+every(1000, () => {
+  const left = Math.max(0, Math.round((endsAt - Date.now()) / 1000));
+  SendNUIMessage({ action: "countdown", data: left });
+});
+```
+
+<Callout type="info">
+Server bitiş zamanını bir kez gönderir; client kendi saatiyle geri sayar. Kalan süreyi asla her saniye gönderme.
+</Callout>

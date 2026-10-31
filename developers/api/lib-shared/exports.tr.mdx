@@ -1,0 +1,263 @@
+---
+title: Resource’lar arası export’lar
+description: "registerExport, resourceExport, optionalExport, callExport, provideExport ve isResourceStarted: TypeScript’ten export sunmak ve çağırmak."
+icon: ArrowLeftRight
+---
+
+Export, bir resource’un sunduğu ve diğer resource’ların çağırdığı bir fonksiyondur (`exports["ai-core"].GetMoney(...)`). Bu yardımcılar export’ları iki ad stiliyle kaydeder, diğer resource’lara tipli erişim verir ve kodunun çalışmayan bir resource’tan etkilenmeden devam etmesini sağlar.
+
+```ts title="TypeScript"
+import { registerExport, resourceExport, optionalExport, callExport, provideExport, isResourceStarted } from "@aicore-fivem/lib/fivem";
+// Bir client ya da server dosyasında aynı adlar "@aicore-fivem/lib/client" ya da "@aicore-fivem/lib/server"’dan da gelir.
+```
+
+<Callout type="info">
+Her export için kurallar: senkrondur ve küçük değerler döndürür. Resource sınırından hiçbir promise geçmez: bir değer zaman istiyorsa export bir callback (`done`) alır. Sık çalışan bir yolda (her kare, her saniye) her seferinde bir export çağırmak yerine veriyi event’lerden yansıt.
+</Callout>
+
+### registerExport
+
+Bir fonksiyonu diğer resource’lara `name` adıyla ve ayrıca ilk harfin büyük/küçük hali değiştirilmiş aynı adla (`GetPrice` ve `getPrice`) sunar; böylece iki stilden birinde yazılmış script’ler onu bulur. FiveM’in `exports(name, fn)`’i yerine bunu kullan.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+registerExport(name: string, handler: (...args: any[]) => unknown): void
+```
+
+**Lua:** karşılığı yok; FiveM’in kendi `exports('GetPrice', function(...) end)`’ini kullan.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Export adı (`"GetPrice"`).', required: true },
+    handler: { type: '(...args: any[]) => unknown', description: 'Başka bir resource export’u çağırdığında senin resource’unda çalışır. Dönüş değeri çağırana geri gider. Her argümanı kontrol et: başka bir resource her şeyi geçebilir.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { registerExport } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+const prices = new Map<string, number>([["water", 5], ["bread", 3]]);
+
+// Diğer resource’lar: exports["my-shop"].GetPrice("water") ya da exports["my-shop"].getPrice("water")
+registerExport("GetPrice", (item: unknown) => {
+  const name = readText(item, 64);
+  return name === null ? null : (prices.get(name) ?? null);
+});
+```
+
+<Callout type="info">
+Kendin kaydettiğin bir ad her zaman bir ikiz addan önce gelir. `GetPrice`’tan sonra `getPrice` kaydetmek ikizi kendi `getPrice` handler’ınla değiştirir.
+</Callout>
+
+### resourceExport
+
+Başka bir resource’un export’larına tipli erişim. Tipler `@aicore-fivem/shared`’daki `CitizenExports`’tan gelir (ai-core, ai-lib, ai-target, ai-vehicles, ai-inventory ve export’u olan diğer `ai-*` script’leri); böylece editörün her export’u, argümanlarını ve dönüş tipini bilir.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+resourceExport<K extends keyof CitizenExports & string>(resource: K): CitizenExports[K]
+```
+
+**Lua:** karşılığı yok; `exports['ai-core']:GetMoney(source, 'cash')` kullan.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    resource: { type: 'keyof CitizenExports', description: 'Tipli export’ları olan resource adı (`"ai-core"`, `"ai-vehicles"`...). Başka bir ad tip hatasıdır: onlar için `callExport` kullan.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Resource’un export nesnesi. Bir metodu çağırmak export’u çağırır.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+// Dosya başına, en üstte bir handle.
+const core = resourceExport("ai-core");
+
+export function payBonus(source: number): boolean {
+  return core.AddMoney(source, "bank", 500, "Bonus");
+}
+```
+
+<Callout type="warn">
+Handle resource’un çalışıp çalışmadığını kontrol etmez. Durmuş bir resource’un export’unu çağırmak hata fırlatır. Eksik olabilecek bir resource için `optionalExport` kullan.
+</Callout>
+
+### optionalExport
+
+`resourceExport` ile aynı tipli export’lar, ama resource başlamamışken `null`. İsteğe bağlı bir bağımlılık için kullan: sunucu o resource’u çalıştırmadığında script’in çalışmaya devam eder.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+optionalExport<K extends keyof CitizenExports & string>(resource: K): CitizenExports[K] | null
+```
+
+**Lua:** karşılığı yok; çağırmadan önce `GetResourceState('ai-vehicles') == 'started'` kontrol et.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    resource: { type: 'keyof CitizenExports', description: 'Tipli export’ları olan resource adı.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Resource başlamışken export nesnesi, aksi halde `null`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { optionalExport } from "@aicore-fivem/lib/server";
+
+function plateOfVehicleId(vehicleId: number): string | null {
+  // Her seferinde tekrar sor: ai-vehicles server çalışırken başlayabilir ya da durabilir.
+  return optionalExport("ai-vehicles")?.GetVehicle(vehicleId)?.plate ?? null;
+}
+```
+
+<Callout type="warn">
+`optionalExport`’u dosyanın en üstünde bir kez değil, ihtiyaç duyduğun anda çağır: resource durmuşken alınan bir handle `null` kalır.
+</Callout>
+
+### callExport
+
+`CitizenExports`’ta tipi olmayan bir resource’un (üçüncü parti bir script) export’unu çağırır. Sonuç `unknown`’dur: kullanmadan önce biçimini kontrol et.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+callExport(resource: string, name: string, ...args: unknown[]): unknown
+```
+
+**Lua:** karşılığı yok; `exports[resource][name](nil, ...)` ya da `exports[resource]:Name(...)` kullan.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Resource adı.', required: true },
+    name: { type: 'string', description: 'Export adı, tam olarak resource’un kaydettiği gibi.', required: true },
+    '...args': { type: 'unknown[]', description: 'Export’a geçirilen argümanlar.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`unknown`: export ne döndürdüyse.
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { callExport, isResourceStarted } from "@aicore-fivem/lib/client";
+
+function otherHudVisible(): boolean {
+  if (!isResourceStarted("some-hud")) return true;
+  const visible = callExport("some-hud", "IsVisible");
+  return typeof visible === "boolean" ? visible : true;
+}
+```
+
+<Callout type="error">
+Resource’un böyle bir export’u yoksa (durmuşsa da) `Error("<resource> has no export <name>")` fırlatır. Önce `isResourceStarted`’ı kontrol et ya da çağrıyı `try` / `catch` ile sar.
+</Callout>
+
+### provideExport
+
+Resource’unun `fxmanifest.lua` dosyasında `provide` ile yerine geçtiği bir resource adı için `exports["<resource>"].<name>`’e cevap verir. FiveM’in `provide`’ı adın var olmasını sağlar (böylece `dependency` satırları geçer) ama export’larını iletmez; bu yardımcı o adın tek bir export’una cevap verir. ai-banking bunu `qb-banking` ve `Renewed-Banking` çağrılarına cevap vermek için kullanır.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+provideExport(resource: string, name: string, fn: (...args: any[]) => unknown): void
+```
+
+**Lua:** karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Manifest’inin `provide` ettiği resource adı (`"qb-banking"`).', required: true },
+    name: { type: 'string', description: 'Diğer script’lerin o resource üzerinde çağırdığı export adı.', required: true },
+    fn: { type: '(...args: any[]) => unknown', description: 'Başka bir script onu çağırdığında çalışır. Dönüş değeri geri gider.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```lua title="fxmanifest.lua"
+provide 'old-banking'
+```
+
+```ts title="resource/server/index.ts"
+import { provideExport, resourceExport } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// old-banking için yazılmış script’ler çalışmaya devam eder: exports["old-banking"].GetAccountBalance("police")
+provideExport("old-banking", "GetAccountBalance", (job: unknown) => {
+  const name = readText(job, 32);
+  return name === null ? 0 : (core.GetSharedMoney("job", name, "bank") ?? 0);
+});
+```
+
+<Callout type="warn">
+Onu daha sonra değil, resource başlarken kaydet: handler’ın var olmadan export’u çağıran bir script hata alır. Kendi adının da aynı fonksiyonla cevap vermesi gerekiyorsa `registerExport` da kullan.
+</Callout>
+
+### isResourceStarted
+
+Bir resource’un şu an çalışıp çalışmadığı (durumu `"started"`).
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+isResourceStarted(resource: string): boolean
+```
+
+**Lua:** karşılığı yok; `GetResourceState(resource) == 'started'` kullan.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Resource adı.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Resource başlamışken `true`. Durmuşsa, başlıyorsa, duruyorsa ya da kurulu değilse `false`.
+
+#### Örnek
+
+```ts title="resource/server/index.ts"
+import { isResourceStarted } from "@aicore-fivem/lib/server";
+
+if (!isResourceStarted("ai-inventory")) console.warn("ai-inventory is not running: shop items will not work.");
+```

@@ -1,0 +1,184 @@
+---
+title: Geliştiriciler için ai-mysql
+description: ai-mysql’in cevapladığı oxmysql export’ları, her birinin ne döndürdüğü, promise biçimleri, MySQL.lua sarmalayıcısı ve hata event’leri.
+icon: Code
+---
+
+<Callout type="info">
+**TypeScript ile `ai-*` tarzı bir resource mu yazıyorsun?** ai-mysql kullanma. Kendi resource’unda AI Core’un veritabanı paketi `@aicore-fivem/mysql`’i kullan (sorgu başına export atlaması yok, tipli tablolar). Bkz. [Veritabanı](/tr/docs/developers/database). ai-mysql, oxmysql için yazılmış Lua ve JavaScript script’leri içindir.
+</Callout>
+
+ai-mysql oxmysql’in API’sini birebir (imzalar, callback kuralları, sonuç şekilleri) cevaplar; bu yüzden oxmysql’in kendi dokümantasyonu geçerlidir. Bu sayfa neyi cevapladığını ve önemli ayrıntıları listeler.
+
+## Lua’dan kullanmak
+
+oxmysql’in sarmalayıcısını yükle; yol ai-mysql’e çözülür:
+
+```lua title="fxmanifest.lua"
+server_script '@oxmysql/lib/MySQL.lua'
+```
+
+```lua title="server.lua"
+-- Sonucu bekler: bir thread ya da event handler içinde çağır.
+local row = MySQL.single.await('SELECT money FROM my_accounts WHERE owner = ?', { identifier })
+
+-- Callback biçimi: beklemez.
+MySQL.update('UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?', { 100, identifier, 100 }, function(affected)
+    if affected == 1 then print('paid') end
+end)
+```
+
+## Export’lar
+
+Her export **server tarafındadır** ve `exports['ai-mysql']` ile `exports.oxmysql` altında cevap verir. Her biri `(query, params?, callback?)` alır:
+
+- `query`: `?` yer tutucuları ya da adlandırılmış `@name` / `:name` yer tutucularıyla SQL metni.
+- `params`: `?` için bir dizi, adlandırılmış yer tutucular için bir nesne. Verilmeyebilir; o zaman callback ikinci argüman olabilir.
+- `callback`: sonuçla çağrılır. O olmadan da çağrı çalışır.
+
+Her export’un ayrıca bir **promise biçimi** vardır: `<name>_async` ve `<name>Sync` (`query_async(query, params)` hata olunca reddedilen bir Promise döndürür).
+
+| Export | Cevap | Ne için kullanılır |
+| --- | --- | --- |
+| `query` | SELECT için satırlar (nesne dizisi), diğer ifadeler için sonuç başlığı | her şey; `execute` ve `fetch` eski takma adlardır |
+| `single` | ilk satır ya da `null` | anahtarla tek satır |
+| `scalar` | ilk satırın ilk sütunu ya da `null` | bir sayım, tek bir değer |
+| `insert` | yeni satırın id’si (`insertId`) ya da `null` | INSERT |
+| `update` | etkilenen satır sayısı ya da `null` | UPDATE, DELETE |
+| `prepare` | prepared statement (binary protokol); INSERT id’yi, UPDATE / DELETE etkilenen satırları, SELECT ilk satırı (ya da tek değerini) cevaplar. Birden çok değer listesi her biri için bir kez çalıştırır. | aynı sorgu defalarca |
+| `rawExecute` | tam, şekillendirilmemiş sonuçlarla prepared statement | ham sonuca ihtiyacın olduğunda |
+| `transaction` | commit edilince `true`, rollback sonrası `false` (her zaman callback üzerinden) | hepsi başarılı olması gereken birden çok ifade |
+| `startTransaction` | commit edilince `true`, rollback sonrası `false` veren bir Promise | sorgular arasında mantık olan bir transaction |
+| `store` | sorgu metnini callback’e geri verir | sorguları saklayan eski kod |
+| `isReady` | `boolean`: havuz açık | açılışta kontroller |
+| `awaitConnection` | bağlanınca `true` veren bir Promise | açılışta bekleme |
+
+### transaction
+
+Birden çok ifadeyi tek bir bağlantıda çalıştırır; ya hepsi başarılı olur ya hiçbiri.
+
+**Taraf:** Server · **Bekler:** hayır (callback üzerinden cevap verir; `transaction_async` bir Promise döndürür)
+
+```ts title="Signature"
+transaction(queries: Array<string | [string, unknown[] | object] | { query: string; values?: unknown[] | object; parameters?: unknown[] | object }>, params?: unknown[] | object, cb?: (committed: boolean) => void): void
+```
+
+```lua title="Lua"
+local ok = MySQL.transaction.await({
+    { query = 'UPDATE my_accounts SET money = money - ? WHERE owner = ?', values = { 100, from } },
+    { query = 'UPDATE my_accounts SET money = money + ? WHERE owner = ?', values = { 100, to } },
+})
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    queries: { type: 'array', description: 'İfadeler, sırayla. Her biri bir SQL dizesi (ortak `params` kullanır), bir `[sql, values]` çifti ya da `{ query, values }` (ayrıca `parameters`).', required: true },
+    params: { type: 'unknown[] | object', description: 'Düz dize olan girdiler için değerler.' },
+    cb: { type: '(committed: boolean) => void', description: 'Commit edilince `true`, rollback olunca `false`.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Doğrudan hiçbir şey; callback `true` ya da `false` alır. Rollback hatayı konsola yazdırır ve `oxmysql:transaction-error` event’ini tetikler.
+
+### startTransaction
+
+Bir transaction açar ve fonksiyonuna ona bağlı bir `query` yardımcısı verir. Rollback için fonksiyonundan `false` döndür. 30 saniye sonra zaman aşımına uğrar.
+
+**Taraf:** Server · **Bekler:** evet (Promise)
+
+```ts title="Signature"
+startTransaction(work: (query: (sql: string, params?: unknown[] | object) => Promise<unknown>) => Promise<boolean | void>): Promise<boolean>
+```
+
+#### Dönüş değeri
+
+`Promise<boolean>`: commit edilince `true`. Fonksiyonun `false` döndürdüğünde, hata fırlattığında ya da 30 saniye dolduğunda `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// @aicore-fivem/mysql olmadan düz bir JavaScript ya da TypeScript resource’u.
+const db = exports.oxmysql;
+
+async function pay(from: string, to: string, amount: number): Promise<boolean> {
+  return db.startTransaction(async (query: (sql: string, params?: unknown[]) => Promise<any>) => {
+    const res = await query("UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?", [amount, from, amount]);
+    if (res.affectedRows !== 1) return false; // para yetmiyor: rollback
+    await query("UPDATE my_accounts SET money = money + ? WHERE owner = ?", [amount, to]);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function pay(from, to, amount)
+    return MySQL.startTransaction(function(query)
+        local res = query('UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?', { amount, from, amount })
+        if res.affectedRows ~= 1 then return false end
+        query('UPDATE my_accounts SET money = money + ? WHERE owner = ?', { amount, to })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+## Eski export adları
+
+| Eski resource | Adlar | Karşılığı |
+| --- | --- | --- |
+| ghmattimysql | `execute`, `scalar`, `transaction`, `store` (ve `executeSync`, `scalarSync`, ...) | `query`, `scalar`, `transaction`, `store` |
+| mysql-async | `mysql_execute`, `mysql_insert`, `mysql_fetch_all`, `mysql_fetch_scalar`, `mysql_transaction`, `mysql_store` | `update`, `insert`, `query`, `scalar`, `transaction`, `store` |
+
+## Callback ve hata kuralları
+
+Bunlar oxmysql’i takip eder:
+
+- Başarı: callback sonucu alır.
+- Promise biçimiyle (ya da Lua’da `.await` ile) hata: promise hata metniyle reddedilir.
+- Düz callback ile hata: hata konsola yazdırılır ve callback **çağrılmaz**.
+
+## Event’ler
+
+### oxmysql:error
+
+**Taraf:** Server (yerel) · bir sorgu başarısız olunca tetiklenir.
+
+<TypeTable
+  type={{
+    query: { type: 'string | undefined', description: 'SQL metni.' },
+    parameters: { type: 'unknown', description: 'Biliniyorsa verilen değerler.' },
+    message: { type: 'string', description: 'Veritabanı hatası.' },
+    resource: { type: 'string', description: 'Sorguyu gönderen resource.' },
+  }}
+/>
+
+### oxmysql:transaction-error
+
+**Taraf:** Server (yerel) · bir `transaction` rollback olunca tetiklenir. Yük `{ message: string, resource: string }`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("oxmysql:error", (e: { query?: string; message: string; resource: string }) => {
+  console.log(`[db] ${e.resource}: ${e.message} (${e.query ?? "?"})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('oxmysql:error', function(e)
+    print(('[db] %s: %s (%s)'):format(e.resource, e.message, e.query or '?'))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Değerleri her zaman parametre olarak ver, asla SQL metnine ekleyerek değil. Bir oyuncudan gelen değer doğrudan SQL’e konursa oyuncu kendi sorgularını çalıştırabilir.
+</Callout>

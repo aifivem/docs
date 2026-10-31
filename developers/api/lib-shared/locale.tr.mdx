@@ -1,0 +1,204 @@
+---
+title: Dil
+description: "createLocale, loadLocaleTexts, LOCALE_CONVAR ve LangTexts: resource’unun locales/*.json metinleri oyunda ve NUI sayfasında."
+icon: Languages
+---
+
+Her `ai-*` resource’u oyuncunun gördüğü metinlerini `locales/<language>.json` içinde tutar: `en.json` eksiksiz temeldir, diğer diller çevirdiklerini onun üzerine yazar. Sunucu dili her resource için tek bir replike convar ile seçer (ai-core’un server şablonu bunu `misc.cfg` içinde ayarlar):
+
+```ini title="misc.cfg"
+setr ai:locale "tr"
+```
+
+Bir metin değerler için `{0}`, `{1}`... (`"You paid ${0}"`) ve aynı dosyanın başka bir metnini eklemek için `${OTHER_KEY}` kullanabilir (yüklemede bir kez doldurulur).
+
+```json title="locales/en.json"
+{
+  "SHOP_NAME": "24/7",
+  "BOUGHT": "You bought {0}x {1} at ${SHOP_NAME}",
+  "NOT_ENOUGH_MONEY": "You do not have enough money"
+}
+```
+
+```ts title="TypeScript"
+import { createLocale, loadLocaleTexts, LOCALE_CONVAR } from "@aicore-fivem/lib/fivem"; // /client ve /server’da da var
+import { LangTexts } from "@aicore-fivem/lib/shared"; // NUI kodu için
+```
+
+### createLocale
+
+Resource’unun dil metinlerini yükler ve bir çeviri fonksiyonu `t(key, ...values)` döndürür. Tip argümanıyla editörün her anahtarı `en.json`’a göre kontrol eder. Onu bir kez oluştur (`ai-*` script’leri bunu `resource/common/locale.ts` içinde yapar ve `Locale` olarak import eder).
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+createLocale<T extends Record<string, string>>(): (key: keyof T & string, ...args: Array<string | number>) => string
+```
+
+```lua title="Lua"
+local t, texts = aiLib.locale(resource) -- resource varsayılan olarak çağıran resource’tur
+```
+
+#### Parametreler
+
+TypeScript argüman almaz: her zaman kodun çalıştığı resource’u okur.
+
+<TypeTable
+  type={{
+    T: { type: 'type argument', description: 'TypeScript: `en.json`’un biçimi (`typeof import("../../locales/en.json")`). Bilinmeyen anahtarları bir tip hatası yapar.' },
+    resource: { type: 'string', description: 'Yalnızca Lua: kimin `locales/` klasörünün okunacağı.', default: 'GetCurrentResourceName()' },
+  }}
+/>
+
+#### Dönüş değeri
+
+TypeScript: çeviri fonksiyonu. Lua: iki değer, çeviri fonksiyonu ve birleştirilmiş metin tablosu (bir NUI için).
+
+Çeviri fonksiyonu `t(key, ...values)`, `{0}`, `{1}`... doldurulmuş metni döndürür. İki dosyada da olmayan bir anahtar anahtarın kendisini döndürür; böylece eksik bir metin oyunda boş yerine görünür olur.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/common/locale.ts"
+import { createLocale } from "@aicore-fivem/lib/fivem";
+
+/** Bu resource’un dil metinleri: Locale("BOUGHT", 2, "Water"); anahtarlar locales/en.json’dan tiplenir. */
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+export default Locale;
+```
+
+```ts title="resource/server/index.ts"
+import { notify } from "@aicore-fivem/lib/server";
+import Locale from "../common/locale";
+
+export function tellBought(source: number, count: number, label: string): void {
+  notify(source, Locale("BOUGHT", count, label), "success"); // "You bought 2x Water at 24/7"
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+local t = aiLib.locale()
+
+local function tellBought(source, count, label)
+    aiLib.notify(source, t('BOUGHT', count, label), 'success') -- "You bought 2x Water at 24/7"
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Metinler, çeviri fonksiyonu oluşturulduğunda bir kez okunur. `ai:locale`’i ya da bir dil dosyasını değiştirmek bir resource yeniden başlatması gerektirir. Metinler `t`’yi çağıran tarafta doldurulur: client arayüzü için client’ta, bir server `notify`’ı için server’da çevir.
+</Callout>
+
+### loadLocaleTexts
+
+Bir resource’un birleştirilmiş dil tablosu (`en.json` üzerine `ai:locale` dili bindirilmiş, `${KEY}` referansları doldurulmuş). Tüm metinleri NUI sayfana bir kez vermek için kullan; sayfa `{0}` yer tutucularını `LangTexts` ile kendisi doldurur.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+loadLocaleTexts(resource?: string): Record<string, string>
+```
+
+```lua title="Lua"
+local _, texts = aiLib.locale(resource)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Kimin `locales/` klasörünün okunacağı.', default: 'GetCurrentResourceName()' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`Record<string, string>`: anahtardan metne. Eksik dosyalar boş bir tablo verir; string olmayan değerler atlanır.
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { loadLocaleTexts } from "@aicore-fivem/lib/client";
+
+const texts = loadLocaleTexts();
+
+RegisterCommand("myshop", () => {
+  SendNUIMessage({ action: "open", texts });
+  SetNuiFocus(true, true);
+}, false);
+```
+
+### LOCALE_CONVAR
+
+Dil convar’ının adı: `"ai:locale"`. Replike edilir (`setr`); bu yüzden client’lar da onu okur. Script’in dil kodunun kendisine ihtiyaç duyduğunda (bir tarih biçimi) onu oku.
+
+**Taraf:** Client ve server · **Bekler:** hayır
+
+```ts title="Signature"
+const LOCALE_CONVAR: "ai:locale"
+```
+
+**Lua:** karşılığı yok; `GetConvar('ai:locale', 'en')`’i oku.
+
+#### Örnek
+
+```ts
+import { LOCALE_CONVAR } from "@aicore-fivem/lib/client";
+
+const language = GetConvar(LOCALE_CONVAR, "en"); // "en", "tr", ...
+```
+
+### LangTexts
+
+Bir NUI sayfasının dil metinleri: client’ın gönderdiği tabloyu tutar ve `{0}` yer tutuculu anahtarları çevirir. `subscribe` ve `snapshot`’ı React’in `useSyncExternalStore`’una uyar; böylece yeni metinler geldiğinde bileşenler yeniden render edilir. Her metot bağlıdır (bound); böylece `lang.translate`’i düz bir fonksiyon olarak geçirebilirsin.
+
+**Taraf:** NUI (her yerde çalışır) · **Bekler:** hayır
+
+```ts title="Signature"
+new LangTexts()
+```
+
+**Lua:** karşılığı yok (NUI kodu TypeScript ya da JavaScript’tir).
+
+#### Metotlar
+
+<TypeTable
+  type={{
+    'set(next)': { type: '(next: Record<string, string>) => void', description: 'Her metnin yerine geçer ve abonelere haber verir.' },
+    'translate(key, ...args)': { type: '(key: string, ...args: Array<string | number>) => string', description: '`{0}`, `{1}`... doldurulmuş `key` metni. Eksikse anahtarın kendisi.' },
+    'subscribe(listener)': { type: '(listener: () => void) => () => void', description: 'Her `set`’ten sonra `listener`’ı çağırır. Abonelikten çıkma fonksiyonunu döndürür.' },
+    'snapshot()': { type: '() => Record<string, string>', description: 'Güncel metinler (her `set`’ten sonra yeni bir nesne).' },
+  }}
+/>
+
+#### Örnek
+
+```tsx title="web/src/lang.ts"
+import { useSyncExternalStore } from "react";
+import { LangTexts } from "@aicore-fivem/lib/shared";
+
+export const lang = new LangTexts();
+
+window.addEventListener("message", (event: MessageEvent<{ action?: string; texts?: Record<string, string> }>) => {
+  if (event.data.action === "open" && event.data.texts) lang.set(event.data.texts);
+});
+
+/** Metinler değiştiğinde bileşeni yeniden render eder. */
+export function useLang() {
+  useSyncExternalStore(lang.subscribe, lang.snapshot);
+  return lang.translate;
+}
+```
+
+```tsx title="web/src/Title.tsx"
+import { useLang } from "./lang";
+
+export function Title({ count }: { count: number }) {
+  const t = useLang();
+  return <h1>{t("BOUGHT", count, "Water")}</h1>;
+}
+```

@@ -1,0 +1,504 @@
+---
+title: Ekranlar ve kontroller
+description: NuiScreen, hud, keyHints ve controls - kendi tam ekran NUI’n, tüm HUD’ları gizlemek, tuş yardım satırları ve devre dışı kontroller.
+icon: Monitor
+---
+
+Kendi NUI sayfası ya da araç modu olan script’ler için yardımcılar: odak alan ve HUD’ları gizleyen tam ekran bir sayfa açmak, bir aracın tuşlarını HUD’da listelemek ve kare başı bir döngü yazmadan kontrolleri engellemek.
+
+## NuiScreen
+
+### new NuiScreen
+
+Resource’unun tam ekran NUI sayfası tek bir nesnede. `open` odağı alır, tüm HUD’ları gizler ([`hud`](#hudhide) üzerinden) ve açılış mesajını gönderir; `close` odağı geri verir, HUD’ları gösterir, sayfaya `{ action: "close" }` gönderir ve senin `onClose`’unu çalıştırır. Sayfanın kendi `close` NUI callback’i de onu kapatır. Resource başına, dosyanın en üstünde bir tane oluştur.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+new NuiScreen<M extends NuiPageMessage = NuiPageMessage>(name: string, options?: NuiScreenOptions)
+```
+
+Lua karşılığı yok: Lua resource’ları `SetNuiFocus`, `aiLib.hud.hide` / `show` ve `RegisterNUICallback('close', ...)` çağrılarını kendileri yapar.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Bu ekran için bir ad; HUD gizleme sebebi olarak kullanılır (shop, editor).', required: true },
+    options: { type: 'NuiScreenOptions', description: 'Alanlar aşağıda.', default: '{}' },
+  }}
+/>
+
+#### NuiScreenOptions
+
+<TypeTable
+  type={{
+    cursor: { type: 'boolean', description: 'Açıkken fare imlecini göster.', default: 'true' },
+    onClose: { type: '() => void', description: 'Ekranı kim kapatırsa kapatsın (sayfanın kapatma butonu dahil) ekran kapandıktan sonra çalışır. Temizliğini buraya koy: kamera, önizleme aracı, dondurulmuş ped.' },
+    closeCallback: { type: 'boolean', description: 'Ekranı kapatan sayfa close NUI callback’ini kaydet. Onu yalnızca senin script’in kapatabilecekse false.', default: 'true' },
+  }}
+/>
+
+#### NuiPageMessage
+
+`open` ve `send`’in aldığı: `{ action: string; data?: unknown }`. Her mesajı tiplemek için kendi union tipini `M` olarak geçir.
+
+#### Üyeler
+
+<TypeTable
+  type={{
+    isOpen: { type: 'boolean', description: 'Salt okunur özellik: ekranın açık olup olmadığı.' },
+    'open(message)': { type: '(message: M) => void', description: 'Odağı alır ve HUD’ları gizler (açıkken yalnızca ilk seferde), sonra message’ı gönderir. Açıkken tekrar çağırmak yalnızca gönderir.' },
+    'close()': { type: '() => void', description: 'Odağı geri verir, HUD’ları gösterir, { action: "close", data: null } gönderir ve onClose’u çalıştırır. Zaten kapalıysa hiçbir şey yapmaz.' },
+    'send(message)': { type: '(message: M) => void', description: 'Sayfaya tipli bir SendNUIMessage.' },
+    'on(name, parse, handler)': { type: '<A>(name: string, parse: (data: unknown) => A | null, handler: (data: A) => unknown) => void', description: 'Sayfanın bir NUI callback’i. parse veriyi kontrol eder: null { ok: false } cevabını verir. Handler’ın sonucu (beklenir) cevaptır; hiçbir şey döndürmezse { ok: true }; hata fırlatırsa { ok: false }.' },
+  }}
+/>
+
+#### Örnek
+
+```ts title="resource/client/index.ts"
+import { callAction, NuiScreen, ScriptCamera } from "@aicore-fivem/lib/client";
+import { readText } from "@aicore-fivem/lib/shared";
+
+type Message =
+  | { action: "open"; data: { items: string[] } }
+  | { action: "result"; data: boolean };
+
+const camera = new ScriptCamera();
+const screen = new NuiScreen<Message>("shop", {
+  onClose: () => camera.stop(500),
+});
+
+export function openShop(items: string[]): void {
+  camera.start({ x: 26.5, y: -1345.0, z: 30.2 }, { pointAt: { x: 25.7, y: -1347.3, z: 29.5 } }, 500);
+  screen.open({ action: "open", data: { items } });
+}
+
+// Sayfa fetch(`https://${GetParentResourceName()}/buy`, { body: JSON.stringify("water") }) çağırır.
+screen.on(
+  "buy",
+  (data) => readText(data, 32),
+  async (item) => {
+    const reply = await callAction("myshop:buy", [item], { fallback: "BUY_FAILED" });
+    return { ok: reply !== null };
+  },
+);
+```
+
+<Callout type="info">
+Tam ekran sayfalar için `NuiScreen` kullan. HUD’u ekranda tutan katmanlar (bir sohbet kutusu, bir radyal çark, bir target gözü) kendi odak kodlarını korur.
+</Callout>
+
+## hud
+
+ai-core üzerinden HUD’lar (ai-hud ve ai-core’un desteklediği diğer HUD script’leri). Tam ekran bir arayüz açılışta onları gizler ve kapanışta gösterir. Sebepler resource başına sayılır; bu yüzden aynı anda açık iki ekran, ikisi de kapanana kadar HUD’ları gizli tutar. Herhangi bir sebep geçerliyken ai-core tüm HUD’ları ve minimap’i gizler.
+
+### hud.hide
+
+Aynı sebeple `hud.show` çağrılana kadar tüm HUD’ları bir sebeple gizler.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+hud.hide(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.hud.hide(reason)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Neden (photo, cutscene). Sebepler resource başınadır: seninkiler asla başka bir resource’unkilerle çakışmaz.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { hud } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "cinema",
+  () => {
+    if (hud.visible) hud.hide("cinema");
+    else hud.show("cinema");
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('cinema', function()
+    if aiLib.hud.visible() then aiLib.hud.hide('cinema') else aiLib.hud.show('cinema') end
+end, false)
+```
+</Tab>
+</Tabs>
+
+### hud.show
+
+Bir gizleme sebebini kaldırır. Hiçbir resource’un sebebi kalmadığında HUD’lar geri gelir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+hud.show(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.hud.show(reason)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'hud.hide’a verilen sebep.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. [`hud.hide`](#hudhide) örneğine bak.
+
+### hud.visible
+
+HUD’ların şu an görünüp görünmediği (açık tam ekran arayüz yok).
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+hud.visible: boolean // salt okunur özellik
+```
+
+```lua title="Lua"
+local visible = aiLib.hud.visible() -- Lua’da bir fonksiyon
+```
+
+#### Dönüş değeri
+
+`boolean`: hiçbir resource’un gizleme sebebi geçerli değilse `true`.
+
+### hud.onChange
+
+HUD’lar her gösterildiğinde ya da gizlendiğinde bir handler çalıştırır. Bir HUD script’i kendini gizlemek için bunu kullanır.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+hud.onChange(fn: (visible: boolean) => void): void
+```
+
+Lua karşılığı yok: yerel `ai-core:client:hudVisible` (`visible`) event’ini dinle.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    fn: { type: '(visible: boolean) => void', description: 'HUD’lar yeniden göründüğünde true, gizlendiğinde false alır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+```ts
+import { hud } from "@aicore-fivem/lib/client";
+
+hud.onChange((visible) => SendNUIMessage({ action: "visible", data: visible }));
+```
+
+## keyHints
+
+Bir script’in bir süre gösterdiği tuş yardım satırları (bir admin noclip’inin tuşları, bir minigame’in kontrolleri); HUD bunları solda, keybind’lerin `hint` ile bildirdiklerinin yanında listeler. Duran bir resource’un ipuçları kendiliğinden kaybolur.
+
+### keyHints.show
+
+Bir tuş ipucu gösterir ya da aynı id’ye sahip olanı değiştirir.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+keyHints.show(id: string, hint: KeyHintRequest): void
+```
+
+```lua title="Lua"
+aiLib.keyHints.show(id, hint)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Bu ipucu için kendi id’in (resource başına).', required: true },
+    hint: { type: 'KeyHintRequest', description: 'Alanlar aşağıda.', required: true },
+  }}
+/>
+
+#### KeyHintRequest
+
+<TypeTable
+  type={{
+    label: { type: 'string', description: 'Tuşun ne yaptığı, zaten çevrilmiş halde (Speed up).', required: true },
+    keybind: { type: 'string', description: 'Bir Keybind’ın adı: oyuncunun şu an ona atadığı tuşu gösterir.' },
+    key: { type: 'string', description: 'Keybind yokken sabit bir tuş metni (SHIFT).' },
+    icon: { type: 'string', description: 'fa- olmadan Font Awesome solid ikon adı.' },
+  }}
+/>
+
+Tipi [`KeyHintRequest`](/tr/docs/developers/api/types#keyhintrequest)’tir.
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { createLocale, keyHints } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+export function startPlacing(): void {
+  keyHints.show("rotate", { label: Locale("ROTATE"), key: "Q / E", icon: "rotate" });
+  keyHints.show("place", { label: Locale("PLACE"), keybind: "myscript_place", icon: "check" });
+}
+
+export function stopPlacing(): void {
+  keyHints.hide("rotate");
+  keyHints.hide("place");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+local function startPlacing()
+    aiLib.keyHints.show('rotate', { label = t('ROTATE'), key = 'Q / E', icon = 'rotate' })
+end
+
+local function stopPlacing()
+    aiLib.keyHints.hide('rotate')
+end
+```
+</Tab>
+</Tabs>
+
+### keyHints.hide
+
+Tuş ipuçlarından birini kaldırır. Bilinmeyen bir id hiçbir şey yapmaz.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+keyHints.hide(id: string): void
+```
+
+```lua title="Lua"
+aiLib.keyHints.hide(id)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'keyHints.show’a verilen id.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. [`keyHints.show`](#keyhintsshow) örneğine bak.
+
+## controls
+
+Resource’unun devre dışı kontrolleri; hepsi için tek bir kare başı görevle. Her sebep (`cuffed`, `menu`, `placing`) kendi kontrollerini ekler ve bittiğinde onları kaldırır; görev yalnızca herhangi bir sebep aktifken çalışır. `DisableControlAction` ile asla kendi `setTick`’ini yazma.
+
+### controls.disable
+
+`controls.enable(reason)` çağrılana kadar bir kontrol listesini her karede devre dışı bırakır. Aynı sebeple tekrar çağırmak o sebebin listesinin yerine geçer.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+controls.disable(reason: string, controls: readonly number[], group?: number): void
+```
+
+```lua title="Lua"
+aiLib.controls.disable(reason, controls, group)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Neden (cuffed, placing). Daha sonra enable ile kullandığın anahtar.', required: true },
+    controls: { type: 'number[]', description: 'GTA kontrol id’leri.', required: true },
+    group: { type: 'number', description: 'Kontrollerin girdi grubu.', default: '0' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { controls, onServerEvent } from "@aicore-fivem/lib/client";
+
+const CUFFED = [21, 22, 23, 24, 25, 37, 44, 140, 141, 142, 143, 257, 263, 264];
+
+onServerEvent(
+  "mypolice:cuffed",
+  { args: ([on]) => (typeof on === "boolean" ? [on] : null) },
+  (on) => (on ? controls.disable("cuffed", CUFFED) : controls.enable("cuffed")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local CUFFED = { 21, 22, 23, 24, 25, 37, 44, 140, 141, 142, 143, 257, 263, 264 }
+
+aiLib.onServerEvent('mypolice:cuffed', function(on)
+    if on == true then aiLib.controls.disable('cuffed', CUFFED) else aiLib.controls.enable('cuffed') end
+end)
+```
+</Tab>
+</Tabs>
+
+### controls.disableAll
+
+`controls.enable(reason)` çağrılana kadar, tuttukların dışında her kontrolü (girdi grupları 0, 1 ve 2) her karede devre dışı bırakır. Bir noclip ya da serbest kamera için kullan ve devre dışı tuşları `IsDisabledControlPressed` ile oku.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+controls.disableAll(reason: string, except?: readonly number[]): void
+```
+
+```lua title="Lua"
+aiLib.controls.disableAll(reason, except)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Neden (noclip). Daha sonra enable ile kullandığın anahtar.', required: true },
+    except: { type: 'number[]', description: 'Çalışmaya devam eden 0. grup kontrolleri (kamera bakışı, bas konuş). Birkaç disableAll sebebi geçerliyse yalnızca hepsinin tuttuğu kontroller açık kalır.', default: '[]' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { controls, every } from "@aicore-fivem/lib/client";
+
+const fly = every(0, () => {
+  if (IsDisabledControlPressed(0, 32)) console.log("forward");
+}, { active: false, name: "noclip" });
+
+export function noclip(on: boolean): void {
+  if (on) controls.disableAll("noclip", [1, 2, 249]);
+  else controls.enable("noclip");
+  fly.set(on);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local fly = aiLib.every(0, function()
+    if IsDisabledControlPressed(0, 32) then print('forward') end
+end, { active = false, name = 'noclip' })
+
+local function noclip(on)
+    if on then aiLib.controls.disableAll('noclip', { 1, 2, 249 }) else aiLib.controls.enable('noclip') end
+    fly:set(on)
+end
+```
+</Tab>
+</Tabs>
+
+### controls.enable
+
+Bir sebebi bitirir: başka bir sebep onları hâlâ devre dışı bırakmıyorsa kontrolleri yeniden çalışır. Bilinmeyen bir sebep hiçbir şey yapmaz.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+controls.enable(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.controls.enable(reason)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'disable ya da disableAll’a verilen sebep.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`void`. Yukarıdaki örneklere bak.
+
+### controls.isDisabled
+
+Resource’unun bir sebebinin şu an aktif olup olmadığı.
+
+**Taraf:** Client · **Bekler:** hayır
+
+```ts title="Signature"
+controls.isDisabled(reason: string): boolean
+```
+
+Lua karşılığı yok.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'disable ya da disableAll’a verilen sebep.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: o sebep geçerliyken `true`.
+
+#### Örnek
+
+```ts
+import { controls } from "@aicore-fivem/lib/client";
+
+if (controls.isDisabled("cuffed")) console.log("the player is cuffed");
+```

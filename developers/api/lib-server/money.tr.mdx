@@ -1,0 +1,297 @@
+---
+title: Para ve bankacılık
+description: "İki hesap arasında money.transfer, ai-core üzerinden banka script’i ve hangi fatura script’i çalışıyorsa onun üzerinden faturalar."
+icon: Wallet
+---
+
+```ts title="TypeScript"
+import { money, banking, billing } from "@aicore-fivem/lib/server";
+```
+
+Bir oyuncunun tek hesaplık değişiklikleri (ekleme, çıkarma, bakiye okuma) ai-core’un export’larıdır (`AddMoney`, `RemoveMoney`, `GetMoney`; bkz. [ai-core server export’ları](/tr/docs/developers/api/core-server)). Lib, birden fazla hesap değişikliği gerektiren şeyleri ve bankacılık ile fatura katmanlarını ekler.
+
+## money
+
+### money.transfer
+
+Parayı tek bir veritabanı transaction’ında, iki tarafta da bir defter satırıyla bir hesaptan diğerine taşır. Paranın yarı yolda ortaya çıkmaması ya da kaybolmaması gereken her şey için kullan: başka bir oyuncuya ödeme, bir mesleğin prim ödemesi, bir ücret.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+Lua karşılığı yok: ai-core’un `exports['ai-core']:TransferMoney(from, to, amount, reason, fee)` export’unu çağır.
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    from: { type: "MoneyRef", typeDescriptionLink: "/tr/docs/developers/api/types#moneyref", description: "Ödeyen hesap: bir oyuncunun `{ source, account }`’u (`account`: `cash`, `bank`...) ya da bir mesleğin / çetenin `{ owner: \"job\" | \"gang\", id, account }`’u.", required: true },
+    to: { type: "MoneyRef", typeDescriptionLink: "/tr/docs/developers/api/types#moneyref", description: "Alan hesap, aynı biçimde.", required: true },
+    amount: { type: "number", description: "`to`’nun ne kadar aldığı: 1 ya da daha büyük bir tam sayı.", required: true },
+    reason: { type: "string", description: "İki defter satırına da yazılır (`rent:apartment_3`).", required: false },
+    fee: { type: "number", description: "`from`’un ayrıca ödediği ek tam miktar. Ekonomiden çıkar (kimse almaz).", default: "0" },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: iki satır da yazıldıysa `true`. Bir miktar tam sayı değilse, bir hesap yoksa, ikisi aynıysa ya da `from` `amount` artı `fee`’yi ödeyemiyorsa `false`.
+
+#### Örnek
+
+```ts
+import { onClientCallback, money, nearestPlayerTo, notify } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-cash:give", { args: oneArg((v) => readInt(v, 1, 100_000)), lock: true }, (source, amount) => {
+  const target = nearestPlayerTo(source, 2);
+  if (target === null) return fail("NOBODY_NEAR");
+  if (!money.transfer({ source, account: "cash" }, { source: target, account: "cash" }, amount, "give:cash"))
+    return fail("NOT_ENOUGH_CASH");
+  notify(target, `You received $${amount}`, "success");
+  return { ok: true };
+});
+```
+
+## banking
+
+`banking`, ai-core’un bankacılık katmanı üzerinden banka script’iyle konuşur. Meslek parasının kendisi her zaman `money` ya da ai-core’un export’ları üzerinden hareket eder.
+
+### banking.open
+
+Banka script’inin ekranını bir oyuncu için açar.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+banking.open(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.banking.open(source)
+```
+
+**Dönüş değeri**: açıldıysa `true`. Script dışarıdan açılamıyorsa ya da hiçbiri çalışmıyorsa `false`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onClientCallback("my-atm:open", (source) => (banking.open(source) ? { ok: true } : fail("BANK_UNAVAILABLE")));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-atm:open', function(source)
+    if not aiLib.banking.open(source) then return aiLib.fail('BANK_UNAVAILABLE') end
+    return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### banking.societyBalance
+
+Görüntülemek için bir mesleğin şirket (society) bakiyesi. ai-core’un `core` hesap modunda ai-core’un meslek hesabıdır; `own` modunda banka script’inin kendi hesabı.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+banking.societyBalance(job: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.banking.societyBalance(job) -- number ya da nil
+```
+
+**Dönüş değeri**: bakiye ya da hiçbiri çalışmıyorsa veya script bakiye tutmuyorsa `null` (Lua’da `nil`).
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const balance = banking.societyBalance("mechanic") ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local balance = aiLib.banking.societyBalance('mechanic') or 0
+```
+</Tab>
+</Tabs>
+
+### banking.provider
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+banking.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.banking.provider()
+```
+
+**Dönüş değeri**: katmanın kullandığı banka script’i ya da `null`.
+
+```ts
+console.log(`banking through ${banking.provider() ?? "nothing"}`);
+```
+
+## billing
+
+`billing`, faturaları hangi fatura script’i çalışıyorsa onun üzerinden gönderir; hiçbiri yoksa ai-core’un kendi faturaları kullanılır (oyuncu ekrandaki bir listeden öder, para o ödediğinde hareket eder). Metinler zaten çevrilmiş haldedir.
+
+### billing.send
+
+Bir meslekten (cezalar, hizmet ücretleri) ya da bir oyuncudan fatura gönderir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+billing.send(bill: BillRequest): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.send(bill)
+```
+
+#### BillRequest
+
+<TypeTable
+  type={{
+    to: { type: "number", description: "Faturayı alan oyuncunun server id’si. `to` ya da `toCitizenid` ver.", required: false },
+    toCitizenid: { type: "string", description: "Faturayı alan karakter, citizen id ile, çevrimiçi ya da çevrimdışı. Çevrimdışı bir karakter faturayı yalnızca ai-core’un kendi faturalarından alır; bir fatura script’i oyuncunun çevrimiçi olmasını gerektirir.", required: false },
+    amount: { type: "number", description: "Tam dolar.", required: true },
+    label: { type: "string", description: "Neyin karşılığı olduğu (`Speeding`).", required: true },
+    from: { type: "number", description: "Faturayı kesen oyuncunun (memur, tamirci) server id’si. `job` olmayan bir fatura bu oyuncuya ödenir.", required: false },
+    job: { type: "string", description: "Ödemeyi hesabına alan meslek. Bu olmadan fatura kişiseldir ve `from` zorunludur.", required: false },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: gönderildiyse `true`, geçersizse ya da reddedildiyse `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { billing, nearestPlayerTo, online } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+function fine(officer: number, amount: number) {
+  if (!online.onDutyIn(officer, ["police"])) return fail("NOT_ON_DUTY");
+  const target = nearestPlayerTo(officer, 3);
+  if (target === null) return fail("NOBODY_NEAR");
+  return billing.send({ to: target, amount, label: "Speeding", from: officer, job: "police" })
+    ? { ok: true }
+    : fail("BILL_FAILED");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function fine(officer, amount)
+    if aiLib.online.dutyJob(officer) ~= 'police' then return aiLib.fail('NOT_ON_DUTY') end
+    local target = aiLib.nearestPlayerTo(officer, 3.0)
+    if not target then return aiLib.fail('NOBODY_NEAR') end
+    if not aiLib.billing.send({ to = target, amount = amount, label = 'Speeding', from = officer, job = 'police' }) then
+        return aiLib.fail('BILL_FAILED')
+    end
+    return { ok = true }
+end
+```
+</Tab>
+</Tabs>
+
+### billing.unpaid
+
+Oyuncunun açık faturaları.
+
+**Taraf:** Server · **Bekler:** evet (TypeScript’te Promise, Lua’da thread’i yield eder)
+
+```ts title="Signature"
+billing.unpaid(source: number): Promise<UnpaidBill[] | null>
+```
+
+```lua title="Lua"
+local bills = aiLib.billing.unpaid(source) -- table[] ya da nil, bir thread içinde çağır
+```
+
+**Dönüş değeri**: [`UnpaidBill[]`](/tr/docs/developers/api/types#unpaidbill) (`id`, `label`, hâlâ borçlu olunan `amount`, `sender`) ya da fatura script’i onları listeleyemiyorsa `null`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const bills = await billing.unpaid(source);
+const owed = bills?.reduce((sum, bill) => sum + bill.amount, 0) ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local bills = aiLib.billing.unpaid(source) or {}
+    local owed = 0
+    for _, bill in ipairs(bills) do owed = owed + bill.amount end
+    print(owed)
+end)
+```
+</Tab>
+</Tabs>
+
+### billing.pay
+
+Oyuncu açık faturalarından birini öder.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+billing.pay(source: number, id: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.pay(source, id)
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Ödeyen oyuncunun server id’si.", required: true },
+    id: { type: "string", description: "`unpaid`’den gelen fatura `id`’si.", required: true },
+  }}
+/>
+
+**Dönüş değeri**: ödendiyse `true`. Reddedildiyse (yetersiz para, bilinmeyen fatura) ya da fatura script’i ödemeleri yalnızca kendi ekranında alıyorsa `false`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (!billing.pay(source, billId)) return fail("PAY_FAILED");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if not aiLib.billing.pay(source, billId) then return aiLib.fail('PAY_FAILED') end
+```
+</Tab>
+</Tabs>
+
+### billing.provider
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="Signature"
+billing.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.billing.provider()
+```
+
+**Dönüş değeri**: faturaların gittiği fatura script’i; ai-core’un kendi faturaları için `"ai-core"`.
+
+```ts
+if (billing.provider() === "ai-core") console.log("using ai-core's own bills");
+```
