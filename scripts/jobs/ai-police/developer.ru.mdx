@@ -1,0 +1,92 @@
+---
+title: ai-police для разработчиков
+description: State bag cuffed из ai-police, как его действия доходят до других скриптов через AI Core, и его приватные события.
+icon: Code
+---
+
+У ai-police **нет экспортов**. Его штрафы, записи, тюремные сроки, вызовы, обыски и отправки на штрафстоянку идут через слои AI Core, поэтому другой скрипт никогда не вызывает ai-police. Другой скрипт может читать состояние `cuffed`.
+
+## State bag `cuffed`
+
+`true` в state bag игрока, пока ai-police держит его в наручниках; иначе `false` (или отсутствует). Пишет его сервер; читать может каждый клиент. Имя ключа `PLAYER_BAGS.cuffed` в `@aicore-fivem/shared`.
+
+**Сторона:** сервер и клиент (чтение) · **Ожидание:** нет
+
+```ts title="Сигнатура"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- сервер
+local cuffed = LocalPlayer.state.cuffed == true      -- клиент, локальный игрок
+```
+
+#### Возвращает
+
+`true`, пока игрок в наручниках. `false` после снятия наручников, `undefined` / `nil`, если игрока в эту сессию ни разу не заковывали.
+
+#### Пример
+
+Отказать в предмете, пока игрок в наручниках:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... открыть рацию
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... открыть рацию
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Не выставляйте `cuffed` сами: ai-police держит на сервере собственный список закованных и сопровождаемых игроков и только отражает его в state bag. Значение, записанное другим скриптом, не является настоящими наручниками и перезаписывается при следующем действии с наручниками.
+</Callout>
+
+## Что ai-police отправляет через AI Core
+
+| Действие | Используемый слой | Что туда попадает |
+| --- | --- | --- |
+| Выписать штраф | `billing.send` из lib | Счёт от работы офицера на дежурстве, с надписью "Police fine". |
+| Выписать штраф | `mdt.record` из lib | Запись `fine` с суммой. |
+| Отправить в тюрьму | `prison.jail` из lib | Срок, с офицером в `by`. |
+| Отправить в тюрьму | `mdt.record` из lib | Запись `arrest` с минутами. |
+| Стрельба | `dispatch.alert` из lib | Один вызов на область 150 м каждые 30 с, для полицейских работ из панели. |
+| Обыск | `inventory.openInventory` из lib | Инвентарь цели открывается для офицера. |
+| Штрафстоянка | `garages.impound` из lib | Скрипт гаражей забирает транспорт; если он отказывает, транспорт удаляется. |
+
+Чтобы реагировать на что-то из этого, слушайте на стороне слоя (ваш скрипт счетов, MDT, тюрьмы или оповещений), а не ai-police.
+
+## Приватные события и колбэки
+
+Собственный контракт скрипта между клиентом и сервером (`resource/common/police.ts`). Сервер при каждом вызове проверяет дежурство, расстояние и состояние наручников. Они могут меняться между версиями: не вызывайте и не слушайте их из других ресурсов.
+
+| Имя | Направление | Что передаёт |
+| --- | --- | --- |
+| `ai-police:act` | client callback | `(action, target, extra?)`: офицер действует на ближайшего игрока (серверный id) или транспорт (net id). Отвечает `{ ok }`. |
+| `ai-police:duty` | client callback | `(stationId)`: переключить дежурство на участке. Отвечает `{ ok, onDuty }`. |
+| `ai-police:shot` | client -> server | `(x, y, z)`: игрок выстрелил из оружия (с ограничением частоты, учитываются только не полицейские). |
+| `ai-police:client:cuffed` | server -> target | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | server -> target | `(officerNetId \| null)`: прицепиться к офицеру или отпустить. |
+| `ai-police:client:seat` | server -> target | `(vehicleNetId \| null)`: сесть на заднее сиденье транспорта или выйти. |

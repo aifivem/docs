@@ -1,0 +1,170 @@
+---
+title: Lib для Lua
+description: "aiLib: как ресурс на Lua загружает ai-lib, когда нужен поток, как векторы и таблицы Lua переходят в TypeScript и где описана каждая функция."
+icon: FileCode
+---
+
+`aiLib` это Lua-версия `@aicore-fivem/lib`. Она поставляется с ресурсом **ai-lib** и загружается как ox_lib: одна строка в манифесте, затем `aiLib.<name>` в любом из ваших Lua-файлов. Это порт, написанный на Lua (а не обёртка над JavaScript-библиотекой), и он использует те же сетевые форматы, что и библиотека на TypeScript, поэтому клиент на Lua и сервер на TypeScript (или наоборот) отвечают на колбэки друг друга.
+
+## Подключение
+
+<Steps>
+<Step>
+### Добавьте ai-lib в манифест
+
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+`shared_script` загружает её на обеих сторонах. `dependency` гарантирует, что ai-lib запустится раньше вашего ресурса.
+</Step>
+<Step>
+### Убедитесь, что ai-lib запускается первой
+
+В конфиге сервера запустите ai-core и ai-lib (в том порядке, который использует шаблон сервера ai-core) раньше вашего ресурса. ai-core нужен для помощников, которые работают через него (игроки, деньги, предметы...):
+
+```ini title="server.cfg"
+ensure ai-core
+ensure ai-lib
+ensure my-resource
+```
+</Step>
+<Step>
+### Вызывайте aiLib
+
+```lua title="client.lua"
+RegisterCommand('hello', function()
+    aiLib.notify('Hello from aiLib', 'success')
+end, false)
+```
+
+```lua title="server.lua"
+aiLib.addCommand('hello', { help = 'Says hello' }, function(source)
+    aiLib.notify(source, 'Hello from aiLib', 'success')
+end)
+```
+</Step>
+</Steps>
+
+### Как загружаются модули
+
+`aiLib` стартует почти пустым. Когда вы впервые читаете `aiLib.notify` (или любое другое имя), ai-lib загружает этот модуль из `lua/<side>/<name>.lua`, иначе из `lua/shared/<name>.lua`, и запоминает его. Имя, которого нет на вашей стороне, вызывает ошибку `ai-lib has no "<name>" on the client` (или `server`).
+
+Модуль выполняется **внутри вашего ресурса**. Всё, что вы с его помощью создаёте (точки, зоны, клавиши, команды, колбэки, блипы), принадлежит вашему ресурсу и исчезает, когда ресурс останавливается. Никакого реестра, который нужно очищать, нет.
+
+### aiLib.side
+
+На какой стороне выполняется код.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```lua title="Lua"
+aiLib.side -- 'client' или 'server'
+```
+
+**TypeScript:** аналога нет (файл TypeScript собирается для одной стороны; сервер определяется через `IsDuplicityVersion()`).
+
+#### Возвращает
+
+`'client'` или `'server'`.
+
+#### Пример
+
+```lua title="shared.lua"
+if aiLib.side == 'server' then
+    print('loaded on the server')
+end
+```
+
+## Функции, которые ждут
+
+Некоторые функции ждут ответа: от сервера, от игрока или от игры. В Lua они приостанавливают ваш код, пока не придёт ответ (TypeScript вместо этого возвращает Promise). Приостановка работает только **внутри потока**:
+
+| Ждут на клиенте | Ждут на сервере |
+| --- | --- |
+| `triggerServerCallback`, `callAction`, `progress`, `menu.show`, `input`, `itemPicker`, `skillCheck`, `lockpick`, `fadeOut`, `fadeIn`, `player.teleport`, `waitForEntity`, `waitFor`, загрузчики `request*`, `pedHeadshot` | `triggerClientCallback`, `progressFor`, `minigameFor`, `spawnVehicle`, `billing.unpaid`, `appearance.get`, `waitFor` |
+
+Обработчики команд и сетевых событий уже выполняются в собственном потоке. В любом другом месте (`onPressed` точки, клавиша, обработчик меню, основной код файла) запустите поток сами:
+
+```lua title="client.lua"
+local points = aiLib.Points.new()
+points:add('shop', {
+    coords = vector3(25.7, -1347.3, 29.5),
+    label = 'Open shop',
+    icon = 'basket-shopping',
+    onPressed = function()
+        CreateThread(function()
+            local pick = aiLib.menu.show({ title = 'Shop', items = { { id = 'water', label = 'Water ($5)' } } })
+            if pick then aiLib.callAction('myshop:buy', { pick }, { fallback = 'BUY_FAILED' }) end
+        end)
+    end,
+})
+```
+
+<Callout type="error">
+Никогда не ждите внутри задачи `aiLib.every`: все задачи вашего ресурса делят один поток, поэтому `Wait` в одной задерживает все остальные. Вместо этого запустите поток из задачи.
+</Callout>
+
+## Векторы и таблицы Lua
+
+В Lua есть настоящие векторные типы (`vector3(x, y, z)`, `vector4(x, y, z, w)`) и обычные таблицы (`{ x = 1.0, y = 2.0, z = 3.0 }`). У обоих есть `.x`, `.y`, `.z`, поэтому код, который только читает эти поля, работает с любым из них.
+
+- **Функции aiLib принимают и то, и другое.** Везде, где на странице написано `Vec3`, передавайте `vector3` или таблицу с `x`, `y`, `z`. `Vec4` это `vector4` (направление в `w`) или таблица с `x`, `y`, `z` и `heading` (или `w`).
+- **aiLib возвращает векторы там, где их ожидает Lua**: `aiLib.player.coords()` и `aiLib.raycast(...)` дают `vector3`, поэтому с ними работает `#(a - b)`.
+- **При переходе в TypeScript вектор становится массивом.** `vector3`, отправленный в экспорт или колбэк ресурса на TypeScript, приходит как `[x, y, z]`. Принимают его только функции чтения, созданные для этого (`readVec3` / `readVec4` из lib). Когда вы вызываете экспорт ai-core или другого скрипта `ai-*` с точкой, передавайте обычную таблицу: `{ x = pos.x, y = pos.y, z = pos.z }`. aiLib сам делает это преобразование там, где передаёт точку дальше (`face` у `progressFor`).
+
+```lua title="Lua"
+local pos = GetEntityCoords(PlayerPedId())          -- vector3
+local point = { x = pos.x, y = pos.y, z = pos.z }  -- безопасно для любого экспорта или колбэка
+```
+
+Другие отличия от страниц TypeScript:
+
+| TypeScript | Lua |
+| --- | --- |
+| `null`, `undefined` | `nil` |
+| Массив `["a", "b"]` (индексы с 0) | Список `{ 'a', 'b' }` (индексы с 1) |
+| `options.timeout` | `options.timeout` (те же имена полей) |
+| Метод `points.add(...)` | Метод через двоеточие: `points:add(...)` |
+| Класс `new Points()` | `aiLib.Points.new()` |
+| `Promise<T>` | Само значение, внутри потока |
+| `callback args: unknown[]` | Список: `{ id, count }`. `nil` в середине обрезает список, поэтому необязательные значения ставьте в конец. |
+
+## Колбэки между языками
+
+`aiLib.triggerServerCallback` / `aiLib.onClientCallback` (и обратная пара) используют те же имена событий и те же данные, что и библиотека на TypeScript. Клиент на Lua может вызвать `onClientCallback` сервера на TypeScript, а клиент на TypeScript может вызвать `aiLib.onClientCallback` сервера на Lua. Серверные действия отвечают тем же [ActionResult](/ru/docs/developers/api/types#actionresult) (`{ ok = true }` или `aiLib.fail('KEY')`), который `aiLib.callAction` показывает за вас.
+
+## JavaScript без сборщика
+
+Обычный ресурс на JavaScript (без шага сборки) получает тот же глобальный `aiLib` с помощниками `/shared` из библиотеки на TypeScript плюс помощники `/client` или `/server`:
+
+```lua title="fxmanifest.lua"
+dependency 'ai-lib'
+client_script '@ai-lib/dist/client.js'
+server_script '@ai-lib/dist/server.js'
+```
+
+```js title="client.js"
+aiLib.notify("Hello from JavaScript", "success");
+```
+
+Эти функции полностью совпадают со страницами TypeScript (Promise, `null`, массивы).
+
+## Чего нет на стороне Lua
+
+У этих помощников TypeScript нет аналога в Lua: админ-панель (`AdminPanel`, `AdminWorld`, `RecordObjects`), `PendingActions`, `PlayerMap`, `Cooldowns`, `KeyedCooldowns` (с этим справляется таблица Lua), строгие функции чтения ввода (проверяйте через `type()` и `math.type()`), помощники для позиций (в Lua есть векторная математика), классы state bag (Lua сам читает `Entity(e).state`; пишет сервер), функции чтения свойств транспорта и помощники для базы данных (ресурсы на Lua используют oxmysql API из ai-mysql).
+
+## Страницы
+
+<Cards>
+  <Card title="Помощники только для Lua" href="/ru/docs/developers/api/lua/reference" description="aiLib.playerData, aiLib.online, aiLib.isAdmin и таблица aiLib.menu: функции, у которых форма в Lua отличается от TypeScript." />
+  <Card title="Все функции aiLib" href="/ru/docs/developers/api/lua/functions" description="Полный список со стороной, признаком ожидания и страницей, где описана каждая функция." />
+</Cards>

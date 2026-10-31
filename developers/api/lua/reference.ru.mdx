@@ -1,0 +1,387 @@
+---
+title: Помощники только для Lua
+description: "aiLib.playerData, aiLib.online, aiLib.isAdmin и таблица aiLib.menu: функции aiLib, у которых форма в Lua отличается от библиотеки на TypeScript."
+icon: FileCode
+---
+
+Большинство функций `aiLib` являются Lua-аналогами функций TypeScript и описаны рядом с ними, на вкладке Lua (см. [Все функции aiLib](/ru/docs/developers/api/lua/functions)). У функций на этой странице в Lua другое имя, форма или поведение, поэтому они описаны здесь.
+
+## Клиент: данные игрока
+
+### aiLib.playerData.get
+
+Последнее значение, которое ai-core прислал для одного ключа данных локального игрока. Если с момента запуска вашего ресурса ничего не пришло, функция один раз спрашивает ai-core (`GetPlayerData`) и запоминает ответ.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```lua title="Lua"
+local value = aiLib.playerData.get(key)
+```
+
+**TypeScript:** те же данные через `getPlayerData(key)` (см. [Членство и данные игрока](/ru/docs/developers/api/lib-client/membership)).
+
+#### Параметры
+
+<TypeTable
+  type={{
+    key: { type: "'character' | 'money' | 'jobs' | 'duty' | 'job' | 'gangs' | 'activeGang' | 'metadata'", description: 'Ключ [AiPlayerData](/ru/docs/developers/api/types#aiplayerdata).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Значение: таблица для `character`, `money` (`{ cash = 500, bank = 5000 }`), `jobs`, `job`, `gangs` и `metadata`; строка или `nil` для `duty` и `activeGang`. `nil`, пока персонаж не загружен или ai-core не запущен.
+
+#### Пример
+
+```lua title="client.lua"
+RegisterCommand('cash', function()
+    local money = aiLib.playerData.get('money') or {}
+    aiLib.notify(('Cash: $%s'):format(aiLib.numbers.groupDigits(money.cash or 0)), 'info')
+end, false)
+```
+
+### aiLib.playerData.onChange
+
+Выполняет функцию каждый раз, когда ai-core присылает новое значение одного ключа для локального игрока (смена работы, деньги, заступление на дежурство). Для `money` и `metadata` ai-core присылает только изменённые записи; aiLib объединяет их, поэтому ваш обработчик всегда получает всю таблицу.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```lua title="Lua"
+aiLib.playerData.onChange(key, function(value) end)
+```
+
+**TypeScript:** `onPlayerData(key, handler)` (см. [Членство и данные игрока](/ru/docs/developers/api/lib-client/membership)).
+
+#### Параметры
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'Ключ `AiPlayerData` (см. `get` выше).', required: true },
+    handler: { type: 'fun(value: any)', description: 'Получает новое значение. Вызывается после каждой отправки, в том числе при загрузке персонажа.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. Удалить обработчик нельзя; он исчезает вместе с вашим ресурсом.
+
+#### Пример
+
+```lua title="client.lua"
+aiLib.playerData.onChange('duty', function(job)
+    if job == 'police' then
+        aiLib.notify('You are now on duty', 'success')
+    end
+end)
+```
+
+## Сервер: игроки онлайн
+
+`aiLib.online` читает загруженных игроков через экспорты ai-core, один вызов экспорта на одно чтение. Он предназначен для поиска в момент действия (команда, колбэк), а не для каждого тика. `online` в TypeScript держит локальное зеркало с большим числом функций чтения и другой формой результатов (см. [Игроки](/ru/docs/developers/api/lib-server/players)).
+
+### aiLib.online.character
+
+Загруженный персонаж игрока.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local character = aiLib.online.character(src)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Таблица [CharacterInfo](/ru/docs/developers/api/types#characterinfo) (`id`, `citizenid`, `firstname`, `lastname`, `birthdate`, `sex`, `nationality`...) или `nil`, если у игрока не загружен персонаж.
+
+#### Пример
+
+```lua title="server.lua"
+aiLib.addCommand('whoami', { help = 'Shows your character id' }, function(source)
+    local character = aiLib.online.character(source)
+    if not character then return end
+    aiLib.notify(source, ('Character #%d (%s)'):format(character.id, character.citizenid), 'info')
+end)
+```
+
+### aiLib.online.name
+
+"Имя Фамилия" персонажа, иначе имя игрока в FiveM.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local name = aiLib.online.name(src, fallback)
+```
+
+**TypeScript:** `online.name(source, { fallback })` принимает таблицу опций вместо булева значения.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока.', required: true },
+    fallback: { type: 'boolean', description: '`false`: вернуть `""` вместо имени FiveM, если персонаж не загружен.', default: 'true' },
+  }}
+/>
+
+#### Возвращает
+
+`string`: имя персонажа, иначе имя FiveM (или `""` при `fallback = false` либо если игрок ушёл).
+
+#### Пример
+
+```lua title="server.lua"
+print(('%s opened the shop'):format(aiLib.online.name(source)))
+```
+
+### aiLib.online.jobs
+
+Все работы игрока, на дежурстве или нет.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local jobs = aiLib.online.jobs(src)
+```
+
+**TypeScript:** `online.jobs(source)` возвращает только **имена** работ; Lua возвращает таблицы членства.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Список таблиц [JobMembership](/ru/docs/developers/api/types#jobmembership) (`{ job = 'police', grade = 2 }`). Пустой список, если работ нет или нет персонажа.
+
+#### Пример
+
+```lua title="server.lua"
+for _, membership in ipairs(aiLib.online.jobs(source)) do
+    print(membership.job, membership.grade)
+end
+```
+
+### aiLib.online.gangs
+
+Все банды игрока.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local gangs = aiLib.online.gangs(src)
+```
+
+**TypeScript:** `online.gangs(source)` возвращает только имена банд.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Список таблиц [GangMembership](/ru/docs/developers/api/types#gangmembership) (`{ gang = 'ballas', grade = 0 }`) или пустой список.
+
+#### Пример
+
+```lua title="server.lua"
+local inAGang = #aiLib.online.gangs(source) > 0
+```
+
+### aiLib.online.jobGrade
+
+Ранг игрока в одной работе.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local grade = aiLib.online.jobGrade(src, job)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока.', required: true },
+    job: { type: 'string', description: 'Название работы (`"police"`).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`integer` (0 = самый низкий ранг) или `nil`, если игрок не состоит в этой работе.
+
+#### Пример
+
+```lua title="server.lua"
+local grade = aiLib.online.jobGrade(source, 'police')
+if not grade or grade < 2 then return aiLib.fail('NOT_ALLOWED') end
+```
+
+### aiLib.online.gangGrade
+
+Ранг игрока в одной банде.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local grade = aiLib.online.gangGrade(src, gang)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока.', required: true },
+    gang: { type: 'string', description: 'Название банды (`"ballas"`).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`integer` или `nil`, если игрок не состоит в этой банде.
+
+#### Пример
+
+```lua title="server.lua"
+local isBoss = (aiLib.online.gangGrade(source, 'ballas') or -1) >= 3
+```
+
+### aiLib.online.dutyJob
+
+Работа, на дежурстве которой находится игрок.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local job = aiLib.online.dutyJob(src)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Название работы или `nil`, если игрок не на дежурстве.
+
+#### Пример
+
+```lua title="server.lua"
+if aiLib.online.dutyJob(source) ~= 'police' then return aiLib.fail('NOT_ON_DUTY') end
+```
+
+### aiLib.online.sources
+
+Серверные id всех игроков с загруженным персонажем.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local players = aiLib.online.sources()
+```
+
+#### Возвращает
+
+Список серверных id (пустой, если никто не загружен или ai-core не запущен).
+
+#### Пример
+
+```lua title="server.lua"
+for _, src in ipairs(aiLib.online.sources()) do
+    if aiLib.online.dutyJob(src) == 'police' then
+        aiLib.notify(src, 'Robbery in progress', 'warning')
+    end
+end
+```
+
+<Callout type="warn">
+Каждый вызов является вызовом экспорта ai-core. В цикле по всем игрокам читайте нужное один раз на игрока и никогда не делайте этого каждый кадр. Чтобы узнать «сколько на дежурстве», читайте глобальное состояние `ai:duty:<job>` (`GlobalState['ai:duty:police']`).
+</Callout>
+
+## Сервер: права
+
+### aiLib.isAdmin
+
+Является ли игрок администратором ai-core (ACE `ai.admin`) или есть ли у него указанный вами ACE.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```lua title="Lua"
+local allowed = aiLib.isAdmin(src, ace)
+```
+
+**TypeScript:** `isAdmin(ace?)` там является **guard-условием** для `onClientCallback` / `onClientEvent` (см. [Ввод от клиента](/ru/docs/developers/api/lib-server/client-input)). В Lua защищайте колбэк его опцией `ace` или вызывайте `aiLib.isAdmin` сами.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'integer', description: 'Серверный id игрока. `0` (консоль сервера) здесь никогда не считается администратором.', required: true },
+    ace: { type: 'string', description: 'ACE для проверки.', default: "'ai.admin'" },
+  }}
+/>
+
+#### Возвращает
+
+`true`, если у игрока есть этот ACE, иначе `false`.
+
+#### Пример
+
+```lua title="server.lua"
+RegisterCommand('fixall', function(source)
+    if not aiLib.isAdmin(source) then return end
+    -- здесь работа только для администраторов
+end, false)
+```
+
+## Клиент: таблица menu
+
+### aiLib.menu
+
+Диалоги собраны в одной таблице. Имена верхнего уровня это те же функции, оставленные для коротких вызовов:
+
+| В `aiLib.menu` | То же, что | Ждёт | Ответ |
+| --- | --- | --- | --- |
+| `menu.show(request, listeners?)` | (только здесь) | да | `id` выбранного пункта, `'__back'` для кнопки «назад» в подменю или `nil`, если меню закрыто. |
+| `menu.input(request)` | `aiLib.input(request)` | да | Таблица значений по `name` поля или `nil`, если окно закрыто. |
+| `menu.itemPicker(request)` | `aiLib.itemPicker(request)` | да | Список `{ name, count }` или `nil`. Только для инструментов администратора. |
+| `menu.skillCheck(difficulty, keys?)` | `aiLib.skillCheck(difficulty, keys?)` | да | `true`, если пройдены все этапы. |
+| `menu.lockpick(options?)` | `aiLib.lockpick(options?)` | да | `'opened'`, `'broken'` или `'cancelled'`. |
+
+Формы запросов: [MenuRequest](/ru/docs/developers/api/types#menurequest), [InputRequest](/ru/docs/developers/api/types#inputrequest), [ItemPickerRequest](/ru/docs/developers/api/types#itempickerrequest) и [SkillDifficulty](/ru/docs/developers/api/types#skilldifficulty). Все опции и обработчики описаны вместе с аналогами на TypeScript на странице [Общий интерфейс](/ru/docs/developers/api/lib-client/ui).
+
+```lua title="client.lua"
+RegisterCommand('fine', function()
+    local values = aiLib.input({
+        title = 'Write a fine',
+        confirm = 'Send',
+        fields = {
+            { name = 'amount', label = 'Amount', type = 'number', min = 1, max = 10000 },
+            { name = 'reason', label = 'Reason', type = 'text', maxLength = 80 },
+        },
+    })
+    if values then aiLib.callAction('mypolice:fine', { values.amount, values.reason }, { fallback = 'FINE_FAILED' }) end
+end, false)
+```

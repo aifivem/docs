@@ -1,0 +1,207 @@
+---
+title: Ключи от транспорта
+description: Выдавать, забирать и проверять ключи от транспорта через тот скрипт ключей, который использует сервер.
+icon: KeyRound
+---
+
+Каждый вызов ключей идёт через ai-core, а не через собственные экспорты скрипта ключей (включая ai-vehiclekeys). ai-core передаёт его **активной системе ключей**: той, что выбрана в настройке панели **Key script**, или первой запущенной. Когда ни один скрипт ключей не работает, каждый игрок считается владельцем всех ключей.
+
+**Транспорт** задаётся либо серверным хэндлом сущности (число, которое возвращает `CreateVehicleServerSetter` или `spawnVehicle`), либо текстом номера. Номер сначала обрезается по краям и переводится в верхний регистр, поэтому `" ab12cde "` и `"AB12CDE"` - один и тот же ключ.
+
+У каждого ключа есть **назначение**, которое сообщает системе ключей, зачем игрок его получает. Некоторые системы ключей обрабатывают их по-разному (купленный транспорт получает новый предмет-ключ, рабочий транспорт - ключ, закреплённый в замке зажигания). См. [KeyPurpose](/ru/docs/developers/api/types#keypurpose).
+
+| Назначение | Когда |
+| --- | --- |
+| `purchase` | Игрок теперь владеет транспортом (автосалон, выдача админом): новый ключ, старые копии перестают работать. |
+| `garage` | Личный транспорт, взятый со стоянки: у владельца ключ уже есть. |
+| `job` | Рабочий транспорт на смену. |
+| `rental` | Арендованный транспорт на время аренды. |
+| `temporary` | Всё остальное кратковременное (спавн админом, тест-драйв, транспорт для ограбления). По умолчанию. |
+
+### GiveVehicleKeys
+
+Выдаёт игроку ключи от транспорта.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`vehicleKeys.give`](/ru/docs/developers/api/lib-server/vehicles#vehiclekeysgive) (а [`spawnVehicle({ keysTo, purpose })`](/ru/docs/developers/api/lib-server/vehicles#spawnvehicle) выдаёт их за вас)
+
+```ts title="Сигнатура"
+GiveVehicleKeys(source: number, vehicle: number | string, purpose?: KeyPurpose): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GiveVehicleKeys(source, vehicle, 'rental')
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока, который получает ключи.', required: true },
+    vehicle: { type: 'number | string', description: 'Серверный хэндл сущности транспорта или его номер.', required: true },
+    purpose: { type: 'KeyPurpose', description: 'Зачем игрок их получает. Любое другое значение считается `temporary`.', default: '"temporary"', typeDescription: '"purchase" | "garage" | "job" | "rental" | "temporary"' },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. Вызов ничего не делает, когда сущность транспорта не существует, номер пуст, `source` не число или ни одна система ключей не работает. Ошибка системы ключей записывается в лог, а не бросается.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, spawnVehicle } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const SPAWN = { x: -1023.5, y: -2694.1, z: 13.9, heading: 150 };
+
+onClientCallback("myscript:rentScooter", { lock: true }, async (source) => {
+  if (!core.RemoveMoney(source, "cash", 100, "scooter_rental")) return fail("NOT_ENOUGH_MONEY");
+  const vehicle = await spawnVehicle({ model: "faggio", coords: SPAWN, asker: source });
+  if (!vehicle) {
+    core.AddMoney(source, "cash", 100, "scooter_rental_refund");
+    return fail("SPAWN_FAILED");
+  }
+  core.GiveVehicleKeys(source, vehicle, "rental");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local SPAWN = vector4(-1023.5, -2694.1, 13.9, 150.0)
+
+aiLib.onClientCallback('myscript:rentScooter', function(source)
+  if not exports['ai-core']:RemoveMoney(source, 'cash', 100, 'scooter_rental') then return aiLib.fail('NOT_ENOUGH_MONEY') end
+  local vehicle = aiLib.spawnVehicle({ model = 'faggio', coords = SPAWN, asker = source })
+  if not vehicle then
+    exports['ai-core']:AddMoney(source, 'cash', 100, 'scooter_rental_refund')
+    return aiLib.fail('SPAWN_FAILED')
+  end
+  exports['ai-core']:GiveVehicleKeys(source, vehicle, 'rental')
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+У только что созданного транспорта на сервере нет номера, пока клиент-владелец его не синхронизирует. Передавайте сущность, а не номер, прочитанный сразу после создания; `spawnVehicle` из библиотеки ждёт номер и может сам выдать ключи (`keysTo`, `purpose`).
+</Callout>
+
+### RemoveVehicleKeys
+
+Забирает у игрока ключи от транспорта.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`vehicleKeys.remove`](/ru/docs/developers/api/lib-server/vehicles#vehiclekeysremove)
+
+```ts title="Сигнатура"
+RemoveVehicleKeys(source: number, vehicle: number | string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RemoveVehicleKeys(source, 'AB12CDE')
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    vehicle: { type: 'number | string', description: 'Серверный хэндл сущности транспорта или его номер.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. Те же молчаливые случаи, что и у `GiveVehicleKeys`.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** The rental ended: the keys go, then the scooter. */
+export function endRental(source: number, vehicle: number): void {
+  core.RemoveVehicleKeys(source, vehicle);
+  if (DoesEntityExist(vehicle)) DeleteEntity(vehicle);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function EndRental(source, vehicle)
+  exports['ai-core']:RemoveVehicleKeys(source, vehicle)
+  if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Забирайте ключи до удаления транспорта. Некоторые системы ключей читают номер из сущности, а это не удаётся, когда её уже нет.
+</Callout>
+
+### HasVehicleKeys
+
+Есть ли у игрока ключи от транспорта.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`vehicleKeys.has`](/ru/docs/developers/api/lib-server/vehicles#vehiclekeyshas)
+
+```ts title="Сигнатура"
+HasVehicleKeys(source: number, vehicle: number | string): boolean
+```
+
+```lua title="Lua"
+local has = exports['ai-core']:HasVehicleKeys(source, vehicle)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    vehicle: { type: 'number | string', description: 'Серверный хэндл сущности транспорта или его номер.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда у игрока есть ключи. Также `true`, когда ни одна система ключей не работает, когда система ключей не может ответить на этот вопрос или когда она даёт сбой, поэтому отсутствующий скрипт ключей никогда не блокирует игроков. `false`, когда у игрока нет ключа, сущность транспорта не существует, номер пуст или `source` не число.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, vehicleNearPlayer } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Чтобы открыть багажник машины рядом с игроком, нужны её ключи.
+onClientCallback("myscript:openTrunk", { args: oneArg(readId) }, (source, netId) => {
+  const vehicle = vehicleNearPlayer(source, netId, { metres: 4 });
+  if (!vehicle) return fail("TOO_FAR");
+  if (!core.HasVehicleKeys(source, vehicle)) return fail("NO_KEYS");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:openTrunk', function(source, netId)
+  local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 4 }) -- 0, если не рядом
+  if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:HasVehicleKeys(source, vehicle) then return aiLib.fail('NO_KEYS') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>

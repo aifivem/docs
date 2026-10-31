@@ -1,0 +1,611 @@
+---
+title: Транспорт
+description: "spawnVehicle, vehicleType, randomPlate, ближайший транспорт, сущности по сетевым id от клиента, vehicleKeys, топливо и гаражи."
+icon: Car
+---
+
+```ts title="TypeScript"
+import { spawnVehicle, vehicleKeys, fuel, garages, vehicleFromNet } from "@aicore-fivem/lib/server";
+```
+
+## Спавн
+
+### spawnVehicle
+
+Создаёт сетевой транспорт на сервере и настраивает его одним вызовом: номер, топливо, внешний вид, замок, routing bucket, ключи для нужной цели, водитель и пассажиры. Используйте для каждого транспорта скрипта (рабочий транспорт, аренда, транспорт из гаража, спавн администратором).
+
+**Сторона:** Сервер · **Ждёт:** да (Promise в TypeScript, в Lua приостанавливает поток)
+
+```ts title="Сигнатура"
+spawnVehicle(options: SpawnVehicleOptions): Promise<number | null>
+```
+
+```lua title="Lua"
+local vehicle = aiLib.spawnVehicle(options) -- сущность или nil, вызывайте внутри потока
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    options: { type: "SpawnVehicleOptions", description: "Что спавнить и как настроить. Поля ниже.", required: true },
+  }}
+/>
+
+#### SpawnVehicleOptions
+
+<TypeTable
+  type={{
+    model: { type: "string", description: "Имя модели для спавна (`taxi`, `adder`).", required: true },
+    coords: { type: "{ x: number; y: number; z: number; heading: number }", description: "Где и в какую сторону (направление в градусах). Lua также принимает `vector4` или `{ x, y, z, w }`.", required: true },
+    asker: { type: "number", description: "Игрок, клиент которого сообщает тип спавна и существует ли модель (на клиенте отвечает ai-core). Передайте игрока, который запросил транспорт.", required: false },
+    type: { type: "string", description: "Тип для `CreateVehicleServerSetter`, когда нет `asker`: `automobile`, `bike`, `boat`, `heli`, `plane`, `submarine`, `trailer`, `train`.", default: '"automobile"' },
+    plate: { type: "string", description: "Текст номера, до 8 символов (более длинный урезается). Без него задаётся случайный номер в стиле игры.", required: false },
+    fuel: { type: "number", description: "Уровень топлива от 0 до 100, задаётся через слой топлива ai-core (Lua-аналог пишет state bag `fuel`).", required: false },
+    keysTo: { type: "number", description: "Серверный id игрока, который получает ключи через слой ключей ai-core.", required: false },
+    purpose: { type: '"purchase" | "garage" | "job" | "rental" | "temporary"', typeDescriptionLink: "/ru/docs/developers/api/types#keypurpose", description: "Почему игрок получает ключи. Скрипты ключей ведут себя по-разному в зависимости от цели.", default: '"temporary"' },
+    driver: { type: "number", description: "Серверный id игрока, которого сажают на место водителя.", required: false },
+    seats: { type: "Array<{ source: number; seat: number }>", description: "Игроки, которых сажают на другие места: 0 переднее пассажирское, 1 и 2 задние и так далее.", required: false },
+    props: { type: "VehicleProps", typeDescriptionLink: "/ru/docs/developers/api/types#vehicleprops", description: "Сохранённый внешний вид и тюнинг (транспорт из гаража). ai-core применяет его на клиенте, которому принадлежит сущность.", required: false },
+    setup: { type: "VehicleSetup", typeDescriptionLink: "/ru/docs/developers/api/types#vehiclesetup", description: "Дополнительно для нового транспорта: `maxed` (каждый мод производительности на максимальном уровне), `colors` (индексы цветов GTA), `primary` / `secondary` (RGB 0-255), `livery`, `windowTint`, `dirt` (от 0 чистый до 15), `engineOn`.", required: false },
+    locked: { type: "boolean", description: "Двери заперты для всех; ключи их отпирают.", default: "false" },
+    bucket: { type: "number", description: "Routing bucket, в котором находится транспорт. Игроки, которых вы сажаете, должны быть в том же bucket.", required: false },
+    persistent: { type: "boolean", description: "Транспорт остаётся, когда клиент-владелец уходит (orphan mode 2).", default: "true" },
+    bags: { type: "Record<string, unknown>", description: "Реплицируемые значения state bag, задаваемые сразу после создания.", required: false },
+  }}
+/>
+
+#### Возвращает
+
+`Promise<number | null>`: хэндл сущности транспорта. `null`, если модель не существует (так сказал клиент `asker`), сущность не создалась за 5 секунд или тип неизвестен.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, spawnVehicle, hasCharacter, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const DEPOT = { x: 895.4, y: -179.3, z: 74.7 };
+
+onClientCallback(
+  "my-taxi:start",
+  async (source) => {
+    const vehicle = await spawnVehicle({
+      model: "taxi",
+      coords: { x: 899.1, y: -180.6, z: 73.8, heading: 238 },
+      asker: source,
+      keysTo: source,
+      purpose: "job",
+      driver: source,
+      fuel: 100,
+      setup: { dirt: 0 },
+    });
+    if (!vehicle) return fail("SPAWN_FAILED");
+    return { ok: true, netId: NetworkGetNetworkIdFromEntity(vehicle) };
+  },
+  { guards: [hasCharacter(), near(DEPOT, 5)], lock: true },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local DEPOT = vector3(895.4, -179.3, 74.7)
+
+aiLib.onClientCallback('my-taxi:start', function(source)
+    if #(GetEntityCoords(GetPlayerPed(source)) - DEPOT) > 5.0 then return aiLib.fail('TOO_FAR') end
+    local vehicle = aiLib.spawnVehicle({
+        model = 'taxi',
+        coords = vector4(899.1, -180.6, 73.8, 238.0),
+        asker = source,
+        keysTo = source,
+        purpose = 'job',
+        driver = source,
+        fuel = 100,
+    })
+    if not vehicle then return aiLib.fail('SPAWN_FAILED') end
+    return { ok = true, netId = NetworkGetNetworkIdFromEntity(vehicle) }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Ключи ждут (до 3 секунд), пока сервер не прочитает номер: до первой синхронизации клиента-владельца сервер читает пустой номер. Посаженных игроков сажают снова в течение до 2 секунд, пока они не сядут. В TypeScript тип модели от одного клиента служит только этому игроку, пока клиент второго игрока не даст тот же ответ; Lua-аналог сохраняет первый полученный ответ.
+</Callout>
+
+### vehicleType
+
+Тип спавна модели, запрошенный у клиента игрока. Используйте, чтобы проверить, что модель существует, прежде чем брать деньги.
+
+**Сторона:** Сервер · **Ждёт:** да (Promise)
+
+```ts title="Сигнатура"
+vehicleType(model: string, asker: number): Promise<string | null>
+```
+
+Lua-аналога нет: `aiLib.spawnVehicle` с `asker` проверяет это и возвращает `nil` для неизвестной модели.
+
+<TypeTable
+  type={{
+    model: { type: "string", description: "Имя модели для спавна.", required: true },
+    asker: { type: "number", description: "Серверный id игрока, клиент которого отвечает.", required: true },
+  }}
+/>
+
+#### Возвращает
+
+`Promise<string | null>`: `automobile`, `bike`, `boat`, `heli`, `plane`, `submarine`, `trailer` или `train`; `null`, если в игре нет такого транспорта или клиент не дал верного ответа. Ответ сохраняется для всех, как только клиенты двух разных игроков совпали в нём, поэтому один модифицированный клиент может сломать только собственные спавны.
+
+#### Пример
+
+```ts
+import { onClientCallback, vehicleType } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readText } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-dealer:buy", { args: oneArg((v) => readText(v, 32)), lock: true }, async (source, model) => {
+  if (!(await vehicleType(model, source))) return fail("UNKNOWN_MODEL");
+  // забираем деньги, затем spawnVehicle(...)
+  return { ok: true };
+});
+```
+
+### randomPlate
+
+Случайный номер, похожий на игровой (две цифры, три буквы, три цифры), или ваш префикс с цифрами после него.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+randomPlate(prefix?: string): string
+```
+
+Lua-аналога нет (`aiLib.spawnVehicle` задаёт случайный номер, если вы его не передали).
+
+<TypeTable
+  type={{
+    prefix: { type: "string", description: "Текст, с которого начинается номер; остальное до 8 символов заполняется цифрами. Длиннее 8 урезается.", required: false },
+  }}
+/>
+
+**Возвращает** номер из 8 символов (`42ABC123` или `TAXI1234` для `randomPlate("TAXI")`). Уникальность не проверяется: проверьте свою таблицу перед сохранением.
+
+```ts
+const plate = randomPlate("RENT");
+```
+
+## Поиск транспорта
+
+### nearestVehicleTo
+
+Ближайший транспорт в пределах `metres` от игрока, который проходит ваш фильтр. Транспорт, в котором сидит игрок, побеждает первым.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+nearestVehicleTo(source: number, metres: number, filter?: (vehicle: number) => boolean): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.nearestVehicleTo(source, metres, filter) -- сущность или 0
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Серверный id игрока.", required: true },
+    metres: { type: "number", description: "Радиус поиска в метрах.", required: true },
+    filter: { type: "(vehicle: number) => boolean", description: "Пропускать транспорт, для которого она отвечает `false` (запертые двери, модель).", required: false },
+  }}
+/>
+
+**Возвращает** сущность транспорта или `0`, если ничего нет.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = nearestVehicleTo(source, 5);
+if (!vehicle) return fail("NO_VEHICLE");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = aiLib.nearestVehicleTo(source, 5.0)
+if vehicle == 0 then return aiLib.fail('NO_VEHICLE') end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Перебирает весь транспорт на сервере: используйте для команд и действий (с ограничением частоты), никогда в тике.
+</Callout>
+
+### nearestVehicleAt
+
+Ближайший транспорт в пределах `metres` от точки. Используйте, чтобы проверить, что место спавна свободно.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+nearestVehicleAt(point: { x: number; y: number; z: number }, metres: number, filter?: (vehicle: number) => boolean): number
+```
+
+Lua-аналога нет.
+
+**Возвращает** сущность транспорта или `0`, если ничего нет. Перебирает весь транспорт, как `nearestVehicleTo`.
+
+```ts
+const SPOT = { x: 899.1, y: -180.6, z: 73.8 };
+if (nearestVehicleAt(SPOT, 3)) return fail("SPOT_BLOCKED");
+```
+
+## Сущности из ввода клиента
+
+Клиент отправляет сетевой id, а не хэндл сущности. Эти функции превращают сетевой id в живую серверную сущность и проверяют её, поэтому вам никогда не нужно вручную вызывать `NetworkGetEntityFromNetworkId` + `DoesEntityExist` + `GetEntityType`.
+
+### entityFromNet
+
+Живая сущность за сетевым id от клиента.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+entityFromNet(netId: unknown, type?: 1 | 2 | 3): number
+```
+
+Lua-аналога нет (в Lua есть `vehicleFromNet`).
+
+<TypeTable
+  type={{
+    netId: { type: "unknown", description: "Сырое значение от клиента.", required: true },
+    type: { type: "1 | 2 | 3", description: "Нужный тип сущности: 1 пед, 2 транспорт, 3 объект. Любой тип, если не указан.", required: false },
+  }}
+/>
+
+**Возвращает** сущность или `0`, если значение не является положительным целым числом, не сетевое, исчезло или другого типа.
+
+```ts
+const prop = entityFromNet(rawNetId, 3);
+if (!prop) return fail("NOT_FOUND");
+```
+
+### pedFromNet
+
+`entityFromNet(netId, 1)`: живой пед или `0`.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+pedFromNet(netId: unknown): number
+```
+
+Lua-аналога нет.
+
+```ts
+const ped = pedFromNet(rawNetId);
+```
+
+### vehicleFromNet
+
+`entityFromNet(netId, 2)`: живой транспорт или `0`.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+vehicleFromNet(netId: unknown): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.vehicleFromNet(netId) -- сущность или 0
+```
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = vehicleFromNet(rawNetId);
+if (!vehicle) return fail("NO_VEHICLE");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = aiLib.vehicleFromNet(netId)
+if vehicle == 0 then return aiLib.fail('NO_VEHICLE') end
+```
+</Tab>
+</Tabs>
+
+### vehicleNearPlayer
+
+Транспорт за сетевым id от клиента, но только если игрок рядом с ним (или на месте водителя).
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+vehicleNearPlayer(source: number, netId: unknown, options?: { metres?: number; driver?: boolean }): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.vehicleNearPlayer(source, netId, options) -- сущность или 0
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Серверный id игрока.", required: true },
+    netId: { type: "unknown", description: "Сырой сетевой id от клиента.", required: true },
+    "options.metres": { type: "number", description: "Наибольшее расстояние от игрока до транспорта.", default: "5" },
+    "options.driver": { type: "boolean", description: "Требовать, чтобы игрок был на месте водителя, вместо проверки расстояния.", default: "false" },
+  }}
+/>
+
+**Возвращает** транспорт или `0`, если id неверный, транспорт исчез или игрок слишком далеко / не водитель.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onClientCallback("my-tow:hook", { args: oneArg(readId), lock: true }, (source, netId) => {
+  const vehicle = vehicleNearPlayer(source, netId, { metres: 6 });
+  if (!vehicle) return fail("TOO_FAR");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-tow:hook', function(source, netId)
+    local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 6 })
+    if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+## Ключи
+
+`vehicleKeys` работает через слой ключей ai-core: отвечает скрипт ключей, запущенный на сервере (ai-vehiclekeys или другой, выбранный владельцем). Транспорт задаётся хэндлом серверной сущности или номером.
+
+### vehicleKeys.give
+
+Выдаёт игроку ключи от транспорта.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+vehicleKeys.give(source: number, vehicle: number | string, purpose?: KeyPurpose): void
+```
+
+```lua title="Lua"
+aiLib.vehicleKeys.give(source, vehicle, purpose)
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Серверный id игрока.", required: true },
+    vehicle: { type: "number | string", description: "Хэндл серверной сущности или номер.", required: true },
+    purpose: { type: '"purchase" | "garage" | "job" | "rental" | "temporary"', typeDescriptionLink: "/ru/docs/developers/api/types#keypurpose", description: "`purchase`: куплен, новый ключ. `garage`: собственный транспорт, взятый из хранения. `job`: рабочий транспорт. `rental`: аренда. `temporary`: спавн администратором, тест-драйв, ограбление.", default: '"temporary"' },
+  }}
+/>
+
+**Возвращает** `void`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicleKeys.give(source, vehicle, "rental");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.vehicleKeys.give(source, vehicle, 'rental')
+```
+</Tab>
+</Tabs>
+
+### vehicleKeys.remove
+
+Забирает у игрока ключи от транспорта.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+vehicleKeys.remove(source: number, vehicle: number | string): void
+```
+
+```lua title="Lua"
+aiLib.vehicleKeys.remove(source, vehicle)
+```
+
+**Возвращает** `void`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicleKeys.remove(source, "RENT1234");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.vehicleKeys.remove(source, 'RENT1234')
+```
+</Tab>
+</Tabs>
+
+### vehicleKeys.has
+
+Есть ли у игрока ключи.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+vehicleKeys.has(source: number, vehicle: number | string): boolean
+```
+
+```lua title="Lua"
+local has = aiLib.vehicleKeys.has(source, vehicle)
+```
+
+**Возвращает** `boolean`. `true` также, если скрипт ключей не может сказать или никакой не запущен, поэтому не используйте это как единственную защиту чего-то ценного.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (!vehicleKeys.has(source, vehicle)) return fail("NO_KEYS");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if not aiLib.vehicleKeys.has(source, vehicle) then return aiLib.fail('NO_KEYS') end
+```
+</Tab>
+</Tabs>
+
+## Топливо
+
+`fuel` читает и задаёт топливо транспорта (от 0 до 100) через слой топлива ai-core, какой бы скрипт топлива ни был запущен. На сервере Lua-аналога нет: вызывайте экспорты ai-core `GetVehicleFuel` / `SetVehicleFuel`.
+
+### fuel.get
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+fuel.get(vehicle: number): number | null
+```
+
+**Возвращает** уровень топлива серверной сущности транспорта (от 0 до 100) или `null`, если его нет.
+
+```ts
+const level = fuel.get(vehicle) ?? 0;
+```
+
+### fuel.set
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+fuel.set(vehicle: number, level: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Серверная сущность транспорта.", required: true },
+    level: { type: "number", description: "Новый уровень, ограниченный диапазоном 0-100.", required: true },
+  }}
+/>
+
+**Возвращает** `true`, если задано, `false` для неверного транспорта.
+
+```ts
+fuel.set(vehicle, 100);
+```
+
+### fuel.provider
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+fuel.provider(): string | null
+```
+
+**Возвращает** имя ресурса скрипта топлива, который отвечает (`ai-fuel`, `ox_fuel`, `LegacyFuel`...), или `null`, если никакой не запущен.
+
+```ts
+console.log(`fuel through ${fuel.provider() ?? "nothing"}`);
+```
+
+## Гаражи
+
+`garages` работает через слой гаражей ai-core, какой бы скрипт гаражей ни был запущен; каждый скрипт отвечает только на то, что он предоставляет. Lua-аналога нет.
+
+### garages.impound
+
+Отправляет транспорт на штрафстоянку или открывает форму штрафстоянки скрипта гаражей для `by`.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+garages.impound(vehicle: number, by?: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Серверная сущность транспорта.", required: true },
+    by: { type: "number", description: "Серверный id игрока, отправляющего на штрафстоянку (скрипты с формой открывают её этому игроку).", required: false },
+  }}
+/>
+
+**Возвращает** `true`, если скрипт гаражей принял транспорт. `false`, если никто его не принял: удалите транспорт сами.
+
+```ts
+if (!garages.impound(vehicle, source)) DeleteEntity(vehicle);
+```
+
+### garages.store
+
+Ставит транспорт в гараж.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+garages.store(vehicle: number, garage?: string | null, by?: number): boolean
+```
+
+<TypeTable
+  type={{
+    vehicle: { type: "number", description: "Серверная сущность транспорта.", required: true },
+    garage: { type: "string | null", description: "Собственный id гаража в скрипте гаражей.", default: "null" },
+    by: { type: "number", description: "Серверный id игрока, который ставит транспорт.", required: false },
+  }}
+/>
+
+**Возвращает** `true`, если поставлен, `false`, если никто его не принял.
+
+```ts
+if (!garages.store(vehicle, "legion", source)) return fail("STORE_FAILED");
+```
+
+### garages.open
+
+Открывает меню гаража скрипта гаражей для игрока.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+garages.open(source: number, garage?: string | null): boolean
+```
+
+**Возвращает** `true`, если открыто, `false`, если в скрипте нет такого меню.
+
+```ts
+garages.open(source, "pillbox");
+```
+
+### garages.stored
+
+Транспорт игрока в гаражах или на штрафстоянке.
+
+**Сторона:** Сервер · **Ждёт:** да (Promise)
+
+```ts title="Сигнатура"
+garages.stored(source: number): Promise<GaragedVehicle[] | null>
+```
+
+**Возвращает** [`GaragedVehicle[]`](/ru/docs/developers/api/types#garagedvehicle) (`plate`, `model`, `garage`, `impounded`) или `null`, если скрипт не может сказать или ai-core остановлен.
+
+```ts
+const list = await garages.stored(source);
+const impounded = list?.filter((v) => v.impounded).length ?? 0;
+```
+
+### garages.provider
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+garages.provider(): string | null
+```
+
+**Возвращает** скрипт гаражей, который отвечает, или `null`, если никакой не запущен.
+
+```ts
+if (!garages.provider()) console.warn("no garage script runs");
+```

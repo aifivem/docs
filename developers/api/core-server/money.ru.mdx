@@ -1,0 +1,603 @@
+---
+title: Деньги и счета
+description: Читать и менять балансы игрока, счета работ и банд, перемещать деньги между двумя счетами одной транзакцией, читать типы счетов.
+icon: Wallet
+---
+
+У каждого персонажа есть по одному балансу на каждый **тип счёта**. Типы берутся из списка Accounts в админ-панели; на новом сервере есть `cash`, `bank`, `black_money` и `crypto`. У каждой работы и банды тоже есть по одному счёту каждого типа (деньги организации), который изначально пуст.
+
+Как работают деньги в ai-core:
+
+- Суммы - **целые числа** (доллары, без центов). Дробь, `NaN` или число за пределами безопасного диапазона целых в JavaScript отклоняются.
+- Изменение сразу применяется в памяти и записывается в базу данных примерно в течение 50 мс вместе со строкой журнала операций (`ai_core_transactions`). Журнал хранит переданный вами `reason`; без него он хранит имя вызвавшего ресурса.
+- Баланс не может опуститься ниже 0, если у его типа счёта в панели не включено **Can go below zero**.
+- Каждое изменение счёта игрока вызывает серверное событие `ai-core:moneyChanged (src, account, balance, delta, reason)` и доходит до игры самого игрока. См. [События и состояние](/ru/docs/developers/api/events).
+
+### GetMoney
+
+Баланс игрока на одном счёте.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+GetMoney(src: number, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = exports['ai-core']:GetMoney(source, 'bank') -- number или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+    account: { type: 'string', description: 'Имя типа счёта из панели: `cash`, `bank`, `black_money`, `crypto` или добавленный вами.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number | null`: баланс. `null`, когда у игрока нет загруженного персонажа или тип счёта не существует.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:balance", (source) => {
+  const bank = core.GetMoney(source, "bank");
+  if (bank === null) return fail("NO_CHARACTER");
+  return { ok: true, bank };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:balance', function(source)
+  local bank = exports['ai-core']:GetMoney(source, 'bank')
+  if not bank then return aiLib.fail('NO_CHARACTER') end
+  return { ok = true, bank = bank }
+end)
+```
+</Tab>
+</Tabs>
+
+### AddMoney
+
+Добавляет деньги на счёт игрока. Используйте для наград, зарплат, которые платит ваш скрипт, или дохода от продаж.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+AddMoney(src: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:AddMoney(source, 'cash', 250, 'fishing_sale')
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+    account: { type: 'string', description: 'Имя типа счёта (`cash`, `bank`...).', required: true },
+    amount: { type: 'number', description: 'Сколько добавить. Целое число больше 0.', required: true },
+    reason: { type: 'string', description: 'Короткая метка или языковой ключ, который сохраняется в журнале операций (`fishing_sale`).', default: 'имя вызывающего ресурса' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда деньги добавлены. `false`, когда у игрока нет загруженного персонажа, тип счёта не существует или `amount` не целое число больше 0.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, inventory, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const BUYER = { x: -1845.2, y: -1197.4, z: 14.3 };
+
+onClientCallback("myscript:sellFish", { guards: [near(BUYER, 3)], lock: true }, (source) => {
+  const fish = inventory.getItemCount(source, "fish");
+  if (fish < 1) return fail("NO_FISH");
+  if (!inventory.removeItem(source, "fish", fish)) return fail("SELL_FAILED");
+  core.AddMoney(source, "cash", fish * 25, "fishing_sale");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local BUYER = vector3(-1845.2, -1197.4, 14.3)
+
+aiLib.onClientCallback('myscript:sellFish', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - BUYER) > 3.0 then return aiLib.fail('TOO_FAR') end
+  local fish = exports['ai-core']:GetItemCount(source, 'fish')
+  if fish < 1 then return aiLib.fail('NO_FISH') end
+  if not exports['ai-core']:RemoveItem(source, 'fish', fish) then return aiLib.fail('SELL_FAILED') end
+  exports['ai-core']:AddMoney(source, 'cash', fish * 25, 'fishing_sale')
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Чтобы переместить деньги с одного счёта на другой (игрок платит работе, банковский перевод), используйте `TransferMoney`, а не пару `RemoveMoney` + `AddMoney`: перевод - это одна транзакция в базе данных, а пара - два отдельных изменения.
+</Callout>
+
+### RemoveMoney
+
+Забирает деньги со счёта игрока. Используйте, чтобы взять плату за что-либо.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+RemoveMoney(src: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local paid = exports['ai-core']:RemoveMoney(source, 'bank', 500, 'license_fee')
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+    account: { type: 'string', description: 'Имя типа счёта (`cash`, `bank`...).', required: true },
+    amount: { type: 'number', description: 'Сколько забрать. Целое число больше 0.', required: true },
+    reason: { type: 'string', description: 'Короткая метка или языковой ключ, который сохраняется в журнале операций.', default: 'имя вызывающего ресурса' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда деньги забраны. `false`, когда баланса не хватает (а тип счёта не разрешает отрицательный баланс), у игрока нет загруженного персонажа, тип счёта не существует или `amount` не целое число больше 0. При `false` ничего не изменилось.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, inventory, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const PRICE = 500;
+
+onClientCallback("myscript:buyLicense", { lock: true }, (source) => {
+  if (!inventory.canCarryItem(source, "driver_license")) return fail("NO_SPACE");
+  if (!core.RemoveMoney(source, "bank", PRICE, "license_fee")) return fail("NOT_ENOUGH_MONEY");
+  inventory.addItem(source, "driver_license");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local PRICE = 500
+
+aiLib.onClientCallback('myscript:buyLicense', function(source)
+  if not exports['ai-core']:CanCarryItem(source, 'driver_license') then return aiLib.fail('NO_SPACE') end
+  if not exports['ai-core']:RemoveMoney(source, 'bank', PRICE, 'license_fee') then
+    return aiLib.fail('NOT_ENOUGH_MONEY')
+  end
+  exports['ai-core']:AddItem(source, 'driver_license')
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Проверьте то, что может не получиться, до того как забрать деньги (место в инвентаре, наличие товара), или верните деньги через `AddMoney`, когда следующий шаг не удался.
+</Callout>
+
+### SetMoney
+
+Устанавливает баланс игрока в точное значение. Используйте для админских инструментов; игровые функции должны добавлять и забирать.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+SetMoney(src: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetMoney(source, 'cash', 0, 'admin_reset')
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+    account: { type: 'string', description: 'Имя типа счёта (`cash`, `bank`...).', required: true },
+    amount: { type: 'number', description: 'Новый баланс. Целое число; ниже 0 только тогда, когда тип счёта разрешает отрицательный баланс.', required: true },
+    reason: { type: 'string', description: 'Короткая метка или языковой ключ, который сохраняется в журнале операций (строка журнала хранит разницу).', default: 'имя вызывающего ресурса' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда баланс теперь равен `amount` (и тогда, когда уже был). `false`, когда у игрока нет загруженного персонажа, тип счёта не существует, `amount` не целое число или он ниже 0 на счёте, который этого не разрешает.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("setcash", {
+  help: "Sets a player cash",
+  params: [{ name: "id", type: "playerId" }, { name: "amount", type: "number" }],
+  restricted: true,
+}, (_source, args) => {
+  console.log(core.SetMoney(args.id, "cash", args.amount, "admin_set") ? "done" : "refused");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('setcash', {
+  help = 'Sets a player cash',
+  params = { { name = 'id', type = 'playerId' }, { name = 'amount', type = 'number' } },
+  restricted = true,
+}, function(_, args)
+  print(exports['ai-core']:SetMoney(args.id, 'cash', args.amount, 'admin_set') and 'done' or 'refused')
+end)
+```
+</Tab>
+</Tabs>
+
+### GetSharedMoney
+
+Баланс счёта работы или банды (деньги организации).
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет ([`banking.societyBalance`](/ru/docs/developers/api/lib-server/money#bankingsocietybalance) спрашивает банковский слой, который может читать банковский скрипт)
+
+```ts title="Сигнатура"
+GetSharedMoney(ownerType: "job" | "gang", ownerId: string, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = exports['ai-core']:GetSharedMoney('job', 'police', 'bank') -- number или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    ownerType: { type: '"job" | "gang"', description: 'Чей это счёт: работы или банды.', required: true },
+    ownerId: { type: 'string', description: 'Имя работы или банды из панели (`police`, `ballas`).', required: true },
+    account: { type: 'string', description: 'Имя типа счёта (`bank`, `cash`...).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number | null`: баланс. `null`, когда работа, банда или тип счёта не существует (или её счета ещё не загружены).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, online, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Меню босса показывает деньги работы; спрашивать могут только сотрудники этой работы.
+onClientCallback("myscript:societyBalance", (source) => {
+  const job = online.dutyJob(source);
+  if (!job) return fail("NOT_ON_DUTY");
+  return { ok: true, balance: core.GetSharedMoney("job", job, "bank") ?? 0 };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:societyBalance', function(source)
+  local job = exports['ai-core']:GetDutyJob(source)
+  if not job then return aiLib.fail('NOT_ON_DUTY') end
+  return { ok = true, balance = exports['ai-core']:GetSharedMoney('job', job, 'bank') or 0 }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Когда в настройке панели **Job and gang accounts** выбрано **The script's own accounts**, счета `bank` работ и банд живут в этом скрипте: тогда этот экспорт читает баланс скрипта. См. [Банк](/ru/docs/developers/api/core-server/banking).
+</Callout>
+
+### AddSharedMoney
+
+Добавляет деньги на счёт работы или банды.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+AddSharedMoney(
+  ownerType: "job" | "gang",
+  ownerId: string,
+  account: string,
+  amount: number,
+  reason?: string,
+): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:AddSharedMoney('job', 'mechanic', 'bank', 300, 'repair_fee')
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    ownerType: { type: '"job" | "gang"', description: 'Чей это счёт: работы или банды.', required: true },
+    ownerId: { type: 'string', description: 'Имя работы или банды из панели.', required: true },
+    account: { type: 'string', description: 'Имя типа счёта (`bank`...).', required: true },
+    amount: { type: 'number', description: 'Сколько добавить. Целое число больше 0.', required: true },
+    reason: { type: 'string', description: 'Короткая метка или языковой ключ, который сохраняется в журнале операций.', default: 'имя вызывающего ресурса' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда деньги добавлены. `false`, когда работа, банда или счёт не существует или `amount` не целое число больше 0.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** A sale made by an NPC customer goes into the restaurant's account. */
+export function restaurantSale(job: string, price: number): void {
+  if (!core.AddSharedMoney("job", job, "bank", price, "npc_sale"))
+    console.log(`job ${job} has no bank account`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function RestaurantSale(job, price)
+  if not exports['ai-core']:AddSharedMoney('job', job, 'bank', price, 'npc_sale') then
+    print(('job %s has no bank account'):format(job))
+  end
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Когда игрок платит работе, используйте `TransferMoney` со счёта игрока на счёт работы: одна транзакция, обе строки журнала.
+</Callout>
+
+### RemoveSharedMoney
+
+Забирает деньги со счёта работы или банды.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+RemoveSharedMoney(
+  ownerType: "job" | "gang",
+  ownerId: string,
+  account: string,
+  amount: number,
+  reason?: string,
+): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RemoveSharedMoney('job', 'police', 'bank', 2000, 'equipment')
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    ownerType: { type: '"job" | "gang"', description: 'Чей это счёт: работы или банды.', required: true },
+    ownerId: { type: 'string', description: 'Имя работы или банды из панели.', required: true },
+    account: { type: 'string', description: 'Имя типа счёта (`bank`...).', required: true },
+    amount: { type: 'number', description: 'Сколько забрать. Целое число больше 0.', required: true },
+    reason: { type: 'string', description: 'Короткая метка или языковой ключ, который сохраняется в журнале операций.', default: 'имя вызывающего ресурса' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда деньги забраны. `false`, когда баланса не хватает (а отрицательный баланс не разрешён), работа, банда или счёт не существует или `amount` не целое число больше 0.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, online, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Работа заказывает материалы со своего счёта.
+onClientCallback("myscript:orderSupplies", { lock: true }, (source) => {
+  const job = online.dutyJob(source);
+  if (!job) return fail("NOT_ON_DUTY");
+  if (!core.RemoveSharedMoney("job", job, "bank", 1500, "supplies")) return fail("SOCIETY_NO_MONEY");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:orderSupplies', function(source)
+  local job = exports['ai-core']:GetDutyJob(source)
+  if not job then return aiLib.fail('NOT_ON_DUTY') end
+  if not exports['ai-core']:RemoveSharedMoney('job', job, 'bank', 1500, 'supplies') then
+    return aiLib.fail('SOCIETY_NO_MONEY')
+  end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### TransferMoney
+
+Перемещает деньги с одного счёта на другой **одной транзакцией в базе данных** с обеими строками журнала. Каждая сторона может быть счётом загруженного игрока или счётом работы или банды. Используйте для каждого платежа между двумя счетами: игрок платит бизнесу, банковский перевод, взнос в организацию.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`money.transfer`](/ru/docs/developers/api/lib-server/money#moneytransfer)
+
+```ts title="Сигнатура"
+TransferMoney(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:TransferMoney(
+  { source = source, account = 'bank' },
+  { owner = 'job', id = 'mechanic', account = 'bank' },
+  750, 'repair', 0)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    from: { type: 'MoneyRef', description: 'Счёт, который платит. Он же платит `fee`.', required: true, typeDescription: '{ source: number; account: string } | { owner: "job" | "gang"; id: string; account: string }' },
+    to: { type: 'MoneyRef', description: 'Счёт, который получает `amount`.', required: true, typeDescription: '{ source: number; account: string } | { owner: "job" | "gang"; id: string; account: string }' },
+    amount: { type: 'number', description: 'Сколько получает `to`. Целое число больше 0.', required: true },
+    reason: { type: 'string', description: 'Короткая метка или языковой ключ, который сохраняется в обеих строках журнала.', default: 'имя вызывающего ресурса' },
+    fee: { type: 'number', description: 'Дополнительная сумма, которую платит `from` и не получает никто (банковская комиссия). Целое число, 0 или больше.', default: '0' },
+  }}
+/>
+
+`MoneyRef` - это `{ source, account }` для счёта загруженного игрока или `{ owner, id, account }` для счёта работы или банды. См. [MoneyRef](/ru/docs/developers/api/types#moneyref).
+
+#### Возвращает
+
+`boolean`: `true`, когда `from` заплатил `amount + fee`, а `to` получил `amount`. `false`, когда счёт отсутствует (игрок не загружен, неизвестная работа, неизвестный тип счёта), обе стороны - один и тот же счёт, `from` не может заплатить `amount + fee`, `amount` не целое число больше 0 или `fee` не целое число от 0. При `false` ничего не изменилось.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readInt } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Взнос через банкомат на счёт собственной банды игрока, с комиссией 2%.
+onClientCallback(
+  "myscript:gangDeposit",
+  { args: ([amount]) => { const n = readInt(amount, 1, 1_000_000); return n === null ? null : [n]; }, lock: true },
+  (source, amount) => {
+    const gang = core.GetActiveGang(source);
+    if (!gang) return fail("NO_GANG");
+    const fee = Math.ceil(amount * 0.02);
+    const ok = core.TransferMoney(
+      { source, account: "bank" },
+      { owner: "gang", id: gang, account: "bank" },
+      amount, "gang_deposit", fee,
+    );
+    return ok ? { ok: true } : fail("NOT_ENOUGH_MONEY");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:gangDeposit', function(source, amount)
+  if math.type(amount) ~= 'integer' or amount < 1 or amount > 1000000 then return aiLib.fail('BAD_AMOUNT') end
+  local gang = exports['ai-core']:GetActiveGang(source)
+  if not gang then return aiLib.fail('NO_GANG') end
+  local fee = math.ceil(amount * 0.02)
+  local ok = exports['ai-core']:TransferMoney(
+    { source = source, account = 'bank' },
+    { owner = 'gang', id = gang, account = 'bank' },
+    amount, 'gang_deposit', fee)
+  if not ok then return aiLib.fail('NOT_ENOUGH_MONEY') end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Обе стороны вызывают своё обычное событие изменения (сторона игрока вызывает `ai-core:moneyChanged`). Обеими сторонами могут быть два игрока: `{ source: a, account: "bank" }` в `{ source: b, account: "bank" }`.
+</Callout>
+
+### GetAccountTypes
+
+Все типы счетов из списка Accounts в панели, с подписью, начальной суммой и тем, может ли баланс уходить в минус. Используйте, чтобы построить меню счетов или проверить имя.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+GetAccountTypes(): Record<string, AccountTypeDefinition>
+```
+
+```lua title="Lua"
+local types = exports['ai-core']:GetAccountTypes() -- таблица с ключами по имени счёта
+```
+
+#### Параметры
+
+Нет.
+
+#### Возвращает
+
+`Record<string, AccountTypeDefinition>`: копия с ключами по имени счёта (`cash`, `bank`...). У каждого значения есть `label` (видят игроки), `start` (что получает новый персонаж) и `allowNegative`. См. [AccountTypeDefinition](/ru/docs/developers/api/types#accounttypedefinition).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Экран кошелька показывает каждый счёт с подписью и балансом.
+onClientCallback("myscript:wallet", (source) => {
+  const rows = Object.entries(core.GetAccountTypes()).map(([name, type]) => ({
+    name,
+    label: type.label,
+    balance: core.GetMoney(source, name) ?? 0,
+  }));
+  return { ok: true, rows };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:wallet', function(source)
+  local rows = {}
+  for name, accountType in pairs(exports['ai-core']:GetAccountTypes()) do
+    rows[#rows + 1] = { name = name, label = accountType.label, balance = exports['ai-core']:GetMoney(source, name) or 0 }
+  end
+  return { ok = true, rows = rows }
+end)
+```
+</Tab>
+</Tabs>

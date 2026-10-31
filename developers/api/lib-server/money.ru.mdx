@@ -1,0 +1,297 @@
+---
+title: Деньги и банк
+description: "money.transfer между двумя счетами, банковский скрипт через ai-core и счета через тот скрипт счетов, который запущен."
+icon: Wallet
+---
+
+```ts title="TypeScript"
+import { money, banking, billing } from "@aicore-fivem/lib/server";
+```
+
+Изменения одного счёта игрока (добавить, снять, прочитать баланс) это экспорты ai-core (`AddMoney`, `RemoveMoney`, `GetMoney`; см. [Серверные экспорты ai-core](/ru/docs/developers/api/core-server)). Lib добавляет то, что требует изменения более одного счёта, а также слои банка и счетов.
+
+## money
+
+### money.transfer
+
+Переводит деньги с одного счёта на другой в одной транзакции базы данных, с записью в журнале на обеих сторонах. Используйте для всего, где деньги не должны появиться или исчезнуть на полпути: оплата другому игроку, премия от работы, сбор.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+Lua-аналога нет: вызывайте экспорт ai-core `exports['ai-core']:TransferMoney(from, to, amount, reason, fee)`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    from: { type: "MoneyRef", typeDescriptionLink: "/ru/docs/developers/api/types#moneyref", description: "Счёт плательщика: `{ source, account }` игрока (`account`: `cash`, `bank`...) или `{ owner: \"job\" | \"gang\", id, account }` работы / банды.", required: true },
+    to: { type: "MoneyRef", typeDescriptionLink: "/ru/docs/developers/api/types#moneyref", description: "Счёт получателя, та же форма.", required: true },
+    amount: { type: "number", description: "Сколько получает `to`: целое число, 1 или больше.", required: true },
+    reason: { type: "string", description: "Записывается в обе строки журнала (`rent:apartment_3`).", required: false },
+    fee: { type: "number", description: "Дополнительная целая сумма, которую также платит `from`. Она уходит из экономики (никто её не получает).", default: "0" },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если обе строки записаны. `false`, если сумма не является целым числом, счёт отсутствует, оба счёта совпадают или `from` не может заплатить `amount` плюс `fee`.
+
+#### Пример
+
+```ts
+import { onClientCallback, money, nearestPlayerTo, notify } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-cash:give", { args: oneArg((v) => readInt(v, 1, 100_000)), lock: true }, (source, amount) => {
+  const target = nearestPlayerTo(source, 2);
+  if (target === null) return fail("NOBODY_NEAR");
+  if (!money.transfer({ source, account: "cash" }, { source: target, account: "cash" }, amount, "give:cash"))
+    return fail("NOT_ENOUGH_CASH");
+  notify(target, `You received $${amount}`, "success");
+  return { ok: true };
+});
+```
+
+## banking
+
+`banking` общается с банковским скриптом через банковский слой ai-core. Сами деньги работы всегда перемещаются через `money` или экспорты ai-core.
+
+### banking.open
+
+Открывает экран банковского скрипта для игрока.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+banking.open(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.banking.open(source)
+```
+
+**Возвращает** `true`, если открыт. `false`, если скрипт нельзя открыть извне или никакой не запущен.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onClientCallback("my-atm:open", (source) => (banking.open(source) ? { ok: true } : fail("BANK_UNAVAILABLE")));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-atm:open', function(source)
+    if not aiLib.banking.open(source) then return aiLib.fail('BANK_UNAVAILABLE') end
+    return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### banking.societyBalance
+
+Баланс общества работы, для отображения. В режиме счёта `core` ai-core это счёт работы в ai-core; в режиме `own` собственный счёт банковского скрипта.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+banking.societyBalance(job: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.banking.societyBalance(job) -- number или nil
+```
+
+**Возвращает** баланс или `null` (в Lua `nil`), если никакой скрипт не запущен или скрипт его не хранит.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const balance = banking.societyBalance("mechanic") ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local balance = aiLib.banking.societyBalance('mechanic') or 0
+```
+</Tab>
+</Tabs>
+
+### banking.provider
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+banking.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.banking.provider()
+```
+
+**Возвращает** банковский скрипт, который использует слой, или `null`.
+
+```ts
+console.log(`banking through ${banking.provider() ?? "nothing"}`);
+```
+
+## billing
+
+`billing` отправляет счета через тот скрипт счетов, который запущен; без него используются собственные счета ai-core (игрок платит из списка на экране, деньги перемещаются при оплате). Тексты уже переведены.
+
+### billing.send
+
+Отправляет счёт от работы (штрафы, плата за услуги) или от игрока.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+billing.send(bill: BillRequest): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.send(bill)
+```
+
+#### BillRequest
+
+<TypeTable
+  type={{
+    to: { type: "number", description: "Серверный id игрока, который его получает. Укажите `to` или `toCitizenid`.", required: false },
+    toCitizenid: { type: "string", description: "Персонаж, который его получает, по citizen id, онлайн или офлайн. Офлайн-персонаж получает его только через собственные счета ai-core; скрипту счетов нужен игрок онлайн.", required: false },
+    amount: { type: "number", description: "Целые доллары.", required: true },
+    label: { type: "string", description: "За что счёт (`Speeding`).", required: true },
+    from: { type: "number", description: "Серверный id игрока, выставившего счёт (полицейский, механик). Счёт без `job` оплачивается этому игроку.", required: false },
+    job: { type: "string", description: "Работа, на счёт которой поступает платёж. Без неё счёт личный, и `from` обязателен.", required: false },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если отправлен, `false`, если неверный или отклонён.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { billing, nearestPlayerTo, online } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+function fine(officer: number, amount: number) {
+  if (!online.onDutyIn(officer, ["police"])) return fail("NOT_ON_DUTY");
+  const target = nearestPlayerTo(officer, 3);
+  if (target === null) return fail("NOBODY_NEAR");
+  return billing.send({ to: target, amount, label: "Speeding", from: officer, job: "police" })
+    ? { ok: true }
+    : fail("BILL_FAILED");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function fine(officer, amount)
+    if aiLib.online.dutyJob(officer) ~= 'police' then return aiLib.fail('NOT_ON_DUTY') end
+    local target = aiLib.nearestPlayerTo(officer, 3.0)
+    if not target then return aiLib.fail('NOBODY_NEAR') end
+    if not aiLib.billing.send({ to = target, amount = amount, label = 'Speeding', from = officer, job = 'police' }) then
+        return aiLib.fail('BILL_FAILED')
+    end
+    return { ok = true }
+end
+```
+</Tab>
+</Tabs>
+
+### billing.unpaid
+
+Неоплаченные счета игрока.
+
+**Сторона:** Сервер · **Ждёт:** да (Promise в TypeScript, в Lua приостанавливает поток)
+
+```ts title="Сигнатура"
+billing.unpaid(source: number): Promise<UnpaidBill[] | null>
+```
+
+```lua title="Lua"
+local bills = aiLib.billing.unpaid(source) -- table[] или nil, вызывайте внутри потока
+```
+
+**Возвращает** [`UnpaidBill[]`](/ru/docs/developers/api/types#unpaidbill) (`id`, `label`, ещё не оплаченная `amount`, `sender`) или `null`, если скрипт счетов не умеет их перечислять.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const bills = await billing.unpaid(source);
+const owed = bills?.reduce((sum, bill) => sum + bill.amount, 0) ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local bills = aiLib.billing.unpaid(source) or {}
+    local owed = 0
+    for _, bill in ipairs(bills) do owed = owed + bill.amount end
+    print(owed)
+end)
+```
+</Tab>
+</Tabs>
+
+### billing.pay
+
+Игрок оплачивает один из своих неоплаченных счетов.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+billing.pay(source: number, id: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.pay(source, id)
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Серверный id плательщика.", required: true },
+    id: { type: "string", description: "`id` счёта из `unpaid`.", required: true },
+  }}
+/>
+
+**Возвращает** `true`, если оплачен. `false`, если отклонено (не хватает денег, неизвестный счёт) или скрипт счетов принимает оплату только на своём экране.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (!billing.pay(source, billId)) return fail("PAY_FAILED");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if not aiLib.billing.pay(source, billId) then return aiLib.fail('PAY_FAILED') end
+```
+</Tab>
+</Tabs>
+
+### billing.provider
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+billing.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.billing.provider()
+```
+
+**Возвращает** скрипт счетов, в который уходят счета, `"ai-core"` для собственных счетов ai-core.
+
+```ts
+if (billing.provider() === "ai-core") console.log("using ai-core's own bills");
+```

@@ -1,0 +1,158 @@
+---
+title: Синхронизация погоды и времени
+description: Приостановить синхронизацию погоды и времени сервера в игре одного игрока, пока ваш скрипт задаёт свои (интерьер, сцена), возобновить её и узнать, приостановлена ли она.
+icon: CloudSun
+---
+
+Скрипт погоды (ai-weathersync или сторонний) держит всех игроков на погоде и часах сервера. Когда вашему скрипту нужна своя погода или время на экране одного игрока (тёмный интерьер, редактор персонажа, катсцена), сначала приостановите синхронизацию, иначе скрипт погоды через мгновение перезапишет ваши значения.
+
+Пауза работает с **причинами**, как у HUD: синхронизация стоит, пока задана хотя бы одна причина, и снова идёт, когда снята последняя. Причины принадлежат ресурсу, который их задал, и удаляются, когда он останавливается. ai-core сообщает скрипту погоды через собственное клиентское событие `ai-core:client:worldSync` и через общие события паузы, которые слушают сторонние скрипты погоды (qb-weathersync, cd_easytime, vSync, av_weather). И наоборот: когда скрипт сам отправляет одно из этих событий, ai-core тоже считает его причиной, поэтому возобновление от одного скрипта никогда не завершает паузу другого.
+
+### PauseWorldSync
+
+Приостанавливает синхронизацию погоды и времени в игре этого игрока под причиной вашего ресурса.
+
+**Сторона:** клиент · **Ожидание:** нет
+
+```ts title="Сигнатура"
+PauseWorldSync(reason: string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:PauseWorldSync(reason) -- или aiLib.world.pauseSync(reason)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Название причины паузы (`"interior"`). Снять её может только ваш ресурс. Повторная пауза под тем же именем ничего не меняет.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. `reason`, который не является строкой, игнорируется.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/interior.ts"
+import { world } from "@aicore-fivem/lib/client";
+
+// Тёмная ясная ночь внутри своего интерьера, при выходе возврат к погоде сервера.
+export function enterInterior(): void {
+  world.pauseSync("interior"); // то же, что resourceExport("ai-core").PauseWorldSync("interior")
+  NetworkOverrideClockTime(23, 0, 0);
+  SetWeatherTypeNowPersist("CLEAR");
+}
+
+export function leaveInterior(): void {
+  NetworkClearClockTimeOverride();
+  world.resumeSync("interior");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/interior.lua"
+-- Тёмная ясная ночь внутри своего интерьера, при выходе возврат к погоде сервера.
+local function enterInterior()
+  aiLib.world.pauseSync('interior') -- то же, что exports['ai-core']:PauseWorldSync('interior')
+  NetworkOverrideClockTime(23, 0, 0)
+  SetWeatherTypeNowPersist('CLEAR')
+end
+
+local function leaveInterior()
+  NetworkClearClockTimeOverride()
+  aiLib.world.resumeSync('interior')
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Пауза только останавливает синхронизацию. Задать свою погоду и время, а потом убрать их, когда закончите, должен ваш скрипт.
+</Callout>
+
+### ResumeWorldSync
+
+Снимает одну причину паузы вашего ресурса. Когда причин не остаётся, синхронизация снова идёт, и скрипт погоды возвращает погоду и часы сервера.
+
+**Сторона:** клиент · **Ожидание:** нет
+
+```ts title="Сигнатура"
+ResumeWorldSync(reason: string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:ResumeWorldSync(reason) -- или aiLib.world.resumeSync(reason)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Имя, которое вы передали в `PauseWorldSync`. Имя, которое ваш ресурс никогда не задавал, ничего не делает.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего.
+
+#### Пример
+
+См. пример [PauseWorldSync](#pauseworldsync).
+
+### IsWorldSyncPaused
+
+Сообщает, приостановлена ли синхронизация прямо сейчас каким-либо ресурсом или сторонним событием паузы. Скрипт погоды, который запускается позже, читает это один раз; после этого он следит за клиентским событием `ai-core:client:worldSync`.
+
+**Сторона:** клиент · **Ожидание:** нет
+
+```ts title="Сигнатура"
+IsWorldSyncPaused(): boolean
+```
+
+```lua title="Lua"
+local paused = exports['ai-core']:IsWorldSyncPaused() -- boolean
+```
+
+#### Параметры
+
+Нет.
+
+#### Возвращает
+
+`boolean`: `true`, пока задана хотя бы одна причина, `false`, когда синхронизация идёт.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/weather.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// Собственный скрипт погоды: не применять погоду сервера, пока стоит пауза.
+let paused = core.IsWorldSyncPaused();
+on(CORE.clientWorldSyncEvent, (value: boolean) => {
+  paused = value;
+});
+
+export const shouldApplyWeather = (): boolean => !paused;
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/weather.lua"
+-- Собственный скрипт погоды: не применять погоду сервера, пока стоит пауза.
+local paused = exports['ai-core']:IsWorldSyncPaused()
+AddEventHandler('ai-core:client:worldSync', function(value) paused = value end)
+
+function ShouldApplyWeather() return not paused end
+```
+</Tab>
+</Tabs>

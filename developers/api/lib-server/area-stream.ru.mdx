@@ -1,0 +1,121 @@
+---
+title: Потоковая передача областей
+description: "AreaStream: объекты мира (выброшенные предметы, растения, тела, пропы), которые отправляются только игрокам рядом с ними, одним снимком, а затем только изменениями."
+icon: Radar
+---
+
+```ts title="TypeScript"
+import { AreaStream } from "@aicore-fivem/lib/server";
+```
+
+### AreaStream
+
+Хранит объекты мира (выброшенные предметы, растения, поставленные пропы, тела) на сетке ячеек и отправляет каждому игроку только объекты ячеек вокруг него. Игрок, который начинает следить, получает один снимок своей области; после этого он получает только изменения: объект добавлен, изменён, перемещён или удалён либо в радиус попали новые ячейки, когда игрок переместился. Кто получил объект, вычисляется по ячейкам, поэтому ничего не хранится для каждой пары игрок-объект, и это масштабируется на очень большое число объектов и игроков. Следящие освобождаются при выходе.
+
+Используйте один `AreaStream` на каждый вид объектов, созданный на уровне модуля. На клиенте `new AreaFollower(event, cellSize)` ([Lib: клиент](/ru/docs/developers/api/lib-client)) отправляет `(cx, cy)` по своему событию каждый раз, когда меняется ячейка игрока (проверка каждые 2 секунды), для `followReported`; ваш клиентский код слушает `event` потока и хранит объекты.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+Lua-аналога нет.
+
+```ts title="Сигнатура"
+new AreaStream<T extends AreaItem, V = T>(options: AreaStreamOptions<T, V>)
+```
+
+#### AreaItem
+
+Что должно быть у каждого объекта:
+
+<TypeTable
+  type={{
+    id: { type: "number | string", description: "Уникальный id объекта.", required: true },
+    x: { type: "number", description: "Позиция X в мире, по ней находится ячейка.", required: true },
+    y: { type: "number", description: "Позиция Y в мире.", required: true },
+  }}
+/>
+
+#### AreaStreamOptions
+
+<TypeTable
+  type={{
+    event: { type: "string", description: "Клиентское событие, по которому идут сообщения. Клиент получает `(reset: boolean, puts: V[], removes: id[], ...extra)`: `reset` true означает сначала всё забыть (снимок).", required: true },
+    view: { type: "(item: T) => V", description: "Что клиент получает от объекта: не включайте поля, нужные только серверу.", required: true },
+    cellSize: { type: "number", description: "Размер ячейки в метрах. Клиент должен использовать то же значение.", default: "64" },
+    range: { type: "number", description: "Сколько ячеек вокруг собственной ячейки следящий знает: 1 означает 3x3 ячейки вокруг него.", default: "1" },
+    chunk: { type: "number", description: "Максимум объектов в одном событии. Более длинный список уходит несколькими маленькими событиями, которые сохраняют порядок.", default: "50" },
+    alsoTo: { type: "(item: T) => number | undefined", description: "Игрок, который получает этот объект, где бы он ни был (тело, которое несёт игрок).", required: false },
+    extra: { type: "() => unknown[]", description: "Значения, добавляемые к каждому событию (часы сервера для обратных отсчётов).", required: false },
+  }}
+/>
+
+#### Объекты
+
+| Метод | Что делает | Возвращает |
+| --- | --- | --- |
+| `set(item: T, resend = true): void` | Добавляет или обновляет объект. Следящие вокруг него получают put; следящие, которые потеряли его при перемещении, получают remove. При `resend` false put получают только следящие, у которых его ещё не было (для объекта, изменения которого клиенты отслеживают сами). | `void` |
+| `delete(id): void` | Удаляет объект; следящие, у которых он был, получают remove. | `void` |
+| `load(items: Iterable<T>): void` | Размещает много объектов без отдельного сообщения для каждого (загрузка из базы данных при старте), затем снова отправляет каждому следящему его область снимком. | `void` |
+| `get(id): T \| undefined` | Один объект. | объект или `undefined` |
+| `values(): Generator<T>` | Все объекты. | генератор |
+| `size: number` | Сколько объектов. | `number` |
+| `cellOf(x, y): { cx, cy }` | Ячейка точки на сетке этого потока. | координаты ячейки |
+| `countAt(x, y): number` | Объекты в ячейке точки (лимит на ячейку). | `number` |
+| `around(x, y, cells = 1): Generator<T>` | Объекты в ячейке точки и в `cells` ячейках вокруг неё (проверки расстояния и слияния). | генератор |
+| `recipients(id): Set<number>` | Игроки, у клиента которых сейчас есть объект. | множество серверных id |
+| `knows(source, id): boolean` | Есть ли объект сейчас у клиента игрока. | `boolean` |
+
+#### Следящие
+
+| Метод | Что делает | Возвращает |
+| --- | --- | --- |
+| `start(source, at = coordsOf(source)): void` | Игрок начинает следить с точки (по умолчанию: серверная позиция педа) и получает снимок. | `void` |
+| `follow(source, cx, cy): void` | Текущая ячейка игрока: первый вызов начинает слежение со снимком, изменение отправляет только разницу. | `void` |
+| `followReported(source, cx, cy): boolean` | `follow` для ячейки, которую прислал клиент; отклоняется, если она не в пределах одной ячейки от серверной позиции педа (ячейка клиента может отставать на одну). | `true`, если принято |
+| `followAll(): void` | Читает серверную позицию каждого следящего и отправляет разницу тем, кто сменил ячейку. Вызывайте из таймера `every`, когда клиент не сообщает ячейки. | `void` |
+| `stop(source, tell = false): void` | Игрок перестаёт следить (выход, приватный мир). `tell` очищает его клиент. | `void` |
+| `following(source): boolean` | Следит ли игрок. | `boolean` |
+
+#### Пример
+
+```ts
+import { AreaStream, onClientEvent, onCharacter, every } from "@aicore-fivem/lib/server";
+import { readInt } from "@aicore-fivem/lib/shared";
+
+interface Plant { id: number; x: number; y: number; z: number; growth: number; owner: number }
+
+const plants = new AreaStream<Plant, { id: number; x: number; y: number; z: number; growth: number }>({
+  event: "my-plants:stream",
+  view: ({ id, x, y, z, growth }) => ({ id, x, y, z, growth }), // владелец остаётся на сервере
+});
+
+// При старте: plants.load(rowsFromDatabase);
+
+onCharacter({
+  loaded: (source) => plants.start(source),
+  unloaded: (source) => plants.stop(source),
+});
+
+// AreaFollower клиента сообщает свою ячейку, когда она меняется.
+onClientEvent(
+  "my-plants:cell",
+  {
+    args: ([cx, cy]) => {
+      const x = readInt(cx, -1000, 1000);
+      const y = readInt(cy, -1000, 1000);
+      return x !== null && y !== null ? [x, y] : null;
+    },
+  },
+  (source, cx, cy) => {
+    plants.followReported(source, cx, cy);
+  },
+);
+
+// Изменения роста доходят только до игроков рядом с каждым растением.
+every(60_000, () => {
+  for (const plant of plants.values()) if (plant.growth < 100) plants.set({ ...plant, growth: plant.growth + 1 });
+});
+```
+
+<Callout type="warn">
+Никогда не стройте рядом свой индекс ячеек, наборы наблюдателей или код снимков. Объекты `alsoTo` вышедшего игрока отпускаются (следующий игрок с тем же id их не получит), но ваш скрипт всё равно обновляет сам объект (где теперь лежит тело). `cellSize` на сервере и в `AreaFollower` клиента должны совпадать.
+</Callout>

@@ -1,0 +1,80 @@
+---
+title: ai-jobs для разработчиков
+description: "Чем ai-jobs делится с другими скриптами (экспортов у него нет): репутация продавца хот-догов, номера и ключи рабочего транспорта, причины операций и его приватные события."
+icon: Code
+---
+
+У ai-jobs **нет экспортов**. Другим скриптам никогда не нужно его вызывать: маршруты и остановки являются данными панели, а всё, что делает смена, идёт через AI Core (деньги, ключи, инвентарь). Ниже перечислено то, что может читать другой скрипт.
+
+## Репутация продавца хот-догов
+
+Репутация продавца хот-догов хранится в метаданных персонажа ai-core под ключом `rep`, в поле `hotdog` (там же, где QBCore хранит `PlayerData.metadata.rep`). Это целое число от 0 до **Highest reputation** из панели. ai-jobs читает её, когда арендуют ларёк, и записывает после каждого приготовленного хот-дога, сохраняя остальные поля `rep` как есть.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+GetMeta(src: number, key: "rep"): { hotdog?: number; [other: string]: unknown } | null
+```
+
+```lua title="Lua"
+local rep = exports['ai-core']:GetMeta(source, 'rep') -- таблица или nil
+```
+
+#### Возвращает
+
+Таблица `rep` персонажа или `null` / `nil`, если у игрока нет загруженного персонажа или он никогда не зарабатывал репутацию. `hotdog` отсутствует до первого приготовленного хот-дога.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, notify, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// /hotdogrep показывает игроку его репутацию продавца хот-догов.
+addCommand("hotdogrep", { help: "Show your hot dog reputation" }, (source) => {
+  if (source === 0) return;
+  const rep = core.GetMeta(source, "rep") as { hotdog?: number } | null;
+  notify(source, `Hot dog reputation: ${rep?.hotdog ?? 0}`, "info");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- fxmanifest.lua: shared_script '@ai-lib/init.lua'
+aiLib.addCommand('hotdogrep', { help = 'Show your hot dog reputation' }, function(source)
+  if source == 0 then return end
+  local rep = exports['ai-core']:GetMeta(source, 'rep') or {}
+  aiLib.notify(source, ('Hot dog reputation: %d'):format(rep.hotdog or 0), 'info')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Записывайте репутацию только через `SetMeta(source, "rep", { ...old, hotdog = value })`, сохраняя остальные поля. Арендованный ларёк хранит значение, которое прочитал при аренде, и записывает своё значение после следующего хот-дога, поэтому изменение, сделанное, пока ларёк арендован, перезаписывается.
+</Callout>
+
+## Рабочий транспорт
+
+- Создаётся через `spawnVehicle` из lib, номер `WORK<source>` (серверный id работника), удаляется, когда смена заканчивается.
+- Работник получает ключи через слой ключей AI Core (`vehicleKeys.give` из lib) с назначением `job`, поэтому их видит любой запущенный скрипт ключей.
+- Сломанная машина маршрута эвакуатора появляется запертой, без ключей, и удаляется на базе или когда смена заканчивается.
+
+## Деньги
+
+Оплата маршрута идёт на **Pay account** маршрута с причиной операции `work:<routeId>` (например, `work:taxi`). Продажи хот-догов идут на **Sales paid into**. Обе показываются в истории операций ai-core.
+
+## Приватные события и колбэки
+
+Это собственный контракт скрипта между клиентом и сервером (`resource/common/routes.ts` и `resource/common/hotdog.ts`). Сервер проверяет каждый вызов (расстояние, время, текущую остановку). Они могут меняться между версиями: не вызывайте и не слушайте их из других ресурсов.
+
+| Имя | Направление | Что передаёт |
+| --- | --- | --- |
+| `ai-jobs:start` | client callback | `(routeId)`: начать смену на базе, отвечает `{ ok }`. |
+| `ai-jobs:stop` | client callback | `()`: закончить смену. |
+| `ai-jobs:arrive` | client callback | `(stopId, underwater)`: работа на остановке; сервер запускает полосу прогресса, затем платит. |
+| `ai-jobs:client:shift` | server -> worker | `(shift \| null)`: текущая остановка или `null`, когда смена закончилась. |
+| `ai-jobs:client:attach` | server -> towed car's owner | `(carNetId, flatbedNetId)`: прицепить эвакуируемую машину к платформе. |

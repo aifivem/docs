@@ -1,0 +1,298 @@
+---
+title: Админ-панель
+description: "AdminPanel и DataFile: размещение настроек вашего скрипта в админ-панели ai-core, их чтение, реакция на правки и сохранение содержимого панели в data/*.json."
+icon: SlidersHorizontal
+---
+
+```ts title="TypeScript"
+import { AdminPanel, DataFile } from "@aicore-fivem/lib/server";
+```
+
+Каждый скрипт `ai-*` хранит настройки, которые подстраивает владелец сервера, в админ-панели ai-core, а не в конфиг-файле. Вы описываете данные и форму в `resource/server/schema.ts` ([`PanelSchema`](/ru/docs/developers/api/types#panelschema): файлы, вкладки, карточки, виджеты; см. [Создание скрипта](/ru/docs/developers/creating-a-script)), создаёте из него один `AdminPanel` и читаете значения через него. Сторона владельца (открытие панели, редактирование, права) описана на странице [Админ-панель](/ru/docs/admin-panel).
+
+Lua-аналога нет: админ-панель есть только в TypeScript.
+
+### AdminPanel
+
+Содержимое панели вашего ресурса. Он загружает каждый `data/<file>.json` один раз при старте, держит его в памяти, проверяет каждую правку из панели по схеме, сохраняет файл (атомарно, серия правок записывается один раз) и сообщает об изменении вашему коду, открытым панелям и, для файлов `sync: "all"`, каждому клиенту. Он также пишет `data/schemas/<file>.schema.json`, чтобы редактор мог проверить ручную правку.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+new AdminPanel(schema: PanelSchema)
+```
+
+<TypeTable
+  type={{
+    schema: { type: "PanelSchema", typeDescriptionLink: "/ru/docs/developers/api/types#panelschema", description: "Экспорт вашего `schema.ts`: `title`, `icon`, `files` (по одной записи на `data/<file>.json`, `settings` или `records`) и `tabs`.", required: true },
+  }}
+/>
+
+Создайте ровно один на уровне модуля, обычно в `resource/server/content.ts`: `export const panel = new AdminPanel(schema);`. Файлы настроек при загрузке получают отсутствующие разделы из `defaults`. ai-core добавляет панель в список через тик после создания.
+
+#### AdminPanel.get
+
+Текущее содержимое файла.
+
+```ts title="Сигнатура"
+get<T = Record<string, unknown>>(file: string): T
+```
+
+**Возвращает** объект настроек (файл `settings`) или `{ key: record }` (файл `records`); `{}` для неизвестного файла. Только для чтения: никогда не меняйте возвращённый объект, используйте `commit`.
+
+```ts
+const settings = panel.get<{ prices: { repair: number } }>("settings");
+```
+
+#### AdminPanel.view
+
+Файл настроек, разобранный вашей функцией чтения и обновляемый при каждом изменении (разбирается до запуска обработчиков `onChange`).
+
+```ts title="Сигнатура"
+view<T>(file: string, read: (raw: unknown) => T): { readonly value: T }
+```
+
+**Возвращает** объект, `value` которого всегда содержит последнее разобранное содержимое. Читайте `.value` каждый раз; не копируйте его один раз.
+
+```ts
+import { int, record } from "@aicore-fivem/lib/shared";
+
+const settings = panel.view("settings", (raw) => ({
+  repairPrice: int(record(record(raw).prices).repair, 250),
+}));
+// позже: settings.value.repairPrice
+```
+
+#### AdminPanel.records
+
+Файл записей, разобранный запись за записью. Изменение заново читает только изменённую запись.
+
+```ts title="Сигнатура"
+records<T>(file: string, readOne: (key: string, raw: Record<string, unknown>) => T | null): ReadonlyMap<string, T>
+```
+
+**Возвращает** живой Map от ключа записи к вашему разобранному значению. Если `readOne` возвращает `null`, запись пропускается.
+
+```ts
+const shops = panel.records("shops", (key, raw) =>
+  typeof raw.label === "string" ? { key, label: raw.label } : null,
+);
+for (const shop of shops.values()) console.log(shop.label);
+```
+
+#### AdminPanel.onChange
+
+Запускает ваш обработчик после изменения файла правкой из панели или вашим собственным `commit`.
+
+```ts title="Сигнатура"
+onChange(file: string, handler: (key: string | undefined, value: unknown) => void): void
+```
+
+<TypeTable
+  type={{
+    file: { type: "string", description: "Имя файла из схемы.", required: true },
+    handler: { type: "(key: string | undefined, value: unknown) => void", description: "`key` это изменённая запись (`undefined` для файла настроек). `value` это новая запись или объект настроек либо `null`, если запись удалена.", required: true },
+  }}
+/>
+
+```ts
+panel.onChange("shops", (key, value) => {
+  if (value === null) console.log(`shop ${key} deleted`);
+});
+```
+
+#### AdminPanel.rule
+
+Межполевая проверка, которая выполняется до сохранения правки. Схема проверяет отдельные значения; правило проверяет, как значения сочетаются друг с другом.
+
+```ts title="Сигнатура"
+rule(file: string, rule: (key: string | undefined, next: Record<string, unknown>) => string | null): void
+```
+
+**Возвращает** (из вашего правила) `null`, чтобы принять, или языковой ключ, чтобы отказать (показывается администратору). Одно правило на файл; второй вызов заменяет его.
+
+```ts
+panel.rule("settings", (_key, next) => {
+  const prices = next.prices as { min: number; max: number };
+  return prices.min > prices.max ? "ERR_MIN_ABOVE_MAX" : null;
+});
+```
+
+#### AdminPanel.onAction
+
+Выполняется, когда администратор нажимает виджет `action` (кнопка: отправить, сбросить, кикнуть). Для кнопки ничего не сохраняется.
+
+```ts title="Сигнатура"
+onAction(id: string, handler: (admin: number, record: Record<string, unknown>, key: string | undefined) => string | null): void
+```
+
+<TypeTable
+  type={{
+    id: { type: "string", description: "`path` виджета.", required: true },
+    handler: { type: "(admin: number, record: Record<string, unknown>, key: string | undefined) => string | null", description: "Получает серверный id администратора, копию записи (или объекта настроек) и ключ записи. Верните `null` при успехе или языковой ключ, который показывается под кнопкой. Выброшенная ошибка логируется и считается отказом.", required: true },
+  }}
+/>
+
+```ts
+import { notify } from "@aicore-fivem/lib/server";
+
+panel.onAction("testAlert", (admin) => {
+  notify(admin, "Test alert sent", "success");
+  return null;
+});
+```
+
+#### AdminPanel.commit
+
+Сохраняет изменение, которое сделал сам ваш скрипт (игровое состояние, которое показывает панель), без проверки. Файл `memory` хранит его только в памяти.
+
+```ts title="Сигнатура"
+commit(file: string, key: string | undefined, value: unknown): void
+```
+
+<TypeTable
+  type={{
+    file: { type: "string", description: "Имя файла.", required: true },
+    key: { type: "string | undefined", description: "Ключ записи или `undefined`, чтобы заменить объект настроек.", required: true },
+    value: { type: "unknown", description: "Новая запись или объект настроек; `null` удаляет запись.", required: true },
+  }}
+/>
+
+```ts
+panel.commit("vaults", "bank_1", { ...panel.get<Record<string, object>>("vaults").bank_1, robbedAt: Date.now() });
+```
+
+#### AdminPanel.commitAfter
+
+`commit` после того, как текущее изменение дошло до панели. Используйте для формы, которая сбрасывается после отправки администратором.
+
+```ts title="Сигнатура"
+commitAfter(file: string, key: string | undefined, value: unknown): void
+```
+
+```ts
+panel.onAction("sendBroadcast", (admin, form) => {
+  if (typeof form.message !== "string" || form.message === "") return "ERR_EMPTY_MESSAGE";
+  for (const player of getPlayers()) notify(Number(player), form.message, "info", 10_000);
+  panel.commitAfter("broadcast", undefined, { message: "" }); // очистить форму
+  return null;
+});
+```
+
+<Callout type="warn">
+Никогда не вызывайте `commit` или `commitAfter` для того же файла изнутри его собственного обработчика `onChange`: commit снова вызывает `onChange`, и так бесконечно.
+</Callout>
+
+#### AdminPanel.editor
+
+```ts title="Сигнатура"
+editor: number
+```
+
+Серверный id администратора, чья правка или действие сейчас применяется; доступен внутри обработчиков `rule`, `onChange` и `onAction`; `0` для вашего собственного `commit`. Задаётся только lib.
+
+```ts
+panel.onChange("settings", () => {
+  if (panel.editor) console.log(`settings changed by ${panel.editor}`);
+});
+```
+
+#### Используется ai-core
+
+`snapshot()`, `dataSnapshot()`, `summary()` и `apply(admin, patch)` вызывает ai-core через экспорты, которые регистрирует панель (`AdminPanelSnapshot`, `AdminPanelData`, `AdminPanelSummary`, `AdminPanelApply`). Ваш скрипт их не вызывает.
+
+#### Пример
+
+```ts title="resource/server/content.ts"
+import { AdminPanel, aiLog } from "@aicore-fivem/lib/server";
+import { int, record } from "@aicore-fivem/lib/shared";
+import { schema } from "./schema";
+
+export const panel = new AdminPanel(schema);
+
+export const settings = panel.view("settings", (raw) => ({
+  repairPrice: int(record(record(raw).prices).repair, 250),
+}));
+
+panel.onChange("settings", () => {
+  aiLog("admin", `repair price is now ${settings.value.repairPrice}`, { source: panel.editor || undefined });
+});
+```
+
+<Callout type="warn">
+Никогда не читайте `data/*.json` сами и никогда не пишите в них: ими владеет панель. Данные, которые нужны миру на клиентах (места, блипы, цены, которые видят игроки), это файл `sync: "all"`, который читается на клиенте через `AdminWorld`; всё остальное остаётся на сервере.
+</Callout>
+
+### DataFile
+
+Один файл `data/<name>.json` вашего ресурса с безопасной записью. `AdminPanel` использует его для каждого файла; используйте его напрямую только для содержимого вне панели. Сервер является единственным читателем и писателем: он читает один раз при старте и держит истину в памяти. Запись идёт во временный файл, который затем заменяет настоящий (сбой никогда не оставит половину файла), предыдущий файл сохраняется как `.bak`, а сломанный файл при старте заменяется на `.bak`.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+Lua-аналога нет.
+
+```ts title="Сигнатура"
+new DataFile(resource: string, name: string, log: Logger)
+```
+
+<TypeTable
+  type={{
+    resource: { type: "string", description: "Имя вашего ресурса (`GetCurrentResourceName()`).", required: true },
+    name: { type: "string", description: "Имя файла без папки и расширения: `routes` это `data/routes.json`.", required: true },
+    log: { type: "Logger", description: "Куда идут ошибки: `createLogger(resource)` из `@aicore-fivem/lib/shared`.", required: true },
+  }}
+/>
+
+#### DataFile.read
+
+```ts title="Сигнатура"
+read(): unknown
+```
+
+**Возвращает** разобранный файл без ключа `$schema`, `.bak`, если файл сломан, или `null`, если нет ни того, ни другого. Разберите результат перед использованием.
+
+#### DataFile.write
+
+```ts title="Сигнатура"
+write(value: unknown): void
+```
+
+Сохраняет `value`; побеждает последний вызов. Записывается на диск через 250 мс после первого вызова серии, по порядку с более ранними записями. Неудачная запись логируется.
+
+#### DataFile.schemaRef
+
+```ts title="Сигнатура"
+schemaRef: string | null
+```
+
+Если задано (`./schemas/<name>.schema.json`), записывается как первый ключ файла `"$schema"` и никогда не входит в данные.
+
+#### DataFile.hasSchemaRef
+
+```ts title="Сигнатура"
+hasSchemaRef(): boolean
+```
+
+**Возвращает**, указывает ли файл на диске свою схему.
+
+#### Пример
+
+```ts
+import { DataFile } from "@aicore-fivem/lib/server";
+import { createLogger, isRecord } from "@aicore-fivem/lib/shared";
+
+const resource = GetCurrentResourceName();
+const file = new DataFile(resource, "routes", createLogger(resource));
+
+const raw = file.read();
+const routes: Record<string, unknown> = isRecord(raw) ? raw : {};
+
+function saveRoute(id: string, route: unknown) {
+  routes[id] = route;
+  file.write(routes);
+}
+```
+
+<Callout type="info">
+Данные игроков никогда не попадают в файл данных: им место в базе данных ([База данных](/ru/docs/developers/api/lib-server/database)). Секреты (вебхуки, API-ключи) хранятся в игнорируемом git файле `data/secrets.json`.
+</Callout>

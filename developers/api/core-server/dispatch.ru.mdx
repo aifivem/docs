@@ -1,0 +1,110 @@
+---
+title: Диспетчер
+description: Отправлять оповещения полиции (или любой работе) через ту систему оповещений, которую использует сервер.
+icon: Siren
+---
+
+Полицейские оповещения идут через ai-core, а не через собственные экспорты или события скрипта оповещений (включая ai-policealert). ai-core передаёт каждое оповещение **активной системе оповещений**: той, что выбрана в настройке панели **Alert script**, или первой запущенной (встроенные карточки ai-policealert идут последними). Система оповещений показывает его сотрудникам работ оповещения, которые на дежурстве.
+
+ai-core также отвечает на событие QB `police:server:policeAlert` за системы оповещений, которые этого не делают, поэтому оповещения скриптов QB тоже доходят.
+
+### SendDispatchAlert
+
+Отправляет одно оповещение. Используйте для всего, на что должны реагировать офицеры (или другая работа): стрельба, ограбление магазина, угнанная машина.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`dispatch.alert`](/ru/docs/developers/api/lib-server/jobs#dispatchalert)
+
+```ts title="Сигнатура"
+SendDispatchAlert(alert: DispatchAlert): boolean
+```
+
+```lua title="Lua"
+local sent = exports['ai-core']:SendDispatchAlert({ title = 'Store robbery', code = '10-90', source = source })
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    alert: { type: 'DispatchAlert', description: 'Оповещение. Поля ниже.', required: true },
+  }}
+/>
+
+#### DispatchAlert
+
+<TypeTable
+  type={{
+    title: { type: 'string', description: 'Заголовок (`Shots fired`), уже переведённый. Обрезается до 80 символов.', required: true },
+    code: { type: 'string', description: 'Радиокод перед заголовком (`10-71`). Обрезается до 12 символов.' },
+    message: { type: 'string', description: 'Ещё одна строка (название магазина). Обрезается до 160 символов.' },
+    coords: { type: '{ x, y, z }', description: 'Где это произошло. Без него используется позиция игрока `source`; без обоих у оповещения нет точки на карте.', typeDescription: '{ x: number; y: number; z: number }' },
+    jobs: { type: 'string[]', description: 'Работы, сотрудники которых на дежурстве его получают. Не более 10 имён длиной до 32 символов.', default: 'полицейские работы системы оповещений' },
+    source: { type: 'number', description: 'Серверный id игрока, о котором оповещение (стрелок, грабитель). Системы оповещений, которые описывают подозреваемого (транспорт, пол), читают этого игрока. Игнорируется, если его нет в сети.' },
+    blip: { type: '{ sprite, color?, scale? }', description: 'Метка на карте: номер спрайта метки GTA, номер цвета и масштаб (от 0.1 до 3).', default: 'метка системы оповещений', typeDescription: '{ sprite: number; color?: number; scale?: number }' },
+    duration: { type: 'number', description: 'Сколько секунд держится оповещение (карточка, метка, клавиша маршрута). От 1 до 3600.', default: 'собственное значение системы оповещений' },
+    icon: { type: 'string', description: 'Имя иконки Font Awesome solid без `fa-` (`gun`).' },
+    priority: { type: '"normal" | "high"', description: '`high` выделяет карточку (вооружённое ограбление, офицер ранен).', default: '"normal"' },
+  }}
+/>
+
+Неизвестные поля отбрасываются. См. [DispatchAlert](/ru/docs/developers/api/types#dispatchalert).
+
+#### Возвращает
+
+`boolean`: `true`, когда система оповещений приняла оповещение. `false`, когда `title` отсутствует или пуст, не работает ни одна система оповещений или она дала сбой.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const REGISTER = { x: 24.5, y: -1345.6, z: 29.5 };
+
+onClientCallback("myscript:robRegister", { guards: [near(REGISTER, 2)], lock: true }, (source) => {
+  if (core.GetOnDutyCount("police") < 2) return fail("NOT_ENOUGH_POLICE");
+  core.SendDispatchAlert({
+    code: "10-90",
+    title: Locale("ALERT_STORE_ROBBERY"),
+    message: Locale("ALERT_STORE_NAME"),
+    coords: REGISTER,
+    source,
+    jobs: ["police"],
+    icon: "cash-register",
+    priority: "high",
+  });
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local REGISTER = vector3(24.5, -1345.6, 29.5)
+
+aiLib.onClientCallback('myscript:robRegister', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - REGISTER) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if exports['ai-core']:GetOnDutyCount('police') < 2 then return aiLib.fail('NOT_ENOUGH_POLICE') end
+  exports['ai-core']:SendDispatchAlert({
+    code = '10-90',
+    title = Locale('ALERT_STORE_ROBBERY'),
+    message = Locale('ALERT_STORE_NAME'),
+    coords = { x = REGISTER.x, y = REGISTER.y, z = REGISTER.z },
+    source = source,
+    jobs = { 'police' },
+    icon = 'cash-register',
+    priority = 'high',
+  })
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Тексты показываются как есть: переводите их через `Locale` перед отправкой. Не отправляйте оповещение каждый кадр или на каждое попадание: у оповещения о стрельбе должна быть задержка на игрока.
+</Callout>

@@ -1,0 +1,159 @@
+---
+title: ai-hud для разработчиков
+description: Экспорты ai-hud для потребностей (голод, жажда, стресс) и его настроек HUD, а также что он читает из других скриптов.
+icon: Code
+---
+
+Потребности являются числами от 0 до 100, которые хранятся в метаданных персонажа (`hunger`, `thirst`, `stress`, ключи QB). Голод и жажда уменьшаются (100 = сыт); стресс растёт (0 = спокоен). ai-hud является единственным скриптом, который их пишет.
+
+<Callout type="info">
+Чтобы добавить стресс из своего скрипта, используйте слой стресса AI Core (`stress` из lib, экспорт `AddStress`), который работает с любым запущенным HUD. Эффекты еды и напитков задаются у предмета: укажите значения предмета **Hunger**, **Thirst** и **Stress** в панели ai-inventory, и ai-hud применит их, когда предмет используют.
+</Callout>
+
+## Серверные экспорты
+
+`SetNeed` и `AddNeed` типизированы как `AiHudServerExports` в `@aicore-fivem/shared` (`resourceExport("ai-hud")` в TypeScript). `GetNeeds` не типизирован: вызывайте его через `callExport("ai-hud", "GetNeeds", source)` из lib.
+
+### GetNeeds
+
+Читает потребности загруженного игрока.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+GetNeeds(source: number): { hunger: number; thirst: number; stress: number } | null
+```
+
+```lua title="Lua"
+local needs = exports['ai-hud']:GetNeeds(source) -- таблица или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`{ hunger, thirst, stress } | null`: каждое значение 0-100 (дробная часть сохраняется). `null`, если у игрока нет загруженного персонажа.
+
+### SetNeed
+
+Устанавливает одну потребность в значение.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+SetNeed(source: number, need: "hunger" | "thirst" | "stress", value: number): void
+```
+
+```lua title="Lua"
+exports['ai-hud']:SetNeed(source, 'hunger', 100)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока с загруженным персонажем.', required: true },
+    need: { type: '"hunger" | "thirst" | "stress"', description: 'Какая потребность.', required: true },
+    value: { type: 'number', description: 'Новое значение. Ограничивается диапазоном 0-100.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. Ничего не делает, если у игрока нет загруженного персонажа или аргумент неверен. Новое значение сохраняется в персонаже и отправляется в HUD игрока, когда меняется его округлённое значение.
+
+### AddNeed
+
+Меняет одну потребность на величину.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+AddNeed(source: number, need: "hunger" | "thirst" | "stress", delta: number): void
+```
+
+```lua title="Lua"
+exports['ai-hud']:AddNeed(source, 'thirst', 25)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока с загруженным персонажем.', required: true },
+    need: { type: '"hunger" | "thirst" | "stress"', description: 'Какая потребность.', required: true },
+    delta: { type: 'number', description: 'Прибавляется к текущему значению (отрицательное уменьшает). Результат ограничивается диапазоном 0-100.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport, resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const hud = resourceExport("ai-hud");
+
+// Автомат с газировкой: немного утоляет жажду, отказывает, если игрок не хочет пить.
+onClientCallback("myscript:soda", (source) => {
+  const needs = callExport("ai-hud", "GetNeeds", source) as { thirst: number } | null;
+  if (!needs) return fail("NO_CHARACTER");
+  if (needs.thirst > 90) return fail("NOT_THIRSTY");
+  hud.AddNeed(source, "thirst", 20);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:soda', function()
+    local src = source
+    local needs = exports['ai-hud']:GetNeeds(src)
+    if not needs or needs.thirst > 90 then return end
+    exports['ai-hud']:AddNeed(src, 'thirst', 20)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Эти экспорты работают, только пока запущен ai-hud. Если владелец заменит ai-hud другим HUD, ваши вызовы завершатся ошибкой. Слой стресса AI Core (`AddStress`) продолжает работать с другими HUD.
+</Callout>
+
+## Клиентские экспорты
+
+Типизированы как `AiHudClientExports`.
+
+| Экспорт | Что делает |
+| --- | --- |
+| `OpenSettings(): void` | Открывает настройки HUD игрока (то же, что `/hud`). Другие скрипты открывают настройки любого HUD через `OpenHudSettings()` из AI Core. |
+| `SetMinimapAlways(on: boolean): void` | Собственный переключатель администратора (меню ai-admin): держит миникарту пешком независимо от панели, только для этого игрока. |
+| `GetMinimapAlways(): boolean` | Включён ли этот переключатель. |
+
+## Что читает ai-hud
+
+| Источник | Для чего |
+| --- | --- |
+| Серверное событие AI Core `itemUsed (source, name, status)` | Добавляет значения предмета `hunger`, `thirst`, `stress`. |
+| Клиентское событие AI Core `CORE.clientHudVisibleEvent (visible)` | Скрывает HUD, пока открыто полноэкранное меню (`hud.hide(reason)` из lib в любом скрипте). |
+| Подсказки клавиш AI Core (`ai-core:client:keyHints`, `GetKeyHints()`) | Список клавиш слева. |
+| State bag транспорта `fuel` | Указатель топлива. |
+| State bag игрока `proximity` и события `pma-voice:setTalkingMode` / `pma-voice:radioActive` | Дальность голоса, разговор, рация. |
+| `seatbelt` из lib (слой ремня безопасности AI Core) | Предупреждение о ремне. |
+| `inventory.currentWeapon()` из lib | Блок оружия. |
+
+## События
+
+Собственные события ai-hud (`resource/common/hud.ts`) внутренние. Одно открыто только для его собственного клиента: `ai-hud:stress` (от клиента к серверу, от 1 до 5 очков, не чаще двух раз в секунду). Другие скрипты добавляют стресс на сервере через AI Core.

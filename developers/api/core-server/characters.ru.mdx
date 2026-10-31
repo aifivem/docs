@@ -1,0 +1,667 @@
+---
+title: Персонажи и игроки
+description: Прочитать данные и персонажа загруженного игрока, найти игрока по id персонажа или citizen id, сменить персонажа, переместить офлайн-персонажа, игроки в зоне видимости.
+icon: Users
+---
+
+**Игрок** - это подключённый человек с серверным id (`source`). **Персонаж** - один из людей, которыми играет этот игрок; у него есть id в базе данных (`charId`) и citizen id (`citizenid`, короткий текст вроде `ABC12345`). У игрока появляется загруженный персонаж после выбора на экране персонажей. Большинство экспортов здесь до этого отвечают `null`.
+
+Вызовы экспортов копируют свой ответ, поэтому прочитайте нужное один раз и следите за событиями ai-core (`ai-core:playerLoaded`, `ai-core:playerUnloaded`), а не спрашивайте снова. См. [События и состояние](/ru/docs/developers/api/events).
+
+### GetPlayerData
+
+Всё, что ai-core хранит для загруженного игрока, одним объектом: персонаж, деньги, работы, дежурство, банды и метаданные. Используйте, когда ресурс стартует поздно и ему один раз нужно полное состояние игрока; для отдельных значений используйте экспорты поменьше ниже.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет на сервере (`getPlayerData` из клиентской библиотеки читает те же данные в игре игрока)
+
+```ts title="Сигнатура"
+GetPlayerData(src: number): AiPlayerData | null
+```
+
+```lua title="Lua"
+local data = exports['ai-core']:GetPlayerData(source) -- table или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`AiPlayerData | null`: копия данных игрока ([AiPlayerData](/ru/docs/developers/api/types#aiplayerdata)). `null`, когда ни у кого с этим серверным id нет загруженного персонажа (не подключён или ещё на экране персонажей). Копия потом не меняется: вызовите снова или следите за событиями, чтобы получить новые значения.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("whoami", { help: "Shows your character", restricted: true }, (source) => {
+  const data = core.GetPlayerData(source);
+  if (!data?.character) return;
+  const { firstname, lastname } = data.character;
+  console.log(`${firstname} ${lastname}: job ${data.job.job} (grade ${data.job.grade}), cash ${data.money.cash ?? 0}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('whoami', { help = 'Shows your character', restricted = true }, function(source)
+  local data = exports['ai-core']:GetPlayerData(source)
+  if not data or not data.character then return end
+  print(('%s %s: job %s (grade %d), cash %d'):format(
+    data.character.firstname, data.character.lastname,
+    data.job.job, data.job.grade, data.money.cash or 0))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Весь объект копируется при каждом вызове. Никогда не вызывайте его в цикле по всем игрокам или по таймеру: читайте отдельные значения (`GetMoney`, `GetDutyJob`) или используйте зеркало `online` из библиотеки.
+</Callout>
+
+### GetCharacter
+
+Загруженный персонаж игрока: id в базе данных, citizen id, слот, имена, дата рождения, пол и национальность. Используйте, чтобы показать имя или сохранить что-то по id персонажа.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет ([`online.character(source)`](/ru/docs/developers/api/lib-server/players#onlinecharacter) читает то же из зеркала библиотеки без вызова экспорта)
+
+```ts title="Сигнатура"
+GetCharacter(src: number): CharacterInfo | null
+```
+
+```lua title="Lua"
+local character = exports['ai-core']:GetCharacter(source) -- table или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`CharacterInfo | null`: персонаж ([CharacterInfo](/ru/docs/developers/api/types#characterinfo)). `null`, когда у игрока нет загруженного персонажа.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:profile", (source) => {
+  const character = core.GetCharacter(source);
+  if (!character) return fail("NO_CHARACTER");
+  return { ok: true, name: `${character.firstname} ${character.lastname}`, citizenid: character.citizenid };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:profile', function(source)
+  local character = exports['ai-core']:GetCharacter(source)
+  if not character then return aiLib.fail('NO_CHARACTER') end
+  return { ok = true, name = character.firstname .. ' ' .. character.lastname, citizenid = character.citizenid }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetSourceByCharId
+
+Серверный id игрока, который играет персонажем прямо сейчас. Используйте, когда вы сохранили id персонажа (владелец, контакт) и нужно найти этого человека в игре.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+GetSourceByCharId(charId: number): number | null
+```
+
+```lua title="Lua"
+local src = exports['ai-core']:GetSourceByCharId(charId) -- number или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа в базе данных (`CharacterInfo.id`).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number | null`: серверный id игрока. `null`, когда этим персонажем сейчас никто не играет (офлайн или загружен другой персонаж).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+/** Tells a house owner that someone rang, when the owner is online. */
+export function ringOwner(ownerCharId: number): void {
+  const owner = core.GetSourceByCharId(ownerCharId);
+  if (owner !== null) notify(owner, Locale("NOTIFY_DOORBELL"), "info");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+function RingOwner(ownerCharId)
+  local owner = exports['ai-core']:GetSourceByCharId(ownerCharId)
+  if owner then aiLib.notify(owner, Locale('NOTIFY_DOORBELL'), 'info') end
+end
+```
+</Tab>
+</Tabs>
+
+### GetSourceByCitizenId
+
+То же, что `GetSourceByCharId`, но по citizen id. Используйте с данными, которые хранят citizen id (так делает большинство таблиц в стиле ESX / QB).
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+GetSourceByCitizenId(citizenid: string): number | null
+```
+
+```lua title="Lua"
+local src = exports['ai-core']:GetSourceByCitizenId(citizenid) -- number или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    citizenid: { type: 'string', description: 'Citizen id персонажа (`CharacterInfo.citizenid`).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number | null`: серверный id игрока, который играет этим персонажем. `null`, когда персонаж не загружен.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("findcid", {
+  help: "Finds the player of a citizen id",
+  params: [{ name: "citizenid", type: "string" }],
+  restricted: true,
+}, (source, args) => {
+  const target = core.GetSourceByCitizenId(args.citizenid);
+  console.log(target === null ? "not online" : `server id ${target}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('findcid', {
+  help = 'Finds the player of a citizen id',
+  params = { { name = 'citizenid', type = 'string' } },
+  restricted = true,
+}, function(source, args)
+  local target = exports['ai-core']:GetSourceByCitizenId(args.citizenid)
+  print(target and ('server id ' .. target) or 'not online')
+end)
+```
+</Tab>
+</Tabs>
+
+### GetLoadedSources
+
+Серверные id всех игроков с загруженным персонажем. Используйте для редкой работы по всему серверу (предупреждение о перезапуске, список для админа).
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`online.sources()`](/ru/docs/developers/api/lib-server/players#onlinesources) читает то же из зеркала библиотеки
+
+```ts title="Сигнатура"
+GetLoadedSources(): number[]
+```
+
+```lua title="Lua"
+local sources = exports['ai-core']:GetLoadedSources() -- список чисел
+```
+
+#### Параметры
+
+Нет.
+
+#### Возвращает
+
+`number[]`: по серверному id на каждого загруженного игрока, без определённого порядка. Пустой список, когда ни у кого нет загруженного персонажа. Игроков, которые ещё на экране персонажей, в нём нет.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, notify, resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+addCommand("announce", {
+  help: "Sends a notification to every player",
+  params: [{ name: "text", type: "longString" }],
+  restricted: true,
+}, (_source, args) => {
+  for (const target of core.GetLoadedSources())
+    notify(target, Locale("NOTIFY_ANNOUNCEMENT", args.text), "warning");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.addCommand('announce', {
+  help = 'Sends a notification to every player',
+  params = { { name = 'text', type = 'longString' } },
+  restricted = true,
+}, function(_, args)
+  for _, target in ipairs(exports['ai-core']:GetLoadedSources()) do
+    aiLib.notify(target, Locale('NOTIFY_ANNOUNCEMENT', args.text), 'warning')
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Никогда не вызывайте другой экспорт для каждого id из этого списка на частом пути (`GetLoadedSources()` + `GetDutyJob` на каждого игрока каждую секунду). Кто на дежурстве, имена и работы многих игроков берутся из зеркала `online` в библиотеке; кто рядом - из `playersNear`.
+</Callout>
+
+### GetUserId
+
+Id аккаунта подключённого игрока: строка в `ai_core_users`, которая хранит аккаунт FiveM игрока и всех его персонажей. В отличие от большинства экспортов отвечает и тогда, когда игрок ещё на экране персонажей.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+GetUserId(src: number): number | null
+```
+
+```lua title="Lua"
+local userId = exports['ai-core']:GetUserId(source) -- number или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number | null`: id аккаунта. `null`, когда игрок не подключён или ещё не дошёл до экрана персонажей.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("account", {
+  help: "Shows a player account id",
+  params: [{ name: "id", type: "playerId" }],
+  restricted: true,
+}, (_source, args) => {
+  console.log(`account ${core.GetUserId(args.id) ?? "unknown"}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('account', {
+  help = 'Shows a player account id',
+  params = { { name = 'id', type = 'playerId' } },
+  restricted = true,
+}, function(_, args)
+  print('account ' .. tostring(exports['ai-core']:GetUserId(args.id)))
+end)
+```
+</Tab>
+</Tabs>
+
+### GetFivemId
+
+Id аккаунта FiveM (Cfx.re) игрока. ai-core использует его как ключ аккаунта игрока: игрок без него не может подключиться.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+
+```ts title="Сигнатура"
+GetFivemId(src: number): string | null
+```
+
+```lua title="Lua"
+local fivemId = exports['ai-core']:GetFivemId(source) -- string или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`string | null`: id без префикса `fivem:` (например, `1234567`). `null`, когда у игрока нет загруженного персонажа.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("fivemid", {
+  help: "Prints the add_principal line for a player",
+  params: [{ name: "id", type: "playerId" }],
+  restricted: true,
+}, (_source, args) => {
+  const id = core.GetFivemId(args.id);
+  if (id) console.log(`add_principal identifier.fivem:${id} group.admin`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('fivemid', {
+  help = 'Prints the add_principal line for a player',
+  params = { { name = 'id', type = 'playerId' } },
+  restricted = true,
+}, function(_, args)
+  local id = exports['ai-core']:GetFivemId(args.id)
+  if id then print(('add_principal identifier.fivem:%s group.admin'):format(id)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### GetCharacterInfo
+
+Персонаж по id в базе данных, загружен он или нет, с id аккаунта, которому он принадлежит. Используйте, чтобы показать владельца чего-либо, когда этот человек может быть офлайн.
+
+**Сторона:** сервер · **Ожидание:** нет (отвечает через `done`) · **Библиотека:** нет
+
+```ts title="Сигнатура"
+GetCharacterInfo(
+  charId: number,
+  done: (info: (CharacterInfo & { userId: number }) | null) => void,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetCharacterInfo(charId, function(info) end) -- info: table или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа в базе данных.', required: true },
+    done: { type: '(info) => void', description: 'Вызывается один раз с ответом. Сразу для загруженного или недавно прочитанного персонажа, иначе после одного чтения из базы данных.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. `done` получает [CharacterInfo](/ru/docs/developers/api/types#characterinfo) с ещё одним полем, `userId` (id аккаунта), или `null` для неизвестного или удалённого персонажа, неверного id или неудачного чтения. Если `done` не функция, вызов ничего не делает.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("charinfo", {
+  help: "Shows a character by id",
+  params: [{ name: "charId", type: "number" }],
+  restricted: true,
+}, (_source, args) => {
+  core.GetCharacterInfo(args.charId, (info) => {
+    if (!info) return console.log("no such character");
+    console.log(`${info.firstname} ${info.lastname} (${info.citizenid}), account ${info.userId}`);
+  });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('charinfo', {
+  help = 'Shows a character by id',
+  params = { { name = 'charId', type = 'number' } },
+  restricted = true,
+}, function(_, args)
+  exports['ai-core']:GetCharacterInfo(args.charId, function(info)
+    if not info then return print('no such character') end
+    print(('%s %s (%s), account %d'):format(info.firstname, info.lastname, info.citizenid, info.userId))
+  end)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Сохранённый персонаж держится 5 минут после чтения, поэтому имя, изменённое в админ-панели, может столько же показывать старое значение. Загруженный персонаж всегда отвечает из памяти.
+</Callout>
+
+### SwitchCharacter
+
+Отправляет игрока обратно на экран персонажей, не выходя с сервера, как выход из персонажа. ai-core сначала сохраняет и выгружает персонажа, затем открывает экран.
+
+**Сторона:** сервер · **Ожидание:** нет (выгрузка выполняется после возврата из вызова) · **Библиотека:** нет
+
+```ts title="Сигнатура"
+SwitchCharacter(src: number): boolean
+```
+
+```lua title="Lua"
+local started = exports['ai-core']:SwitchCharacter(source) -- boolean
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда смена началась. `false`, когда у игрока нет загруженного персонажа.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Кнопка «Сменить персонажа» в вашем меню.
+onClientCallback("myscript:logout", (source) =>
+  core.SwitchCharacter(source) ? { ok: true } : fail("NO_CHARACTER"),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:logout', function(source)
+  if exports['ai-core']:SwitchCharacter(source) then return { ok = true } end
+  return aiLib.fail('NO_CHARACTER')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Ваш ресурс получает `ai-core:playerUnloaded` с причиной `"switch"`, когда персонажа уже нет. Очищайте состояние, привязанное к персонажу, там, а не сразу после этого вызова.
+</Callout>
+
+### SetOfflinePosition
+
+Перемещает точку появления незагруженного персонажа: в следующий раз, когда этого персонажа выберут, он появится там. Используйте, когда что-то перемещает спящее тело или офлайн-персонажа (тело унесли, игрока отбуксировали).
+
+**Сторона:** сервер · **Ожидание:** нет (запись идёт в фоне) · **Библиотека:** [`characters.setOfflinePosition`](/ru/docs/developers/api/lib-server/world#characterssetofflineposition)
+
+```ts title="Сигнатура"
+SetOfflinePosition(
+  charId: number,
+  position: { x: number; y: number; z: number; heading?: number },
+): boolean
+```
+
+```lua title="Lua"
+local accepted = exports['ai-core']:SetOfflinePosition(charId, { x = x, y = y, z = z, heading = h })
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа в базе данных. Целое число.', required: true },
+    position: { type: '{ x, y, z, heading? }', description: 'Новая точка появления в мировых координатах (метры). `heading` в градусах.', required: true, typeDescription: '{ x: number; y: number; z: number; heading?: number }' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда перемещение принято; запись в базу данных выполняется, как только не идёт ни загрузка, ни сохранение этого персонажа (ждёт до 30 секунд). `false`, когда персонаж сейчас загружен, `charId` не целое число или координата отсутствует или не является конечным числом. Отсутствующий `heading` сохраняется как 0.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+const HOSPITAL = { x: 298.6, y: -584.5, z: 43.3, heading: 70 };
+
+/** A body left in the world too long is moved to the hospital. */
+export function sendBodyToHospital(charId: number): void {
+  if (!core.SetOfflinePosition(charId, HOSPITAL))
+    console.log(`character ${charId} is online, not moved`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local HOSPITAL = { x = 298.6, y = -584.5, z = 43.3, heading = 70.0 }
+
+function SendBodyToHospital(charId)
+  if not exports['ai-core']:SetOfflinePosition(charId, HOSPITAL) then
+    print(('character %d is online, not moved'):format(charId))
+  end
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Если персонаж загружается, пока запись ждёт, запись пропускается: пед загруженного персонажа находится там, где он на самом деле.
+</Callout>
+
+### GetPlayersInScope
+
+Игроки в зоне OneSync другого игрока: все, чья игра сейчас стримит этого игрока, примерно в 424 метрах вокруг. ai-core ведёт этот список по событиям зоны FiveM один раз для всех ресурсов, поэтому другим ресурсам никогда не нужно слушать эти события самим.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`playersNear(source, radius)`](/ru/docs/developers/api/lib-server/players#playersnear) и [`playersNearEntity(entity, radius)`](/ru/docs/developers/api/lib-server/players#playersnearentity) строятся на нём и фильтруют по расстоянию
+
+```ts title="Сигнатура"
+GetPlayersInScope(source: number): number[]
+```
+
+```lua title="Lua"
+local nearby = exports['ai-core']:GetPlayersInScope(source) -- список серверных id
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока в центре.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number[]`: серверные id других игроков в зоне (самого игрока в списке нет). Пустой список для игрока в одиночестве, неизвестного id или значения, которое не является числом.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { coordsOf, resourceExport } from "@aicore-fivem/lib/server";
+import { distance } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+/** Plays a sound for everyone within 30 m of a player. */
+export function playNear(source: number, sound: string): void {
+  const at = coordsOf(source);
+  for (const other of [source, ...core.GetPlayersInScope(source)])
+    if (distance(coordsOf(other), at) <= 30) emitNet("myscript:sound", other, sound);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function PlayNear(source, sound)
+  local at = GetEntityCoords(GetPlayerPed(source))
+  local targets = exports['ai-core']:GetPlayersInScope(source)
+  targets[#targets + 1] = source
+  for _, other in ipairs(targets) do
+    if #(GetEntityCoords(GetPlayerPed(other)) - at) <= 30.0 then
+      TriggerClientEvent('myscript:sound', other, sound)
+    end
+  end
+end
+```
+</Tab>
+</Tabs>

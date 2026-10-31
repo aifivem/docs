@@ -1,0 +1,480 @@
+---
+title: События моста фреймворков
+description: События ESX, QB / Qbox и vRP, которые отправляет ai-core, чтобы скрипты, написанные под эти фреймворки, продолжали работать, с их точными аргументами, и события фреймворков, на которые отвечает ai-core.
+icon: Cable
+---
+
+ai-core представляется как `es_extended`, `qb-core`, `qbx_core` и `vrp`, поэтому скрипты, написанные под эти фреймворки, работают без изменений. Частью этого является отправка собственных событий фреймворка, когда в ai-core что-то меняется: загружается персонаж, перемещаются деньги, меняется работа. На этой странице перечислены все события фреймворков, которые отправляет мост, с аргументами в том виде, в каком их отправляет мост, и события фреймворков, на которые он отвечает.
+
+**Новый код не должен их использовать.** Пишите под собственные события ai-core ([серверные](/ru/docs/developers/api/events/server), [клиентские](/ru/docs/developers/api/events/client)) и библиотеку: они несут больше (несколько работ, банды, дежурство) и не зависят от формы фреймворка. Эта страница нужна для запуска и исправления существующих скриптов ESX / QB / vRP.
+
+<Callout type="info">
+Представления фреймворков хранят одну работу на игрока: работу, на которой игрок на дежурстве, иначе его первую работу. Сам ai-core разрешает несколько работ. В ESX нет банд; счёт `money` в ESX - это `cash` в ai-core.
+</Callout>
+
+## QBCore и Qbox: сервер
+
+Мост отправляет их на сервере через `TriggerEvent`. Скрипты Qbox слушают те же имена QBCore; мост не отправляет событий, существующих только в Qbox.
+
+### QBCore:Server:PlayerLoaded
+
+Персонаж загружен (из `ai-core:playerLoaded`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    Player: { type: 'table', description: 'Объект Player из QB: `PlayerData` (`source`, `citizenid`, `name`, `money`, `charinfo`, `job`, `gang`, `metadata`...) и `Functions` (`AddMoney`, `RemoveMoney`, `SetJob`, `GetMetaData`...).', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("QBCore:Server:PlayerLoaded", (player: { PlayerData: { source: number; citizenid: string } }) => {
+  console.log(`${player.PlayerData.citizenid} loaded (src ${player.PlayerData.source})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('QBCore:Server:PlayerLoaded', function(Player)
+  print(('%s loaded (src %d)'):format(Player.PlayerData.citizenid, Player.PlayerData.source))
+end)
+```
+</Tab>
+</Tabs>
+
+### QBCore:Server:OnPlayerUnload
+
+Персонаж отпущен: игрок ушёл или вернулся на экран персонажей (из `ai-core:playerUnloaded`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("QBCore:Server:OnPlayerUnload", (source: number) => console.log(`${source} unloaded`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('QBCore:Server:OnPlayerUnload', function(source) print(('%d unloaded'):format(source)) end)
+```
+</Tab>
+</Tabs>
+
+### QBCore:Server:OnMoneyChange
+
+Изменился баланс счёта (из `ai-core:moneyChanged`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    account: { type: 'string', description: 'Имя счёта в ai-core (`"cash"`, `"bank"`...).', required: true },
+    amount: { type: 'number', description: 'Сколько переместилось, всегда положительное.', required: true },
+    action: { type: '"add" | "remove"', description: '`add` для поступления денег, `remove` для списания.', required: true },
+    reason: { type: 'string', description: 'Причина, которую указал скрипт, переместивший деньги.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("QBCore:Server:OnMoneyChange", (source: number, account: string, amount: number, action: "add" | "remove", reason: string) => {
+  console.log(`${source} ${action} ${amount} ${account} (${reason})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('QBCore:Server:OnMoneyChange', function(source, account, amount, action, reason)
+  print(('%d %s %d %s (%s)'):format(source, action, amount, account, reason))
+end)
+```
+</Tab>
+</Tabs>
+
+### QBCore:Server:OnJobUpdate
+
+Изменилась работа игрока во фреймворке: работа добавлена или удалена, изменился ранг, заступление на дежурство или уход с него, или правка этой работы в панели (из `ai-core:jobsChanged`, `ai-core:dutyChanged`, `ai-core:definitionsChanged`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    job: { type: 'table', description: 'Таблица работы QB: `name`, `label`, `type`, `payment`, `onduty`, `isboss`, `grade = { name, level }`.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("QBCore:Server:OnJobUpdate", (source: number, job: { name: string; onduty: boolean; grade: { level: number } }) => {
+  console.log(`${source}: ${job.name} grade ${job.grade.level}, on duty ${job.onduty}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('QBCore:Server:OnJobUpdate', function(source, job)
+  print(('%d: %s grade %d, on duty %s'):format(source, job.name, job.grade.level, tostring(job.onduty)))
+end)
+```
+</Tab>
+</Tabs>
+
+### QBCore:Server:OnGangUpdate
+
+Изменилась банда игрока во фреймворке: активная банда, список банд или правка этой банды в панели (из `ai-core:gangsChanged`, `ai-core:activeGangChanged`, `ai-core:definitionsChanged`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    gang: { type: 'table', description: 'Таблица банды QB: `name`, `label`, `isboss`, `grade = { name, level }`.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("QBCore:Server:OnGangUpdate", (source: number, gang: { name: string }) => console.log(`${source}: gang ${gang.name}`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('QBCore:Server:OnGangUpdate', function(source, gang) print(('%d: gang %s'):format(source, gang.name)) end)
+```
+</Tab>
+</Tabs>
+
+## QBCore и Qbox: клиент
+
+Отправляются на клиенте самого игрока через `TriggerEvent`.
+
+| Событие | Когда | Аргументы |
+| --- | --- | --- |
+| `QBCore:Client:OnPlayerLoaded` | Персонаж находится в мире. | нет |
+| `QBCore:Client:OnPlayerUnload` | Игрок вернулся на экран персонажей. | нет |
+| `QBCore:Player:SetPlayerData` | После загрузки и после каждого изменения денег, работы, банды или метаданных. | `(PlayerData: table)` весь PlayerData из QB. |
+| `QBCore:Client:OnJobUpdate` | Изменилась работа во фреймворке. | `(job: table)` таблица работы QB (как на сервере). |
+| `QBCore:Client:SetDuty` | Изменилось дежурство по той же работе. | `(onDuty: boolean)` |
+| `QBCore:Client:OnGangUpdate` | Изменилась банда во фреймворке. | `(gang: table)` таблица банды QB. |
+| `QBCore:Client:OnMoneyChange` | Изменился баланс счёта. | `(account: string, balance: number)` имя счёта в ai-core и новый баланс. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+on("QBCore:Client:OnPlayerLoaded", () => console.log("loaded"));
+on("QBCore:Client:OnJobUpdate", (job: { name: string }) => console.log(`job: ${job.name}`));
+on("QBCore:Client:SetDuty", (onDuty: boolean) => console.log(`on duty: ${onDuty}`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+AddEventHandler('QBCore:Client:OnPlayerLoaded', function() print('loaded') end)
+AddEventHandler('QBCore:Client:OnJobUpdate', function(job) print(('job: %s'):format(job.name)) end)
+AddEventHandler('QBCore:Client:SetDuty', function(onDuty) print(('on duty: %s'):format(tostring(onDuty))) end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+`QBCore:Client:OnMoneyChange` несёт `(account, balance)`, то есть новый баланс, а не собственные аргументы qb-core. Скрипт QB, который читает его как сумму, увидит баланс. Предпочитайте `QBCore:Player:SetPlayerData` или `onPlayerData("money", ...)` из ai-core.
+</Callout>
+
+## ESX: сервер
+
+### esx:playerLoaded
+
+Персонаж загружен (из `ai-core:playerLoaded`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    xPlayer: { type: 'table', description: 'xPlayer из ESX: `source`, `identifier` (citizenid из ai-core), `name`, `job`, `group` и функции (`getMoney`, `addAccountMoney`, `getInventoryItem`...).', required: true },
+    isNew: { type: 'boolean', description: 'Всегда `false`.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("esx:playerLoaded", (source: number, xPlayer: { identifier: string }) => {
+  console.log(`${xPlayer.identifier} loaded (src ${source})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('esx:playerLoaded', function(source, xPlayer, isNew)
+  print(('%s loaded (src %d)'):format(xPlayer.identifier, source))
+end)
+```
+</Tab>
+</Tabs>
+
+### esx:playerDropped
+
+Игрок покинул сервер (из `ai-core:playerUnloaded` с причиной `dropped`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    reason: { type: 'string', description: 'Всегда `"dropped"`.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("esx:playerDropped", (source: number) => console.log(`${source} left`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('esx:playerDropped', function(source, reason) print(('%d left'):format(source)) end)
+```
+</Tab>
+</Tabs>
+
+### esx:playerLogout
+
+Игрок вернулся на экран персонажей и остаётся подключённым (из `ai-core:playerUnloaded` с причиной `switch`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("esx:playerLogout", (source: number) => console.log(`${source} switched character`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('esx:playerLogout', function(source) print(('%d switched character'):format(source)) end)
+```
+</Tab>
+</Tabs>
+
+### esx:setJob
+
+Изменилась работа игрока во фреймворке (в те же моменты, что и `QBCore:Server:OnJobUpdate`).
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    job: { type: 'table', description: 'Таблица работы ESX: `id` (всегда 0), `name`, `label`, `grade`, `grade_name`, `grade_label`, `grade_salary`, `skin_male`, `skin_female` (пустые таблицы), `onDuty`.', required: true },
+    lastJob: { type: 'table | nil', description: 'Таблица работы до изменения; `nil`, когда у моста её ещё не было.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("esx:setJob", (source: number, job: { name: string; grade: number }) => {
+  console.log(`${source}: ${job.name} grade ${job.grade}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('esx:setJob', function(source, job, lastJob)
+  print(('%d: %s grade %d'):format(source, job.name, job.grade))
+end)
+```
+</Tab>
+</Tabs>
+
+## ESX: клиент
+
+Отправляются на клиенте самого игрока через `TriggerEvent`.
+
+| Событие | Когда | Аргументы |
+| --- | --- | --- |
+| `esx:playerLoaded` | Персонаж находится в мире. | `(PlayerData: table, isNew: false)` клиентский PlayerData из ESX. |
+| `esx:onPlayerLogout` | Игрок вернулся на экран персонажей. | нет |
+| `esx:setAccountMoney` | Изменился баланс счёта. | `(account: { name, money, label })`; `name` равен `"money"` для `cash` из ai-core. |
+| `esx:setJob` | Изменилась работа во фреймворке. | `(job: table, lastJob: table \| nil)` таблицы работ ESX (как на сервере). |
+| `esx:setPlayerData` | Выполнился `ESX.SetPlayerData`: сменился пед (смена модели, возрождение) или изменились метаданные. | `(key: string, value: any)` |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+on("esx:playerLoaded", () => console.log("loaded"));
+on("esx:setAccountMoney", (account: { name: string; money: number }) => console.log(`${account.name}: ${account.money}`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+AddEventHandler('esx:playerLoaded', function(playerData, isNew) print('loaded') end)
+AddEventHandler('esx:setAccountMoney', function(account) print(('%s: %d'):format(account.name, account.money)) end)
+```
+</Tab>
+</Tabs>
+
+## vRP
+
+Мост vRP в ai-core отправляет серверные события vRP. `user_id` в vRP - это **id персонажа** в ai-core.
+
+### vRP:playerJoin
+
+Персонаж загружен. (vRP отправляет его при подключении; ai-core узнаёт id только после загрузки персонажа.)
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    user_id: { type: 'number', description: 'Id персонажа.', required: true },
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    name: { type: 'string', description: 'Имя игрока в FiveM.', required: true },
+    last_login: { type: 'string', description: 'Всегда `""`.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("vRP:playerJoin", (userId: number, source: number, name: string) => console.log(`${name} joined as user ${userId} (src ${source})`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('vRP:playerJoin', function(user_id, source, name, last_login)
+  print(('%s joined as user %d (src %d)'):format(name, user_id, source))
+end)
+```
+</Tab>
+</Tabs>
+
+### vRP:playerSpawn
+
+Персонаж помещён в мир. Срабатывает через 2 секунды после того, как ai-core его заспавнил, как в vRP. Только для спавна при загрузке персонажа: возрождения после смерти идут от скрипта смерти и его не вызывают.
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    user_id: { type: 'number', description: 'Id персонажа.', required: true },
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    first_spawn: { type: 'boolean', description: '`true` для первого спавна с момента загрузки этого персонажа.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("vRP:playerSpawn", (userId: number, source: number, firstSpawn: boolean) => {
+  if (firstSpawn) console.log(`user ${userId} spawned (src ${source})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('vRP:playerSpawn', function(user_id, source, first_spawn)
+  if first_spawn then print(('user %d spawned (src %d)'):format(user_id, source)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### vRP:playerLeave
+
+Персонаж отпущен: игрок ушёл или сменил персонажа.
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    user_id: { type: 'number', description: 'Id персонажа.', required: true },
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("vRP:playerLeave", (userId: number, source: number) => console.log(`user ${userId} left (src ${source})`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('vRP:playerLeave', function(user_id, source) print(('user %d left (src %d)'):format(user_id, source)) end)
+```
+</Tab>
+</Tabs>
+
+### vRP:playerJoinGroup and vRP:playerLeaveGroup
+
+Персонаж получил или потерял группу vRP. Группы - это работы ai-core, активная банда, имена групп, которые владелец сервера сопоставил в панели (вкладка «vRP scripts»), и дополнительные группы, которые добавляют скрипты vRP. Срабатывает при каждом изменении, в том числе при изменениях, которые ai-core или другой скрипт делает без vRP.
+
+**Сторона:** сервер
+
+<TypeTable
+  type={{
+    user_id: { type: 'number', description: 'Id персонажа.', required: true },
+    group: { type: 'string', description: 'Имя группы.', required: true },
+    gtype: { type: '"job" | "gang" | nil', description: '`job` для работы, `gang` для банды, `nil` для любой другой группы.', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+on("vRP:playerJoinGroup", (userId: number, group: string, gtype?: string) => console.log(`user ${userId} joined ${group} (${gtype ?? "group"})`));
+on("vRP:playerLeaveGroup", (userId: number, group: string) => console.log(`user ${userId} left ${group}`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('vRP:playerJoinGroup', function(user_id, group, gtype)
+  print(('user %d joined %s (%s)'):format(user_id, group, gtype or 'group'))
+end)
+AddEventHandler('vRP:playerLeaveGroup', function(user_id, group, gtype)
+  print(('user %d left %s'):format(user_id, group))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Расширения vRP 2 и 3 получают от моста собственные события расширений (`characterLoad`, `playerJoin`, `characterUnload`, `playerLeave`, `playerSpawn`, `playerDeath`, `playerMoneyUpdate`, `playerJoinGroup` / `playerLeaveGroup` и другие) через систему событий расширений vRP, а не как события FiveM. Не отправляются: `vRP:save`, `vRP:playerRejoin`, `vRPcli:playerSpawned`.
+</Callout>
+
+## События фреймворков, на которые отвечает ai-core
+
+Скрипты, написанные под фреймворк, отправляют эти события, ожидая ответа от фреймворка. Вместо него отвечает ai-core.
+
+| Событие | Сторона | Что делает ai-core |
+| --- | --- | --- |
+| `QBCore:GetObject`, `esx:getSharedObject` | обе | Вызывает callback с объектом ядра (`QBCore` / `ESX`). |
+| `QBCore:Server:TriggerCallback`, `esx:triggerServerCallback` | сервер (от клиентов) | Выполняет callback фреймворка, зарегистрированный через `CreateCallback` / `RegisterServerCallback`, и отвечает. Не более 30 запросов на игрока за любые 10 секунд. |
+| `QBCore:Notify`, `esx:showNotification`, `esx:showAdvancedNotification`, `ESX:Notify` | клиент (от сервера) | Показывает уведомление ai-lib. |
+| `esx:showHelpNotification`, `ESX:TextUI`, `ESX:HideUI`, `qb-core:client:DrawText`, `qb-core:client:ChangeText`, `qb-core:client:HideText`, `qb-core:client:KeyPressed` | клиент | Показывает или скрывает подсказку ai-lib. |
+| `qb-menu:client:openMenu`, `qb-menu:client:closeMenu` | клиент | Открывает или закрывает меню ai-lib с пунктами qb-menu. |
+| `progressbar:client:cancel` | клиент | Отменяет полосу прогресса моста. |
+| `police:server:policeAlert` | сервер | Отправляет полицейское оповещение в активную систему оповещений с позицией игрока. Клиенты отправляют `(text)` (одно на игрока за 10 секунд); серверные скрипты вызывают его через `TriggerEvent` с `(text, camId, playerSource)`. |
+| `qb-weathersync:client:DisableSync` / `EnableSync`, `cd_easytime:PauseSync`, `vSync:toggle` | клиент | Считаются причинами паузы синхронизации погоды и времени (см. [Синхронизация погоды и времени](/ru/docs/developers/api/core-client/world)). |

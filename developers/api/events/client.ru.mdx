@@ -1,0 +1,377 @@
+---
+title: Клиентские события
+description: Все клиентские локальные события, которые отправляет ai-core - локальный персонаж загружен или выгружен, состояние «лежит», кэшированные значения, видимость HUD, синхронизация мира, определения работ, подсказки клавиш, ремень безопасности - с аргументами и обработчиками.
+icon: Monitor
+---
+
+Клиент ai-core отправляет эти события через `TriggerEvent` в игре самого игрока. Их слышит каждый клиентский ресурс этого игрока; другие игроки - никогда. Они описывают только **локального** игрока.
+
+### ai-core:client:playerLoaded
+
+Персонаж локального игрока находится в мире. Начинайте здесь клиентскую работу, привязанную к персонажу (значения HUD, рабочие метки, циклы).
+
+**Сторона:** клиент · **Константа:** `CORE.clientPlayerLoadedEvent`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    data: { type: 'AiPlayerData', description: 'Всё о персонаже на этот момент: `character`, `money`, `jobs`, `duty`, `job`, `gangs`, `activeGang`, `metadata`. То же, что экспорт `GetPlayerData`.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#aiplayerdata' },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE, type AiPlayerData } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+function start(data: AiPlayerData): void {
+  console.log(`hello ${data.character?.firstname}, cash ${data.money.cash ?? 0}`);
+}
+
+// Также покрывает перезапуск ресурса, когда игрок уже в мире.
+const now = core.GetPlayerData();
+if (now) start(now);
+on(CORE.clientPlayerLoadedEvent, start);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local function start(data)
+  print(('hello %s, cash %d'):format(data.character.firstname, data.money.cash or 0))
+end
+
+-- Также покрывает перезапуск ресурса, когда игрок уже в мире.
+local now = exports['ai-core']:GetPlayerData()
+if now then start(now) end
+AddEventHandler('ai-core:client:playerLoaded', start)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:playerUnloaded
+
+Локальный персонаж отпущен: игрок вернулся на экран персонажей. Остановите работу, привязанную к персонажу, и очистите то, что хранили для него. (Когда игрок покидает сервер, его игра закрывается; ничего не срабатывает.)
+
+**Сторона:** клиент · **Константа:** `CORE.clientPlayerUnloadedEvent`
+
+#### Аргументы
+
+Нет.
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.clientPlayerUnloadedEvent, () => {
+  SendNUIMessage({ action: "reset" });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+AddEventHandler('ai-core:client:playerUnloaded', function()
+  SendNUIMessage({ action = 'reset' })
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:dead
+
+Локальный игрок упал (мёртв или last stand) или поднялся, в том скрипте смерти, который работает. Срабатывает только при изменении.
+
+**Сторона:** клиент · **Константа:** `CORE.clientDeadEvent` · **Библиотека:** `medical.onChange`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    dead: { type: 'boolean', description: '`true`: игрок упал. `false`: поднялся (реанимирован, возродился).', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { medical } from "@aicore-fivem/lib/client";
+
+// То же, что on(CORE.clientDeadEvent, ...).
+medical.onChange((dead) => {
+  if (dead) SendNUIMessage({ action: "close" });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+AddEventHandler('ai-core:client:dead', function(dead)
+  if dead then SendNUIMessage({ action = 'close' }) end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:cache
+
+Изменилось кэшированное значение локального игрока. Один наблюдатель в ai-core читает педа, транспорт, место и оружие для всех ресурсов и отправляет это событие только при изменении значения, поэтому ни одному ресурсу не нужно их опрашивать. На нём построены `cache` и `onCache` из библиотеки (`aiLib.cache` и `aiLib.cache.onChange` в Lua); используйте их.
+
+**Сторона:** клиент · **Константа:** `CORE.clientCacheEvent`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    key: { type: '"ped" | "vehicle" | "seat" | "weapon"', description: 'Какое значение изменилось.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#playercache' },
+    value: { type: 'number | false', description: '`ped`: новый хэндл педа. `vehicle`: хэндл транспорта, `false` пешком. `seat`: индекс места (`-1` = водитель), `false` пешком. `weapon`: хэш оружия в руке, `false` без оружия.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { onCache } from "@aicore-fivem/lib/client";
+
+onCache("vehicle", (vehicle, old) => {
+  if (vehicle !== false) console.log(`entered vehicle ${vehicle}`);
+  else if (old !== false) console.log("left the vehicle");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+aiLib.cache.onChange('vehicle', function(vehicle, old)
+  if vehicle then print(('entered vehicle %d'):format(vehicle))
+  elseif old then print('left the vehicle') end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:hudVisible
+
+HUD должны показаться или скрыться: открылся полноэкранный интерфейс или закрылся последний. Ресурс HUD слушает его.
+
+**Сторона:** клиент · **Константа:** `CORE.clientHudVisibleEvent` · **Библиотека:** `hud.onChange`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    visible: { type: 'boolean', description: '`true`: показать HUD. `false`: скрыть его.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/hud.ts"
+import { hud } from "@aicore-fivem/lib/client";
+
+hud.onChange((visible) => SendNUIMessage({ action: "visible", data: visible }));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/hud.lua"
+AddEventHandler('ai-core:client:hudVisible', function(visible)
+  SendNUIMessage({ action = 'visible', data = visible })
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:worldSync
+
+Синхронизация погоды и времени приостановлена или снова идёт. Скрипт погоды слушает его. См. [Синхронизация погоды и времени](/ru/docs/developers/api/core-client/world).
+
+**Сторона:** клиент · **Константа:** `CORE.clientWorldSyncEvent`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    paused: { type: 'boolean', description: '`true`: перестать применять погоду и время сервера. `false`: снова применять их.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/weather.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.clientWorldSyncEvent, (paused: boolean) => {
+  console.log(paused ? "weather sync paused" : "weather sync running");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/weather.lua"
+AddEventHandler('ai-core:client:worldSync', function(paused)
+  print(paused and 'weather sync paused' or 'weather sync running')
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:definitions
+
+Работа или банда добавлена, изменена или удалена в админ-панели. Срабатывает на каждом клиенте, один раз на каждую изменённую работу или банду. Используйте в паре с экспортом `GetDefinitions`.
+
+**Сторона:** клиент · **Константа:** `CORE.clientDefinitionsEvent`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    file: { type: '"jobs" | "gangs"', description: 'Какой список изменился.', required: true },
+    name: { type: 'string', description: 'Имя работы или банды.', required: true },
+    definition: { type: 'unknown', description: 'Новая запись в том виде, в каком её хранит панель, `null`, когда она удалена.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+См. пример [GetDefinitions](/ru/docs/developers/api/core-client/player#getdefinitions).
+
+### ai-core:client:characterPortrait
+
+Портрет для карточки персонажа на экране персонажей. Его отправляет скрипт одежды (ai-appearance); экран персонажей ai-core слушает и показывает картинку. Отправляйте его сами, только если пишете скрипт одежды.
+
+**Сторона:** клиент · **Константа:** `CORE.clientCharacterPortraitEvent` · **Кто отправляет:** скрипт одежды, слушает ai-core
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа карточки.', required: true },
+    url: { type: 'string', description: 'Url картинки, например текстура портрета `https://nui-img/<txd>/<txd>`.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/portraits.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+// Скрипт одежды передаёт портрет экрану персонажей.
+export function sendPortrait(charId: number, txd: string): void {
+  emit(CORE.clientCharacterPortraitEvent, charId, `https://nui-img/${txd}/${txd}`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/portraits.lua"
+-- Скрипт одежды передаёт портрет экрану персонажей.
+local function sendPortrait(charId, txd)
+  TriggerEvent('ai-core:client:characterPortrait', charId, ('https://nui-img/%s/%s'):format(txd, txd))
+end
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:keyHints
+
+Список подсказок клавиш, которые должны показывать HUD, изменился. Несёт весь новый список. Используйте в паре с экспортом `GetKeyHints`.
+
+**Сторона:** клиент · **Константа:** `KEY_HINTS.changedEvent`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    hints: { type: 'KeyHintView[]', description: 'Каждая строка для показа, по порядку: `{ id, key, label, icon? }`.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#keyhintview' },
+  }}
+/>
+
+#### Обработчик
+
+См. пример [GetKeyHints](/ru/docs/developers/api/core-client/keybinds#getkeyhints).
+
+### ai-core:client:seatbelt
+
+Ремень безопасности локального игрока изменился, в том скрипте ремня, который читает ai-core. Срабатывает от скриптов, которые сообщают об изменениях (ai-smallresources, qbx_seatbelt); с собственным ремнём HUD читайте `GetSeatbelt`, когда нужно.
+
+**Сторона:** клиент · **Константа:** `CORE.clientSeatbeltEvent` · **Библиотека:** `seatbelt.onChange`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    worn: { type: 'boolean | null', description: '`true`: ремень пристёгнут. `false`: ремень отстёгнут. `null`: скрипт не дал ясного ответа.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/hud.ts"
+import { seatbelt } from "@aicore-fivem/lib/client";
+
+seatbelt.onChange((worn) => SendNUIMessage({ action: "belt", data: worn === true }));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/hud.lua"
+aiLib.seatbelt.onChange(function(worn)
+  SendNUIMessage({ action = 'belt', data = worn == true })
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-smallresources:seatbelt
+
+Собственное событие ремня ai-smallresources. Его слушают HUD, которые поддерживают только ai-smallresources. Новый код должен слушать `ai-core:client:seatbelt` выше, которое работает с каждым поддерживаемым скриптом ремня.
+
+**Сторона:** клиент · **Константа:** `SEATBELT_EVENT`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    worn: { type: 'boolean | null', description: '`true`: ремень пристёгнут. `false`: ремень отстёгнут. `null`: неизвестно.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/hud.ts"
+import { SEATBELT_EVENT } from "@aicore-fivem/shared";
+
+on(SEATBELT_EVENT, (worn: boolean | null) => console.log(`belt: ${worn}`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/hud.lua"
+AddEventHandler('ai-smallresources:seatbelt', function(worn) print(('belt: %s'):format(tostring(worn))) end)
+```
+</Tab>
+</Tabs>
+
+## Внутренние клиентские события
+
+`Keybind` из библиотеки общается с клиентом ai-core двумя локальными событиями. Не отправляйте их и не отвечайте на них сами; используйте `Keybind` (TS) или `aiLib.Keybind` (Lua).
+
+| Событие | Константа | Направление | Аргументы |
+| --- | --- | --- | --- |
+| `ai-core:client:keybind` | `KEYBIND.announceEvent` | от библиотеки к ai-core | `(info: KeybindInfo)` привязка ждёт свою клавишу по умолчанию. |
+| `ai-core:client:keybindKey` | `KEYBIND.keyEvent` | от ai-core к библиотеке | `(resource: string, name: string, key: string)` клавиша для регистрации: клавиша из панели, иначе собственная клавиша скрипта. |

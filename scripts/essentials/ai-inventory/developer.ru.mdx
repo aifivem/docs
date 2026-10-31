@@ -1,0 +1,369 @@
+---
+title: ai-inventory для разработчиков
+description: Серверные и клиентские экспорты ai-inventory, используемые предметы, магазины из скриптов, событие usedItem и API ox_inventory и qb-inventory, на которые он отвечает.
+icon: Code
+---
+
+<Callout type="info">
+Для предметов в своём скрипте используйте слой инвентаря AI Core: `inventory` из lib (на сервере `inventory.addItem`, `removeItem`, `getItemCount`, `hasItem`, `canCarryItem`, `registerUsableItem`, `registerStash`, `openInventory`, `registerShop`...; на клиенте `inventory.hasItem`, `openInventory`, `currentWeapon`) или `aiLib.inventory` в Lua. Он работает с любым инвентарём, который запущен на сервере, поэтому владелец может заменить ai-inventory. См. [справочник lib](/ru/docs/developers/api/lib-server). Экспорты ниже предназначены для особых случаев и для чтения того, на что отвечает сам ai-inventory.
+</Callout>
+
+## Ссылки на инвентарь
+
+Каждый серверный экспорт, который принимает `inv`, допускает:
+
+| Значение | Инвентарь |
+| --- | --- |
+| `number` (или числовая строка) | Инвентарь игрока по серверному id. У игрока должен быть загруженный персонаж. |
+| `string` | Тайник по имени (ключ тайника из панели или имя, зарегистрированное через `RegisterStash`) или багажник или бардачок транспорта по номеру (`"trunk:<plate>"`, `"glovebox:<plate>"` или только номер для багажника). |
+| `{ id: string, owner: string \| number }` | Копия личного тайника одного персонажа. |
+
+<Callout type="warn">
+Экспорты работают с инвентарями, которые находятся в памяти: игроки онлайн, тайники, зарегистрированные скриптами, а также тайники из панели, багажники и бардачки, которые кто-то открывал после перезапуска (они выгружаются через 5 минут простоя). Для незагруженного инвентаря `AddItem` и `RemoveItem` отвечают `false`, а `GetItemCount` отвечает `0`.
+</Callout>
+
+## Серверные экспорты
+
+Типизированы как `AiInventoryServerExports` в `@aicore-fivem/shared`: `resourceExport("ai-inventory")` в TypeScript.
+
+### AddItem
+
+Добавляет предметы в инвентарь. Стаки с тем же именем и метаданными сливаются до размера стака предмета; остальное идёт в свободные ячейки.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+AddItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>, slot?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-inventory']:AddItem(source, 'water', 2)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    inv: { type: 'number | string | { id, owner }', description: 'Инвентарь (см. «Ссылки на инвентарь»).', required: true },
+    item: { type: 'string', description: 'Имя предмета или одно из его **Other names**.', required: true },
+    count: { type: 'number', description: 'Сколько, целое число больше 0.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Данные, которые хранятся в стаке (серийный номер, качество). Стаки сливаются только при одинаковых метаданных.' },
+    slot: { type: 'number', description: 'Ячейка, куда положить (с 1, по строкам). Если не указана: первое подходящее место.' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если добавлены все единицы. `false`, если инвентарь или предмет неизвестны, `count` некорректен или предмет не помещается (по ячейкам или весу). Когда ответ `false`, ничего не добавляется.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const inv = resourceExport("ai-inventory");
+
+onClientCallback("myscript:buyWater", (source) => {
+  if (!inv.CanCarryItem(source, "water", 1)) return fail("NO_SPACE");
+  if (!inv.AddItem(source, "water", 1)) return fail("NO_SPACE");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:buyWater', function()
+    local src = source
+    if not exports['ai-inventory']:CanCarryItem(src, 'water', 1) then return end
+    exports['ai-inventory']:AddItem(src, 'water', 1)
+end)
+```
+</Tab>
+</Tabs>
+
+### RemoveItem
+
+Забирает предметы из инвентаря.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+RemoveItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>, slot?: number): boolean
+```
+
+<TypeTable
+  type={{
+    inv: { type: 'number | string | { id, owner }', description: 'Инвентарь.', required: true },
+    item: { type: 'string', description: 'Имя предмета.', required: true },
+    count: { type: 'number', description: 'Сколько, целое число больше 0.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Только стаки с совпадающими метаданными.' },
+    slot: { type: 'number', description: 'Только из этой ячейки.' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если забраны все единицы. `false`, если их недостаточно (тогда ничего не забирается). Оружие, забранное у игрока, забирается и из его рук.
+
+### GetItemCount
+
+```ts title="Сигнатура"
+GetItemCount(inv: number | string, item: string, metadata?: Record<string, unknown>): number
+```
+
+Сколько единиц `item` (с совпадающими `metadata`, если они указаны) содержит инвентарь. `0` для неизвестного инвентаря или предмета. **Сторона:** сервер · **Ожидание:** нет.
+
+### CanCarryItem
+
+```ts title="Сигнатура"
+CanCarryItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>): boolean
+```
+
+Поместятся ли `count` единиц (по ячейкам и весу), без их добавления. **Сторона:** сервер · **Ожидание:** нет.
+
+### GetItems
+
+```ts title="Сигнатура"
+GetItems(inv: number | string): Array<{ name, label, weight, slot, count, amount, metadata, info, stack, unique, close, description, type, image }>
+```
+
+Каждый стак инвентаря. `count` / `metadata` (имена ox) и `amount` / `info` (имена qb) содержат одни и те же значения; `weight` является общим весом стака в граммах. Пустой список для неизвестного инвентаря. **Сторона:** сервер · **Ожидание:** нет.
+
+### GetWeight
+
+```ts title="Сигнатура"
+GetWeight(inv: number | string): { weight: number; maxWeight: number } | null
+```
+
+Переносимый вес и предел в граммах (`maxWeight` 0 = без ограничения). `null`, если инвентарь не загружен. **Сторона:** сервер · **Ожидание:** нет.
+
+### RegisterUsableItem
+
+Запускает вашу функцию, когда игрок использует предмет. Сначала проигрывается анимация предмета (если есть); ваша функция запускается, когда она закончится.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+RegisterUsableItem(name: string, handler: (source: number, item: { name: string; slot: number; count: number; metadata: Record<string, unknown> }) => unknown): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Имя предмета.', required: true },
+    handler: { type: '(source, item) => unknown', description: 'Ваша функция. Верните `false`, чтобы оставить предмет; любое другое значение забирает количество из **Used up per use** предмета.', required: true },
+  }}
+/>
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, notify } from "@aicore-fivem/lib/server";
+
+const inv = resourceExport("ai-inventory");
+
+inv.RegisterUsableItem("repairkit", (source, item) => {
+  const ped = GetPlayerPed(String(source));
+  const vehicle = GetVehiclePedIsIn(ped, false);
+  if (vehicle === 0) {
+    notify(source, "Sit in a vehicle first", "error");
+    return false; // оставить предмет
+  }
+  emitNet("myscript:repair", source, NetworkGetNetworkIdFromEntity(vehicle));
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-inventory']:RegisterUsableItem('repairkit', function(source, item)
+    local vehicle = GetVehiclePedIsIn(GetPlayerPed(source), false)
+    if vehicle == 0 then
+        aiLib.notify(source, 'Sit in a vehicle first', 'error')
+        return false -- оставить предмет
+    end
+    TriggerClientEvent('myscript:repair', source, NetworkGetNetworkIdFromEntity(vehicle))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Чтобы игроки могли использовать предмет с экрана, у него в панели должно быть включено **Can be used**, а чтобы он расходовался, **Used up per use** должно быть больше 0. Один обработчик на имя предмета: повторная регистрация заменяет его. Обработчик остаётся после остановки вашего ресурса; регистрируйте его один раз при старте.
+</Callout>
+
+### RegisterStash
+
+Регистрирует тайник из скрипта (дом, шкафчик банды). Общие тайники загружаются сразу и остаются загруженными.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+RegisterStash(name: string, label: string, slots: number, maxWeight: number, jobs?: string[], personal?: boolean): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Id тайника, используется для открытия и в экспортах предметов.', required: true },
+    label: { type: 'string', description: 'Название, которое видят игроки.', required: true },
+    slots: { type: 'number', description: 'Сколько ячеек; превращается в строки по числу столбцов из панели.', default: '50' },
+    maxWeight: { type: 'number', description: 'Предел веса в граммах.', default: '100000' },
+    jobs: { type: 'string[]', description: 'Работы, которые могут его открывать (любой ранг). Пусто: все.' },
+    personal: { type: 'boolean', description: '`true`: у каждого персонажа своё содержимое.', default: 'false' },
+  }}
+/>
+
+У тайника из скрипта нет места в мире: открывайте его через `OpenInventory`.
+
+### OpenInventory
+
+Открывает инвентарь на экране игрока рядом с его собственным.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+OpenInventory(source: number, inv: number | string): boolean
+```
+
+#### Возвращает
+
+`boolean`: `true`, если открыт. `false`, если у игрока нет загруженного инвентаря, инвентарь неизвестен или не загружен или это собственный инвентарь игрока.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const inv = resourceExport("ai-inventory");
+inv.RegisterStash("gang_ballas", "Ballas locker", 60, 200_000);
+
+onClientCallback("myscript:openLocker", (source) => {
+  return inv.OpenInventory(source, "gang_ballas") ? { ok: true } : fail("CANNOT_OPEN");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-inventory']:RegisterStash('gang_ballas', 'Ballas locker', 60, 200000)
+
+RegisterNetEvent('myscript:openLocker', function()
+    exports['ai-inventory']:OpenInventory(source, 'gang_ballas')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Перед вызовом `OpenInventory` проверьте на сервере, что игрок может его открыть (банда, расстояние): экспорт открывает то, что вы просите.
+</Callout>
+
+### ClearInventory
+
+```ts title="Сигнатура"
+ClearInventory(inv: number | string): void
+```
+
+Очищает инвентарь. **Сторона:** сервер · **Ожидание:** нет.
+
+### RegisterShop и OpenShop
+
+Магазин без места, который открывает ваш скрипт (приложение телефона, меню NPC). Покупка разрешена, только пока у этого игрока он открыт, оплата сначала наличными, затем с банка. Магазин из панели с тем же id имеет приоритет.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+RegisterShop(name: string, label: string, items: Array<{ name: string; price: number }>): void
+OpenShop(source: number, name: string): boolean
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Id магазина.', required: true },
+    label: { type: 'string', description: 'Название, которое видят игроки. По умолчанию `name`.', required: true },
+    items: { type: '{ name: string; price: number }[]', description: 'Товары: имя предмета и целая цена от 0 за единицу. Некорректные строки пропускаются.', required: true },
+  }}
+/>
+
+`OpenShop` возвращает `false`, если магазин неизвестен или у игрока нет инвентаря.
+
+### Предметы
+
+```ts title="Сигнатура"
+Items(name?: string): { name, label, weight, stack, unique, close, description, type, image, useable } | Record<string, ...> | null
+```
+
+Одно определение предмета (формат ox), все определения по имени, если `name` не указан, или `null` для неизвестного имени. `stack` равно `true`, когда размер стака больше 1; `unique`, когда он равен 1. **Сторона:** сервер · **Ожидание:** нет.
+
+## Клиентские экспорты
+
+| Экспорт | Возвращает | Что делает |
+| --- | --- | --- |
+| `OpenSelf()` | ничего | Открывает собственный экран игрока с землёй, багажником или бардачком рядом (как **F2**). |
+| `OpenInventory(type, data)` | ничего | `type` `"stash"` или `"shop"` с id в `data` (или `{ id }`), `"drop"` с id сумки на земле; всё остальное открывает собственный инвентарь игрока. Сервер всё равно проверяет доступ. |
+| `CloseInventory()` | ничего | Закрывает экран. |
+| `GetItemCount(item: string)` | `number` | Сколько предметов у игрока. |
+| `HasItem(items, amount?)` | `boolean` | `items` может быть именем, списком (каждый не меньше `amount`, по умолчанию 1) или `{ name: count }`. |
+| `GetPlayerItems()` | `array` | Стаки игрока (`name`, `label`, `slot`, `count`, `amount`, `metadata`, `info`, `weight`, `stack`, `close`, `description`). |
+
+`OpenSelf` и `HasItem` типизированы как `AiInventoryClientExports`.
+
+## События
+
+### ai-inventory:usedItem
+
+Срабатывает на сервере после каждого использования предмета.
+
+**Сторона:** сервер (локальное событие)
+
+| Аргумент | Тип | Что это |
+| --- | --- | --- |
+| `source` | `number` | Игрок. |
+| `name` | `string` | Имя предмета. |
+| `slot` | `number` | Ячейка, в которой был стак. |
+| `metadata` | `Record<string, unknown>` | Метаданные стака. |
+| `status` | `{ hunger?, thirst?, stress? }` | Значения потребностей предмета из панели. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("ai-inventory:usedItem", (source: number, name: string) => {
+  if (name === "joint") emitNet("myscript:highEffect", source);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('ai-inventory:usedItem', function(source, name)
+    if name == 'joint' then TriggerClientEvent('myscript:highEffect', source) end
+end)
+```
+</Tab>
+</Tabs>
+
+AI Core превращает его в своё собственное событие `ai-core:itemUsed (source, name, status)`; слушайте именно его, если ваш скрипт должен работать с любым инвентарём.
+
+## API ox_inventory
+
+ai-inventory делает `provide` для `ox_inventory` и отвечает на его экспорты (написано по ox_inventory 2.44). Инвентари называются так же, как в ox: source игрока, имя тайника, `{ id, owner }` для личных тайников, номер для багажников.
+
+- **Сервер:** `AddItem` (возвращает `success, response`, вызывает `cb`), `RemoveItem`, `GetItem`, `GetItemCount`, `Search` (`count` / `slots`), `CanCarryItem`, `CanCarryWeight`, `CanCarryAmount`, `GetInventory`, `GetInventoryItems`, `GetSlot`, `GetSlotWithItem`, `GetSlotsWithItem`, `GetSlotIdWithItem`, `GetSlotIdsWithItem`, `GetEmptySlot`, `SetMetadata`, `SetDurability`, `SetMaxWeight`, `RegisterStash`, `ClearInventory`, `Items`, `ItemList`, `forceOpenInventory` (тайник, игрок, магазин), `CreateTemporaryStash`, `CustomDrop`, `RemoveInventory`, `SwapSlots`.
+- **Клиент:** `openInventory`, `closeInventory`, `Search`, `GetItemCount`, `GetPlayerItems`, `GetPlayerWeight`, `GetPlayerMaxWeight`, `Items`, `useSlot`, `getCurrentWeapon` / `GetCurrentWeapon`. `displayMetadata`, `weaponWheel` и `setStashTarget` принимаются и ничего не делают.
+- **Не поддерживается:** хуки (`registerHook`, `removeHooks`), `UpdateVehicle`, `ConfiscateInventory` / `ReturnInventory`, `GetContainerFromSlot`, `RegisterShop` (магазины берутся из панели или из собственного `RegisterShop` ai-inventory).
+
+## API qb-inventory
+
+ai-inventory делает `provide` для `qb-inventory` (API 2.0). Возвращаемые предметы содержат оба формата: `count` / `metadata` и `amount` / `info`.
+
+- **Сервер:** `AddItem(identifier, item, amount, slot, info)`, `RemoveItem`, `HasItem` (имя, список или `{ name = amount }`), `GetItemCount`, `GetItemByName`, `GetItemsByName`, `GetItemBySlot`, `CanAddItem`, `GetFreeWeight`, `GetSlots`, `ClearInventory`, `SetItemData`, `CreateInventory`, `OpenInventory`, `OpenInventoryById`, `RemoveInventory`, `CloseInventory`.
+- **Клиент:** `HasItem`, `CloseInventory`.
+- **Не поддерживается:** хуки и слушатели, `CreateShop` / `OpenShop`, `SetInventory`, `GetInventory`, `SaveInventory`, `LoadInventory`, `UseItem`, `GetFirstSlotByItem`, `GetSlotsByItem`, `GetTotalWeight`.
+
+## База данных и логи
+
+Таблица `ai_inventory_inventories`: одна строка на сохранённый инвентарь (`id`, JSON `items`). Пишет в неё только ai-inventory; изменения сохраняются каждые 30 секунд, при выгрузке и при остановке. Каналы логов: `moves` (по умолчанию выключен), `drops`, `gives`, `purchases`, `crafting`.

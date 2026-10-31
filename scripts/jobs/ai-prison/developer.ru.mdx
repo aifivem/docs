@@ -1,0 +1,225 @@
+---
+title: ai-prison для разработчиков
+description: Заключение, освобождение и оставшийся срок через слой тюрьмы AI Core, серверные экспорты ai-prison и метаданные персонажа, которые он хранит.
+icon: Code
+---
+
+<Callout type="info">
+Чтобы посадить в тюрьму из своего скрипта, используйте `prison.jail`, `prison.release` и `prison.timeLeft` из lib (TypeScript) или `aiLib.prison.*` (Lua). Они идут через слой тюрьмы AI Core и попадают в тот скрипт тюрьмы, который запущен (ai-prison, qb-prison, rcore_prison, xt-prison, tgiann-policejob). Экспорты ниже являются тем, что вызывает этот слой, пока запущен ai-prison.
+</Callout>
+
+## Функции lib (рекомендуется)
+
+### prison.jail
+
+Отправляет загруженного игрока в тюрьму на несколько минут. С ai-prison: игрок попадает в камеру, предметы забираются (переключатель в панели), срок обрезается до **Longest sentence**, и записывается запись MDT `jail`.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+prison.jail(source: number, minutes: number, by?: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.prison.jail(source, minutes, by)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока, которого нужно посадить. Нужен загруженный персонаж.', required: true },
+    minutes: { type: 'number', description: 'Длина срока в минутах. ai-prison округляет вниз, поднимает минимум до 1 и обрезает до Longest sentence из панели.', required: true },
+    by: { type: 'number', description: 'Серверный id того, кто отправил (офицер), для лога и записи MDT. 0 = никто.', default: '0' },
+  }}
+/>
+
+#### Возвращает
+
+`true`, если скрипт тюрьмы принял срок. `false`, если ни один скрипт тюрьмы не запущен или у игрока нет загруженного персонажа.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, notify, prison } from "@aicore-fivem/lib/server";
+
+// /judge <id> <minutes>: для игроков с принципалом judge.
+addCommand(
+  "judge",
+  {
+    help: "Sentence a player",
+    restricted: "ai.job.judge",
+    params: [
+      { name: "id", type: "playerId" },
+      { name: "minutes", type: "number" },
+    ] as const,
+  },
+  (source, { id, minutes }) => {
+    if (!prison.jail(id, minutes, source))
+      notify(source, "No prison is running", "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.addCommand('judge', {
+  help = 'Sentence a player',
+  restricted = 'ai.job.judge',
+  params = {
+    { name = 'id', type = 'playerId' },
+    { name = 'minutes', type = 'number' },
+  },
+}, function(source, args)
+  if not aiLib.prison.jail(args.id, args.minutes, source) then
+    aiLib.notify(source, 'No prison is running', 'error')
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Заключение игрока, который уже сидит, **устанавливает** срок в новую длину (а не прибавляет). Если скриптом тюрьмы является tgiann-policejob, минуты вместо этого прибавляются.
+</Callout>
+
+### prison.release
+
+Выпускает заключённого игрока сейчас. С ai-prison: он попадает в точку освобождения и получает обратно забранные предметы.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+prison.release(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.prison.release(source)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id заключённого игрока.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`true`, если игрок сидел и теперь свободен. `false`, если он не сидел или ни один скрипт тюрьмы не запущен.
+
+### prison.timeLeft
+
+Оставшиеся минуты срока.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+prison.timeLeft(source: number): number
+```
+
+```lua title="Lua"
+local minutes = aiLib.prison.timeLeft(source)
+```
+
+#### Возвращает
+
+Оставшиеся минуты, `0`, если игрок свободен или ни один скрипт тюрьмы не запущен.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, prison } from "@aicore-fivem/lib/server";
+
+inventory.registerUsableItem("phone", (source: number) => {
+  if (prison.timeLeft(source) > 0) {
+    notify(source, "No phones in prison", "error");
+    return;
+  }
+  // ... открыть телефон
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.inventory.registerUsableItem('phone', function(source)
+  if aiLib.prison.timeLeft(source) > 0 then
+    aiLib.notify(source, 'No phones in prison', 'error')
+    return
+  end
+  -- ... открыть телефон
+end)
+```
+</Tab>
+</Tabs>
+
+## Серверные экспорты
+
+Слой тюрьмы вызывает их, пока запущен ai-prison. Они не типизированы в `@aicore-fivem/shared`: в TypeScript вызывайте их через `callExport("ai-prison", name, ...args)`. Каждый экспорт также отвечает под своим двойником в нижнем регистре (`jailPlayer`).
+
+### JailPlayer
+
+```ts title="Сигнатура"
+JailPlayer(source: number, minutes: number, by?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-prison']:JailPlayer(source, minutes, by)
+```
+
+То же поведение и возвращаемое значение, что и у `prison.jail`. Отвечает `false`, если `source` или `minutes` не число.
+
+### ReleasePlayer
+
+```ts title="Сигнатура"
+ReleasePlayer(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-prison']:ReleasePlayer(source)
+```
+
+`true`, если игрок сидел и теперь освобождён; иначе `false`.
+
+### GetJailTime
+
+```ts title="Сигнатура"
+GetJailTime(source: number): number
+```
+
+```lua title="Lua"
+local minutes = exports['ai-prison']:GetJailTime(source)
+```
+
+Оставшиеся минуты, `0`, если свободен.
+
+## Метаданные персонажа
+
+ai-prison хранит своё состояние в метаданных персонажа ai-core (читайте через `GetMeta(source, key)` из экспортов ai-core или `PlayerData.metadata` через мост QB).
+
+| Ключ | Тип | Что хранит |
+| --- | --- | --- |
+| `injail` | `number` | Оставшиеся минуты (ключ QBCore). Запись числа больше 0 из другого скрипта начинает срок; запись 0 освобождает. |
+| `jailitems` | `{ name: string; count: number; metadata?: object }[] \| null` | Предметы, забранные у ворот, возвращаются при освобождении. |
+| `ai:jailLeftAt` | `number \| null` | Время (мс с 1970), когда игрок вышел, находясь в заключении, выставляется только при включённом **Count time offline**. |
+
+<Callout type="warn">
+Предпочитайте `prison.jail` записи в `injail`: он работает с любым скриптом тюрьмы, а `injail` читают только ai-prison и тюрьмы в стиле QB.
+</Callout>
+
+## Приватные события и колбэки
+
+Собственный контракт скрипта (`resource/common/prison.ts`). Они могут меняться между версиями: не вызывайте и не слушайте их из других ресурсов.
+
+| Имя | Направление | Что передаёт |
+| --- | --- | --- |
+| `ai-prison:client:state` | server -> jailed player | `(minutes)`: оставшиеся минуты, 0, если свободен (при загрузке, каждую минуту, при освобождении). |
+| `ai-prison:client:move` | server -> jailed player | `(point)`: телепорт в камеру, обратно внутрь после побега или наружу при освобождении. |
+| `ai-prison:workStart` | client callback | `(taskId)`: работа на месте; сервер запускает полосу прогресса, затем снимает минуты. |
+| `ai-prison:canteen` | client callback | `()`: еда из столовой. |

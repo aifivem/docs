@@ -1,0 +1,283 @@
+---
+title: State bags
+description: "EntityState, PlayerState, GlobalKey, GlobalGroup и парсеры stateNumber, stateBoolean, stateString: чтение реплицируемых значений из памяти."
+icon: Database
+---
+
+State bag это значение, которое FiveM копирует с сервера на клиенты, которым оно нужно: топливо транспорта (`Entity(vehicle).state.fuel`), лежит ли игрок без сознания (`Player(id).state.dead`), флаг на весь сервер (`GlobalState["ai:pvp"]`).
+
+Прямое чтение bag медленное: каждое чтение создаёт прокси, вызывает несколько нативов и заново декодирует значение. Эти классы держат **один обработчик изменений на ключ** и копию каждого значения в памяти, поэтому чтение сводится к поиску в Map. Используйте их для любого bag, который читаете больше одного раза.
+
+```ts title="Файл клиента: версии только для чтения (get, onChange)"
+import { EntityState, PlayerState, GlobalKey, GlobalGroup, stateNumber, stateBoolean, stateString } from "@aicore-fivem/lib/client";
+```
+
+```ts title="Файл сервера: те же классы плюс set(...)"
+import { EntityState, PlayerState, GlobalKey, GlobalGroup, stateNumber, stateBoolean, stateString } from "@aicore-fivem/lib/server";
+```
+
+Этих классов нет в `@aicore-fivem/lib/fivem`: импортируйте их из точки входа клиента или сервера. State bags пишет только сервер (`sv_stateBagStrictMode`); клиент просит сервер через колбэк, и сервер задаёт значение. Серверные методы `set` описаны на странице [Lib: сервер, State bags](/ru/docs/developers/api/lib-server/state-bags).
+
+**Lua:** ни у одного из них нет Lua-аналога. Lua сам читает bags (`Entity(vehicle).state.fuel`, `Player(id).state.dead`, `GlobalState['ai:pvp']`) и слушает их через `AddStateBagChangeHandler`.
+
+Ключи, которые используют ai-core и скрипты `ai-*`, перечислены на странице [События и состояние](/ru/docs/developers/api/events).
+
+## Парсеры
+
+Каждый класс принимает парсер: функцию, которая превращает сырое реплицированное значение в ваш тип или в `undefined`, если значение неверное. Тип: `StateParse<T> = (value: unknown) => T | undefined`. Очищенный bag (`null`) всегда читается как `undefined`; парсер его не видит.
+
+### stateNumber
+
+Принимает конечное число; всё остальное (текст, `NaN`, `Infinity`) читается как `undefined`.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+stateNumber: StateParse<number>
+```
+
+#### Пример
+
+```ts
+import { EntityState, stateNumber } from "@aicore-fivem/lib/client";
+
+const fuel = new EntityState("fuel", stateNumber); // 0-100, задаёт скрипт топлива
+```
+
+### stateBoolean
+
+Принимает `true` или `false`; всё остальное читается как `undefined`.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+stateBoolean: StateParse<boolean>
+```
+
+#### Пример
+
+```ts
+import { PlayerState, stateBoolean } from "@aicore-fivem/lib/client";
+
+const dead = new PlayerState("dead", stateBoolean); // true, пока игрок без сознания (ai-death)
+```
+
+### stateString
+
+Принимает строку; всё остальное читается как `undefined`.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+stateString: StateParse<string>
+```
+
+#### Пример
+
+```ts
+import { GlobalKey, stateString } from "@aicore-fivem/lib/client";
+
+const inventoryScript = new GlobalKey("ai:inventory", stateString); // имя ресурса активного инвентаря
+```
+
+<Callout type="info">
+Для значения-объекта напишите собственный парсер, который проверяет каждое поле и возвращает `undefined` для неверного значения:
+
+```ts
+import { PlayerState, type StateParse } from "@aicore-fivem/lib/client";
+
+type Proximity = { index: number; distance: number; mode: string };
+const proximity: StateParse<Proximity> = (v) => {
+  if (typeof v !== "object" || v === null) return undefined;
+  const { index, distance, mode } = v as Record<string, unknown>;
+  return typeof index === "number" && typeof distance === "number" && typeof mode === "string"
+    ? { index, distance, mode }
+    : undefined;
+};
+const voiceRange = new PlayerState("proximity", proximity); // дальность pma-voice, которую записывает ai-voice
+```
+</Callout>
+
+## Классы
+
+### EntityState
+
+Один ключ state bags сущностей (`fuel`, `ai:owned`...) для каждой сетевой сущности. Значения хранятся по сетевому id; чтение принимает хэндл сущности.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+new EntityState<T>(key: string, parse: StateParse<T>)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'Ключ bag (`"fuel"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Превращает сырое значение в `T` или в `undefined` для неверного значения. См. «Парсеры» выше.', required: true },
+  }}
+/>
+
+#### Методы
+
+<TypeTable
+  type={{
+    'get(entity)': { type: '(entity: number) => T | undefined', description: 'Значение по хэндлу сущности. `undefined`, если значения нет, если сущность не сетевая или если `entity` равен 0.' },
+    'getByNetId(netId)': { type: '(netId: number) => T | undefined', description: 'Значение по сетевому id, насколько о нём знает эта сторона (без чтения bag).' },
+    'onChange(listener)': { type: '(listener: (netId: number, value: T | undefined, old: T | undefined) => void) => () => void', description: 'Выполняется после изменения значения; новое значение уже можно прочитать. Возвращает функцию, которая удаляет обработчик.' },
+    key: { type: 'string (read only)', description: 'Ключ bag.' },
+  }}
+/>
+
+#### Пример
+
+```ts title="resource/client/index.ts"
+import { EntityState, stateNumber, cache, every } from "@aicore-fivem/lib/client";
+
+const fuel = new EntityState("fuel", stateNumber);
+
+every(1000, () => {
+  if (cache.vehicle === false) return;
+  SendNUIMessage({ action: "fuel", value: fuel.get(cache.vehicle) ?? 100 });
+});
+```
+
+<Callout type="info">
+Память сама остаётся небольшой: сервер забывает сущность, когда её удаляют, а клиент каждые 30 секунд отбрасывает сущности, которые вышли из его зоны видимости. Сетевой id, заново занятый новой сущностью, читается заново.
+</Callout>
+
+### PlayerState
+
+Один ключ state bags игроков (`dead`, `cuffed`, `proximity` из pma-voice...) по серверному id.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+new PlayerState<T>(key: string, parse: StateParse<T>)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'Ключ bag (`"dead"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Превращает сырое значение в `T`.', required: true },
+  }}
+/>
+
+#### Методы
+
+<TypeTable
+  type={{
+    'get(serverId)': { type: '(serverId: number) => T | undefined', description: 'Значение игрока по серверному id (на клиенте локальный игрок: `cache.serverId`). `undefined`, если значения нет.' },
+    'onChange(listener)': { type: '(listener: (serverId: number, value: T | undefined, old: T | undefined) => void) => () => void', description: 'Выполняется после изменения значения. Возвращает функцию, которая удаляет обработчик.' },
+    key: { type: 'string (read only)', description: 'Ключ bag.' },
+  }}
+/>
+
+#### Пример
+
+```ts title="resource/server/index.ts"
+import { PlayerState, stateBoolean, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const dead = new PlayerState("dead", stateBoolean);
+const cuffed = new PlayerState("cuffed", stateBoolean);
+
+onClientCallback("my-shop:open", (source) => {
+  if (dead.get(source) || cuffed.get(source)) return fail("CANNOT_NOW");
+  return { ok: true };
+});
+```
+
+<Callout type="info">
+На сервере игрок, который вышел, забывается во всех `PlayerState` вашего ресурса (один общий обработчик `playerDropped`).
+</Callout>
+
+### GlobalKey
+
+Один ключ `GlobalState`: значение, которое нужно каждому игроку (переключатель PvP, активный инвентарь). Читается один раз при старте, затем поддерживается в актуальном виде обработчиком изменений.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+new GlobalKey<T>(key: string, parse: StateParse<T>)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'Ключ `GlobalState` (`"ai:pvp"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Превращает сырое значение в `T`.', required: true },
+  }}
+/>
+
+#### Методы
+
+<TypeTable
+  type={{
+    'get()': { type: '() => T | undefined', description: 'Текущее значение, `undefined`, если не задано.' },
+    'onChange(listener)': { type: '(listener: (id: "global", value: T | undefined, old: T | undefined) => void) => () => void', description: 'Выполняется после изменения значения. Первый аргумент всегда `"global"`.' },
+    key: { type: 'string (read only)', description: 'Ключ.' },
+  }}
+/>
+
+#### Пример
+
+```ts title="resource/client/index.ts"
+import { GlobalKey, stateBoolean } from "@aicore-fivem/lib/client";
+
+const pvp = new GlobalKey("ai:pvp", stateBoolean);
+
+pvp.onChange((_id, on) => SendNUIMessage({ action: "pvp", value: on === true }));
+```
+
+### GlobalGroup
+
+Много ключей `GlobalState` с общим префиксом (`ai:duty:police`, `ai:duty:ambulance`), которые читаются по части после префикса. Все группы ресурса делят один обработчик.
+
+**Сторона:** Клиент и сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+new GlobalGroup<T>(prefix: string, parse: StateParse<T>)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    prefix: { type: 'string', description: 'Общее начало ключей (`"ai:duty:"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Превращает каждое сырое значение в `T`.', required: true },
+  }}
+/>
+
+#### Методы
+
+<TypeTable
+  type={{
+    'get(id)': { type: '(id: string) => T | undefined', description: 'Значение `<prefix><id>`, `undefined`, если не задано.' },
+    'ids()': { type: '() => IterableIterator<string>', description: 'Все id, у которых есть значение.' },
+    'onChange(listener)': { type: '(listener: (id: string, value: T | undefined, old: T | undefined) => void) => () => void', description: 'Выполняется после изменения одного ключа группы, с id после префикса.' },
+    prefix: { type: 'string (read only)', description: 'Префикс.' },
+  }}
+/>
+
+#### Пример
+
+ai-core публикует, сколько игроков на дежурстве в каждой работе, под ключом `ai:duty:<job>`:
+
+```ts title="resource/client/index.ts"
+import { GlobalGroup, stateNumber } from "@aicore-fivem/lib/client";
+
+const onDuty = new GlobalGroup("ai:duty:", stateNumber);
+
+function policeOnline(): number {
+  return onDuty.get("police") ?? 0;
+}
+```
+
+<Callout type="warn">
+Создавайте каждый класс один раз на ключ, в начале файла, и никогда внутри часто вызываемой функции: каждый экземпляр добавляет обработчик изменений. `GlobalState` отправляется каждому игроку, поэтому кладите туда только значения, которые нужны каждому игроку.
+</Callout>

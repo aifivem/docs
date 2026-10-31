@@ -1,0 +1,215 @@
+---
+title: Игрок
+description: Прочитать персонажа, деньги, работы, дежурство и банды локального игрока, проверить, загружен ли персонаж, и прочитать определения работ и банд.
+icon: User
+---
+
+Эти экспорты читают то, что ai-core знает об игроке, который сидит за этой игрой: его персонажа, деньги, работы и банды. Сервер отправляет эти данные на клиент самого игрока один раз при загрузке персонажа, а затем только изменившиеся значения. Данные других игроков никогда не попадают на этот клиент.
+
+<Callout type="info">
+В TypeScript используйте `getPlayerData(key)` и `onPlayerData(key, handler)` из библиотеки вместо того, чтобы снова и снова вызывать `GetPlayerData`. В Lua используйте `aiLib.playerData.get(key)` и `aiLib.playerData.onChange(key, handler)`. Они читают экспорт один раз, а затем следят за каждым изменением, которое присылает ai-core.
+</Callout>
+
+### GetPlayerData
+
+Возвращает всё, что ai-core знает о загруженном персонаже локального игрока, одной таблицей: персонаж, деньги, работы, дежурство, основная работа, банды, активная банда и метаданные. Используйте, чтобы прочитать данные один раз при старте ресурса; за изменениями следите через `onPlayerData` (TS) или `aiLib.playerData.onChange` (Lua).
+
+**Сторона:** клиент · **Ожидание:** нет
+
+```ts title="Сигнатура"
+GetPlayerData(): AiPlayerData | null
+```
+
+```lua title="Lua"
+local data = exports['ai-core']:GetPlayerData() -- table или nil
+```
+
+#### Параметры
+
+Нет.
+
+#### Возвращает
+
+[`AiPlayerData`](/ru/docs/developers/api/types#aiplayerdata), пока персонаж находится в мире, `null` (`nil` в Lua) на экране персонажей, до загрузки первого персонажа и после того, как игрок вернулся на экран персонажей.
+
+<TypeTable
+  type={{
+    character: { type: 'CharacterInfo | null', description: 'Персонаж: `id`, `citizenid`, `slot`, `firstname`, `lastname`, `birthdate` (`YYYY-MM-DD`), `sex` (`"male"` или `"female"`), `nationality`.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#characterinfo' },
+    money: { type: 'Record<string, number>', description: 'Баланс каждого счёта по имени, например `{ cash: 500, bank: 12000 }`. Имена счетов задаются в админ-панели.', required: true },
+    jobs: { type: 'JobMembership[]', description: 'Все работы персонажа: `{ job, grade }`. У персонажа может быть несколько работ.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#jobmembership' },
+    duty: { type: 'string | null', description: 'Работа, на которой игрок сейчас на дежурстве, `null` вне дежурства.', required: true },
+    job: { type: 'JobMembership', description: 'Работа, которую другие скрипты считают «той самой» работой: работа на дежурстве, иначе последняя работа, где он был на дежурстве, иначе первая работа, иначе `{ job: "unemployed", grade: 0 }`.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#jobmembership' },
+    gangs: { type: 'GangMembership[]', description: 'Все банды, в которых состоит персонаж: `{ gang, grade }`.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#gangmembership' },
+    activeGang: { type: 'string | null', description: 'Банда, за которую игрок сейчас действует, `null`, если ни за какую.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Произвольные значения, хранящиеся с персонажем. Мосты фреймворков держат здесь метаданные ESX / QB (голод, жажда, стресс...).', required: true },
+  }}
+/>
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { getPlayerData, onPlayerData } from "@aicore-fivem/lib/client";
+
+// Показывает метку только для полиции, пока игрок на дежурстве в полиции.
+let blip = 0;
+
+function updateBlip(duty: string | null): void {
+  if (duty === "police" && blip === 0) {
+    blip = AddBlipForCoord(441.8, -982.0, 30.7); // Полицейский участок Mission Row
+    SetBlipSprite(blip, 60);
+  } else if (duty !== "police" && blip !== 0) {
+    RemoveBlip(blip);
+    blip = 0;
+  }
+}
+
+// Прочитать один раз (библиотека сама вызывает GetPlayerData из ai-core), затем следить за каждым изменением.
+updateBlip(getPlayerData("duty") ?? null);
+onPlayerData("duty", (duty) => updateBlip(duty));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- fxmanifest.lua: dependency 'ai-lib' и shared_script '@ai-lib/init.lua'
+-- Показывает метку только для полиции, пока игрок на дежурстве в полиции.
+local blip = 0
+
+local function updateBlip(duty)
+  if duty == 'police' and blip == 0 then
+    blip = AddBlipForCoord(441.8, -982.0, 30.7) -- Полицейский участок Mission Row
+    SetBlipSprite(blip, 60)
+  elseif duty ~= 'police' and blip ~= 0 then
+    RemoveBlip(blip)
+    blip = 0
+  end
+end
+
+-- Прочитать один раз (aiLib сам вызывает GetPlayerData из ai-core), затем следить за каждым изменением.
+updateBlip(aiLib.playerData.get('duty'))
+aiLib.playerData.onChange('duty', updateBlip)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Это собственная копия игрока, чтобы показывать что-то на экране. Никогда не принимайте на её основе решений, которым должен доверять сервер (платёж, предмет, доступ к тайнику): сервер проверяет заново своими экспортами.
+</Callout>
+
+### IsPlayerLoaded
+
+Сообщает, находится ли персонаж в мире на этом клиенте. Используйте перед запуском всего, чему нужен персонаж (HUD, рабочий цикл), если ваш ресурс может стартовать после того, как игрок уже загрузился.
+
+**Сторона:** клиент · **Ожидание:** нет
+
+```ts title="Сигнатура"
+IsPlayerLoaded(): boolean
+```
+
+```lua title="Lua"
+local loaded = exports['ai-core']:IsPlayerLoaded() -- boolean
+```
+
+#### Параметры
+
+Нет.
+
+#### Возвращает
+
+`boolean`: `true` с момента, когда персонаж помещён в мир, `false` на экране персонажей, пока игрок выбирает точку появления, и после того, как он вернулся на экран персонажей.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+function start(): void {
+  console.log("character ready, starting the job loop");
+}
+
+// Игрок мог загрузиться до старта этого ресурса (перезапуск): сначала проверить, затем слушать.
+if (core.IsPlayerLoaded()) start();
+on(CORE.clientPlayerLoadedEvent, start);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local function start()
+  print('character ready, starting the job loop')
+end
+
+-- Игрок мог загрузиться до старта этого ресурса (перезапуск): сначала проверить, затем слушать.
+if exports['ai-core']:IsPlayerLoaded() then start() end
+AddEventHandler('ai-core:client:playerLoaded', start)
+```
+</Tab>
+</Tabs>
+
+### GetDefinitions
+
+Возвращает все работы или все банды в том виде, в каком их хранит админ-панель (названия, ранги и остальные поля, которые редактирует панель). Мосты фреймворков используют это, чтобы собирать таблицы работ ESX / QB. Прочитайте один раз, затем следите за клиентским событием `ai-core:client:definitions`, которое срабатывает для каждой работы или банды, изменённой в панели.
+
+**Сторона:** клиент · **Ожидание:** нет
+
+```ts title="Сигнатура"
+GetDefinitions(file: "jobs" | "gangs"): Record<string, unknown> | null
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetDefinitions('jobs') -- таблица с ключами по имени работы, или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    file: { type: '"jobs" | "gangs"', description: 'Какой файл панели читать: все работы или все банды.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`Record<string, unknown>`: по записи на каждую работу или банду с ключом по её имени (`police`, `ambulance`). Записи - это собственные данные панели, и они не проверяются. `null`, когда `file` не равен ни `"jobs"`, ни `"gangs"`.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// Локальная копия всех работ, всегда актуальная.
+const jobs: Record<string, unknown> = { ...(core.GetDefinitions("jobs") ?? {}) };
+
+on(CORE.clientDefinitionsEvent, (file: string, name: string, definition: unknown) => {
+  if (file !== "jobs") return;
+  if (definition === null) delete jobs[name];
+  else jobs[name] = definition;
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- Локальная копия всех работ, всегда актуальная.
+local jobs = exports['ai-core']:GetDefinitions('jobs') or {}
+
+AddEventHandler('ai-core:client:definitions', function(file, name, definition)
+  if file ~= 'jobs' then return end
+  jobs[name] = definition -- nil, когда работа удалена
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Для названий и подписей рангов работы или банды на сервере используйте серверные экспорты ai-core или серверную библиотеку; ранги проверяет именно сервер.
+</Callout>

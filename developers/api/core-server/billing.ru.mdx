@@ -1,0 +1,272 @@
+---
+title: Счета
+description: Отправлять счета (штрафы, оплата услуг, счета от игроков), получать список открытых счетов игрока и оплачивать их через тот скрипт счетов, который работает, или через собственные счета ai-core.
+icon: Receipt
+---
+
+Счета идут через ai-core, а не через собственные экспорты или события скрипта счетов. ai-core отправляет каждый счёт **активному скрипту счетов**: тому, что выбран в настройке панели **Billing script**, или первому запущенному. Если такого нет, счёт принимают **собственные счета ai-core**: игрок видит на экране список открытых счетов, а деньги перемещаются, когда он платит. Счёт никогда не пропадает впустую.
+
+Счёт приходит **от работы** (платёж получает счёт `bank` этой работы: полицейские штрафы, оплата механику) или **от игрока** (платёж получает этот игрок).
+
+Собственные счета ai-core вкратце: открытые счета хранятся по персонажам (в том числе офлайн), не более 20 открытых счетов на персонажа, а оплата списывает деньги с `bank`, затем с `cash` в одной транзакции с удалением счёта.
+
+### GetBillingSystem
+
+Куда идут счета.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`billing.provider()`](/ru/docs/developers/api/lib-server/money#billingprovider)
+
+```ts title="Сигнатура"
+GetBillingSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetBillingSystem() -- 'ai-core' или имя скрипта
+```
+
+#### Параметры
+
+Нет.
+
+#### Возвращает
+
+`string | null`: имя ресурса скрипта счетов или `"ai-core"` для собственных счетов ai-core. Поскольку собственные счета ai-core доступны всегда, на практике это не `null`.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Bills to offline characters only work with ai-core's own bills. */
+export function canBillOffline(): boolean {
+  return core.GetBillingSystem() === "ai-core";
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function CanBillOffline()
+  return exports['ai-core']:GetBillingSystem() == 'ai-core'
+end
+```
+</Tab>
+</Tabs>
+
+### SendBill
+
+Отправляет игроку счёт.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`billing.send`](/ru/docs/developers/api/lib-server/money#billingsend)
+
+```ts title="Сигнатура"
+SendBill(bill: BillRequest): boolean
+```
+
+```lua title="Lua"
+local sent = exports['ai-core']:SendBill({ to = target, amount = 250, label = 'Speeding', from = source, job = 'police' })
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    bill: { type: 'BillRequest', description: 'Счёт. Поля ниже.', required: true },
+  }}
+/>
+
+#### BillRequest
+
+<TypeTable
+  type={{
+    to: { type: 'number', description: 'Серверный id игрока, который получает счёт. Укажите `to` или `toCitizenid`, но не оба.' },
+    toCitizenid: { type: 'string', description: 'Citizen id персонажа, который его получает, в сети или офлайн (буквы и цифры, до 16). Офлайн-персонаж получает его только через собственные счета ai-core.' },
+    amount: { type: 'number', description: 'Целые доллары, от 1 до 10 000 000.', required: true },
+    label: { type: 'string', description: 'За что он (`Speeding`, `Engine repair`), уже переведено. Обрезается до 80 символов.', required: true },
+    from: { type: 'number', description: 'Серверный id игрока, который его выставляет (офицер, механик). Обязателен для личного счёта (без `job`): платёж получает этот игрок.' },
+    job: { type: 'string', description: 'Работа, счёт которой получает платёж (имя в нижнем регистре, 2-32 символа). Без неё счёт личный.' },
+  }}
+/>
+
+См. [BillRequest](/ru/docs/developers/api/types#billrequest).
+
+#### Возвращает
+
+`boolean`: `true`, когда счёт отправлен. `false`, когда:
+
+- счёт недопустим: указаны оба или ни одного из `to` / `toCitizenid`, нет `label`, `amount` не целое число от 1 до 10 000 000, нет ни `job`, ни `from` или `from` совпадает с получателем;
+- `from` указан, но у него нет загруженного персонажа, или `job` не существует;
+- получатель офлайн, а счета идут в скрипт счетов (только собственные счета ai-core доходят до офлайн-персонажей);
+- скрипт счетов отказал или у получателя уже 20 открытых счетов в собственных счетах ai-core.
+
+Офлайн-счёт в собственных счетах ai-core отвечает `true`, как только он допустим; база данных всё ещё может его отклонить (неизвестный citizen id, 20 открытых счетов), и это записывается в лог.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, coordsOf, isNear, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readId, readInt } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+// Офицер штрафует игрока перед собой; деньги получает счёт полиции.
+onClientCallback(
+  "myscript:fine",
+  {
+    args: ([target, amount]) => {
+      const t = readId(target);
+      const a = readInt(amount, 1, 50_000);
+      return t === null || a === null ? null : [t, a];
+    },
+  },
+  (source, target, amount) => {
+    if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+    if (!isNear(target, coordsOf(source), 3)) return fail("TOO_FAR");
+    const sent = core.SendBill({ to: target, amount, label: Locale("BILL_FINE"), from: source, job: "police" });
+    return sent ? { ok: true } : fail("BILL_FAILED");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('myscript:fine', function(source, target, amount)
+  if math.type(target) ~= 'integer' or math.type(amount) ~= 'integer' or amount < 1 or amount > 50000 then
+    return aiLib.fail('BAD_INPUT')
+  end
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  if #(GetEntityCoords(GetPlayerPed(source)) - GetEntityCoords(GetPlayerPed(target))) > 3.0 then return aiLib.fail('TOO_FAR') end
+  local sent = exports['ai-core']:SendBill({ to = target, amount = amount, label = Locale('BILL_FINE'), from = source, job = 'police' })
+  if not sent then return aiLib.fail('BILL_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Никогда не забирайте деньги у цели сами как «принудительный счёт» (`TransferMoney` с её счёта): счёт - это выбор игрока, платить или нет.
+</Callout>
+
+### GetUnpaidBills
+
+Открытые (неоплаченные) счета игрока.
+
+**Сторона:** сервер · **Ожидание:** нет (отвечает через `done`) · **Библиотека:** [`billing.unpaid(source)`](/ru/docs/developers/api/lib-server/money#billingunpaid) возвращает Promise
+
+```ts title="Сигнатура"
+GetUnpaidBills(source: number, done: (bills: UnpaidBill[] | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetUnpaidBills(source, function(bills) end) -- список или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    done: { type: '(bills) => void', description: 'Вызывается один раз с ответом.', required: true, typeDescription: '(bills: UnpaidBill[] | null) => void' },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. `done` получает по записи на каждый открытый счёт с `id` (id в скрипте счетов), `label`, `amount` (сколько ещё должен) и `sender` (название работы или имя игрока) ([UnpaidBill](/ru/docs/developers/api/types#unpaidbill)) или `null`, когда у игрока нет загруженного персонажа или скрипт счетов не умеет перечислять счета. Если `done` не функция, вызов ничего не делает.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import type { UnpaidBill } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// Стойка в мэрии показывает, сколько игрок должен.
+onClientCallback("myscript:myBills", async (source) => {
+  const bills = await new Promise<UnpaidBill[] | null>((resolve) => core.GetUnpaidBills(source, resolve));
+  if (!bills) return fail("BILLS_UNAVAILABLE");
+  return { ok: true, bills, total: bills.reduce((sum, b) => sum + b.amount, 0) };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:myBills', function(source)
+  local p = promise.new()
+  exports['ai-core']:GetUnpaidBills(source, function(bills) p:resolve(bills or false) end)
+  local bills = Citizen.Await(p)
+  if not bills then return aiLib.fail('BILLS_UNAVAILABLE') end
+  local total = 0
+  for _, b in ipairs(bills) do total = total + b.amount end
+  return { ok = true, bills = bills, total = total }
+end)
+```
+</Tab>
+</Tabs>
+
+### PayBill
+
+Игрок оплачивает один из своих открытых счетов.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`billing.pay`](/ru/docs/developers/api/lib-server/money#billingpay)
+
+```ts title="Сигнатура"
+PayBill(source: number, id: string): boolean
+```
+
+```lua title="Lua"
+local paid = exports['ai-core']:PayBill(source, billId)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока, который платит (получатель счёта).', required: true },
+    id: { type: 'string', description: '`id` счёта из `GetUnpaidBills`.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда счёт оплачен. `false`, когда у игрока нет загруженного персонажа, счёт не его или уже исчез, он не может его оплатить, скрипт счетов отказал или принимает платежи только на собственном экране. В собственных счетах ai-core для личного счёта также нужно, чтобы выставивший был в сети (деньги идут на его банковский счёт).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "myscript:payBill",
+  { args: ([id]) => { const v = readText(id, 64); return v ? [v] : null; }, lock: true },
+  (source, id) => (core.PayBill(source, id) ? { ok: true } : fail("BILL_NOT_PAID")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:payBill', function(source, id)
+  if type(id) ~= 'string' or not exports['ai-core']:PayBill(source, id) then return aiLib.fail('BILL_NOT_PAID') end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>

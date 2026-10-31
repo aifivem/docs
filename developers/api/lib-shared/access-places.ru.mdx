@@ -1,0 +1,326 @@
+---
+title: Доступ, блипы и NPC мест
+description: "readAccess, isPublic, decideAccess, ACCESS_FIELDS, accessFields, readBlipStyle, BLIP_STYLE_FIELDS, PLACE_PED_SPEC, placePedFields и readPlacePed: части панели, общие для всех мест."
+icon: MapPin
+---
+
+У большинства мест, которые добавляет скрипт (магазин, хранилище, гараж, мэрия), в панели одни и те же три части: **кто может им пользоваться**, **его блип на карте** и **NPC, который там стоит**. Каждая часть идёт тройкой: спецификация данных для вашего `schema.ts`, готовые поля панели с собственными подписями ai-core и функция чтения сохранённого значения. Используйте их, чтобы панель каждого скрипта выглядела и работала одинаково.
+
+```ts title="TypeScript"
+import { readAccess, isPublic, decideAccess, ACCESS_FIELDS, accessFields, readBlipStyle, BLIP_STYLE_FIELDS, PLACE_PED_SPEC, placePedFields, readPlacePed } from "@aicore-fivem/lib/shared";
+```
+
+**Lua:** ни у одной из них нет Lua-аналога (админ-панель есть только в TypeScript).
+
+## Доступ
+
+Правило это [AccessRule](/ru/docs/developers/api/types#accessrule): одна из перечисленных работ (с её минимальным рангом, на дежурстве, если задан `onDuty`) или одна из перечисленных банд (с её минимальным рангом). Оба списка пусты означает, что доступ есть у всех. Проверка на клиенте (`allows(rule)`, см. [Членство](/ru/docs/developers/api/lib-client/membership)) и проверка на сервере (`online.allows(source, rule)`, см. [Игроки](/ru/docs/developers/api/lib-server/players)) используют одно и то же решение, поэтому то, что видит игрок, совпадает с тем, что разрешает сервер.
+
+### readAccess
+
+Читает правило доступа из собственных полей записи (`jobs`, `gangs`, `grades`, `onDuty`). Отсутствующие поля означают, что пользоваться могут все.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readAccess(value: unknown): AccessRule
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Запись (или любой объект с полями доступа).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`AccessRule`. Имена, которые не являются строками, отбрасываются; ранги, которые не являются целыми числами от 0 и выше, отбрасываются.
+
+#### Пример
+
+```ts
+import { readAccess } from "@aicore-fivem/lib/shared";
+
+readAccess({ label: "Armoury", jobs: ["police"], grades: { police: 2 }, onDuty: true });
+// { jobs: ["police"], gangs: [], grades: { police: 2 }, onDuty: true }
+```
+
+### isPublic
+
+Пускает ли правило всех (не указано ни работ, ни банд). Используйте, чтобы пропускать проверки и показывать место всем.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+isPublic(rule: AccessRule): boolean
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'Проверяемое правило.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`true`, если и `jobs`, и `gangs` пусты.
+
+#### Пример
+
+```ts
+import { isPublic, readAccess } from "@aicore-fivem/lib/shared";
+
+isPublic(readAccess({})); // true
+```
+
+### decideAccess
+
+Решение правила по членству игрока. Клиентский `allows` и серверный `online.allows` вызывают её за вас; вызывайте её сами, только если членство у вас есть другим путём (страница NUI, тест).
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+decideAccess(
+  rule: AccessRule,
+  jobs: ReadonlyArray<{ job: string; grade: number }>,
+  gangs: ReadonlyArray<{ gang: string; grade: number }>,
+  dutyJob: string | null,
+): boolean
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'Правило места.', required: true },
+    jobs: { type: 'ReadonlyArray<JobMembership>', description: 'Работы игрока.', required: true },
+    gangs: { type: 'ReadonlyArray<GangMembership>', description: 'Банды игрока.', required: true },
+    dutyJob: { type: 'string | null', description: 'Работа, на дежурстве которой находится игрок, `null`, если он не на дежурстве.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`true`, если правило публичное, если совпадает одна из перечисленных банд с её минимальным рангом или если совпадает одна из перечисленных работ с её минимальным рангом (и игрок на дежурстве в ней, если задан `onDuty`).
+
+#### Пример
+
+```ts
+import { decideAccess, readAccess } from "@aicore-fivem/lib/shared";
+
+const rule = readAccess({ jobs: ["police"], grades: { police: 2 }, onDuty: true });
+decideAccess(rule, [{ job: "police", grade: 3 }], [], "police"); // true
+decideAccess(rule, [{ job: "police", grade: 3 }], [], null);     // false: не на дежурстве
+```
+
+### ACCESS_FIELDS
+
+Спецификация данных полей доступа, чтобы развернуть её в `sections` файла записей в вашем `schema.ts`.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+const ACCESS_FIELDS: Record<string, DataSpec>
+// { jobs: имена с поиском работы, необязательно; gangs: имена с поиском банды, необязательно; onDuty: bool, необязательно }
+```
+
+#### Пример
+
+```ts title="resource/server/schema.ts"
+import { ACCESS_FIELDS } from "@aicore-fivem/lib/shared";
+
+const stashSections = {
+  label: { type: "text", min: 1, max: 48 },
+  coords: { type: "vec3" },
+  ...ACCESS_FIELDS,
+};
+```
+
+### accessFields
+
+Поля панели для правила доступа (теги работ, теги банд, переключатель дежурства) с уже заданными подписями и подсказками ai-core.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+accessFields(): WidgetSpec[]
+```
+
+#### Возвращает
+
+`WidgetSpec[]`: три поля по путям `jobs`, `gangs` и `onDuty`. Разверните их в `fields` карточки во `tabs` вашей панели.
+
+#### Пример
+
+```ts title="resource/server/schema.ts"
+import { accessFields } from "@aicore-fivem/lib/shared";
+
+import type { CardSpec } from "@aicore-fivem/shared";
+
+const accessCard: CardSpec = { icon: "lock", title: "ADMIN_CARD_ACCESS", fields: [...accessFields()] };
+```
+
+<Callout type="info">
+`ACCESS_FIELDS` и `accessFields()` покрывают только `jobs`, `gangs` и `onDuty`. `readAccess` также читает `grades` (`{ police: 2 }`), если они есть в записи; без них для каждой перечисленной работы или банды нужен ранг 0.
+</Callout>
+
+## Блипы
+
+### readBlipStyle
+
+Читает стиль блипа из данных панели. Каждая отсутствующая или неверная часть берётся из запасного значения; значения удерживаются в диапазоне (спрайт 0-1000, цвет 0-100, масштаб 0.3-2).
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readBlipStyle(value: unknown, fallback: BlipStyle): BlipStyle
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сохранённый стиль (`{ sprite, color, scale }`).', required: true },
+    fallback: { type: 'BlipStyle', description: 'Стиль вашего скрипта по умолчанию.', required: true, typeDescription: '{ sprite, color, scale }' },
+  }}
+/>
+
+#### Возвращает
+
+[BlipStyle](/ru/docs/developers/api/types#blipstyle).
+
+#### Пример
+
+```ts
+import { readBlipStyle } from "@aicore-fivem/lib/shared";
+
+readBlipStyle({ sprite: 52, color: 500 }, { sprite: 52, color: 2, scale: 0.8 });
+// { sprite: 52, color: 100, scale: 0.8 }: цвет ограничен, масштаб из запасного значения
+```
+
+### BLIP_STYLE_FIELDS
+
+Спецификация данных полей стиля блипа для `{ type: "object", fields: BLIP_STYLE_FIELDS }` в вашем `schema.ts`. Панель показывает её своим виджетом `blip`.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+const BLIP_STYLE_FIELDS: Record<string, DataSpec>
+// sprite: целое 0-1000, color: целое 0-100, scale: число 0.3-2
+```
+
+#### Пример
+
+```ts title="resource/server/schema.ts"
+import { BLIP_STYLE_FIELDS } from "@aicore-fivem/lib/shared";
+
+const sections = {
+  blip: { type: "bool" },
+  blipStyle: { type: "object", optional: true, fields: BLIP_STYLE_FIELDS },
+};
+```
+
+## NPC мест
+
+### PLACE_PED_SPEC
+
+Спецификация данных раздела `ped` места: модель, сценарий ожидания и позиция, всё необязательно. У места без модели нет NPC.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+const PLACE_PED_SPEC: DataSpec
+// { type: "object", optional: true, fields: { model: текст до 64, scenario: один из предложенных сценариев, coords: vec4 } }
+```
+
+Сценарии, которые предлагает панель: без сценария (стоит на месте), `WORLD_HUMAN_STAND_IMPATIENT`, `WORLD_HUMAN_CLIPBOARD`, `WORLD_HUMAN_STAND_MOBILE`, `WORLD_HUMAN_AA_COFFEE`, `WORLD_HUMAN_SMOKING`, `WORLD_HUMAN_GUARD_STAND`, `WORLD_HUMAN_COP_IDLES`, `WORLD_HUMAN_HANG_OUT_STREET`.
+
+#### Пример
+
+```ts title="resource/server/schema.ts"
+import { PLACE_PED_SPEC } from "@aicore-fivem/lib/shared";
+
+const sections = { ped: PLACE_PED_SPEC, label: { type: "text", min: 1, max: 48 } };
+```
+
+### placePedFields
+
+Поля панели для NPC места: выбор модели педа, выбор сценария и инструмент точки с направлением, который привязывается к земле. Подписи собственные ai-core.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+placePedFields(path?: string): WidgetSpec[]
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    path: { type: 'string', description: 'Где в записи находится раздел педа.', default: '"ped"' },
+  }}
+/>
+
+#### Возвращает
+
+`WidgetSpec[]`: три поля по путям `<path>.model`, `<path>.scenario` и `<path>.coords`.
+
+#### Пример
+
+```ts title="resource/server/schema.ts"
+import { placePedFields } from "@aicore-fivem/lib/shared";
+
+import type { CardSpec } from "@aicore-fivem/shared";
+
+const npcCard: CardSpec = { icon: "user", title: "ADMIN_CARD_NPC", fields: [...placePedFields()] };
+```
+
+### readPlacePed
+
+Читает NPC места из данных панели.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readPlacePed(value: unknown): PlacePed | null
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сохранённый раздел `ped`.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+[PlacePed](/ru/docs/developers/api/types#placeped) или `null`, если модели нет (у места нет NPC). `coords` опускается, если не все из `x`, `y`, `z` и `heading` являются числами; пустой сценарий опускается.
+
+#### Пример
+
+```ts title="resource/common/shop.ts"
+import { readPlacePed, readBlipStyle, readAccess, str, type PlacePed, type BlipStyle, type AccessRule } from "@aicore-fivem/lib/shared";
+
+export interface Shop {
+  label: string;
+  ped: PlacePed | null;
+  blipStyle: BlipStyle;
+  access: AccessRule;
+}
+
+export function readShop(id: string, v: Record<string, unknown>): Shop {
+  return {
+    label: str(v.label, id, 48),
+    ped: readPlacePed(v.ped),
+    blipStyle: readBlipStyle(v.blipStyle, { sprite: 52, color: 2, scale: 0.8 }),
+    access: readAccess(v),
+  };
+}
+```
+
+На клиенте передайте `shop.ped ?? undefined` как опцию `ped` точки `Points`: точка создаёт NPC и вешает на него свою опцию target.

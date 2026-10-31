@@ -1,0 +1,311 @@
+---
+title: События интерфейса ai-lib
+description: Клиентские события, которые отправляет ai-lib, когда игрок отвечает в меню, диалоге ввода, выборе предметов, мини-игре или подсказке или отменяет полосу прогресса - для скриптов, которые сами вызывают экспорты ai-lib.
+icon: MousePointerClick
+---
+
+ai-lib рисует общий интерфейс игрока: меню, диалоги ввода, подсказки, полосу прогресса, мини-игры, уведомления. Когда игрок отвечает, ai-lib отправляет одно из этих клиентских локальных событий.
+
+**Большинство скриптов никогда их не слушает.** `menu`, `input`, `itemPicker`, `skillCheck`, `lockpick`, `onPromptPressed` и `progress` из библиотеки (и те же имена в `aiLib`) открывают интерфейс, слушают ответ и возвращают его вам как результат. Слушайте сами, только когда вызываете экспорты ai-lib (`OpenMenu`, `OpenInput`, `OpenMinigame`) или `OpenItemPicker` из ai-core напрямую.
+
+Каждый ответ несёт **ресурс**, который открыл интерфейс, и выбранный им **id запроса**. Проверяйте оба: каждый ресурс на клиенте слышит каждый ответ.
+
+### ai-lib:client:menuResult
+
+Игрок выбрал пункт меню или закрыл меню. То же событие отвечает за выбор предметов ai-core и мини-игры ai-lib.
+
+**Сторона:** клиент · **Константа:** `MENU_EVENTS.menuResult`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Ресурс, который открыл меню. Игнорируйте ответы для других ресурсов.', required: true },
+    requestId: { type: 'number', description: 'Id, который этот ресурс передал при открытии меню.', required: true },
+    value: { type: 'unknown', description: 'Меню: `id` выбранного пункта (строка), `"__back"` (константа `MENU_BACK`) для короткого Escape в подменю, открытом с `back: true`, или `null` при закрытии. Выбор предметов: список `PickedItem[]` или `null`. Мини-игра: её результат.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/menu.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { MENU_EVENTS } from "@aicore-fivem/shared";
+
+const ui = resourceExport("ai-lib");
+const me = GetCurrentResourceName();
+let nextId = 0;
+const waiting = new Map<number, (value: unknown) => void>();
+
+on(MENU_EVENTS.menuResult, (resource: string, requestId: number, value: unknown) => {
+  if (resource !== me) return;
+  waiting.get(requestId)?.(value);
+  waiting.delete(requestId);
+});
+
+// menu() из библиотеки делает ровно это; показано здесь, чтобы объяснить событие.
+export function pickColor(): Promise<string | null> {
+  const id = ++nextId;
+  return new Promise((resolve) => {
+    waiting.set(id, (value) => resolve(typeof value === "string" ? value : null));
+    ui.OpenMenu(id, {
+      title: "Color",
+      items: [
+        { id: "red", label: "Red" },
+        { id: "blue", label: "Blue" },
+      ],
+    });
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/menu.lua"
+local me = GetCurrentResourceName()
+local nextId = 0
+local waiting = {}
+
+AddEventHandler('ai-lib:client:menuResult', function(resource, requestId, value)
+  if resource ~= me or not waiting[requestId] then return end
+  waiting[requestId]:resolve(value)
+  waiting[requestId] = nil
+end)
+
+-- aiLib.menu.show делает ровно это; показано здесь, чтобы объяснить событие. Вызывать из потока.
+local function pickColor()
+  nextId = nextId + 1
+  local p = promise.new()
+  waiting[nextId] = p
+  exports['ai-lib']:OpenMenu(nextId, {
+    title = 'Color',
+    items = { { id = 'red', label = 'Red' }, { id = 'blue', label = 'Blue' } },
+  })
+  local value = Citizen.Await(p)
+  return type(value) == 'string' and value or nil
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:menuHover
+
+Указатель или фокус клавиатуры перешёл на пункт меню. Используйте для предпросмотра (показать цвет транспорта, пока игрок наводит на него). Меню остаётся открытым.
+
+**Сторона:** клиент · **Константа:** `MENU_EVENTS.menuHover` · **Библиотека:** `menu(request, { onHover })`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Ресурс, который открыл меню.', required: true },
+    requestId: { type: 'number', description: 'Id этого меню.', required: true },
+    itemId: { type: 'string', description: '`id` пункта под указателем или фокусом.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/preview.ts"
+import { menu } from "@aicore-fivem/lib/client";
+
+// Библиотека передаёт наведения своего меню в onHover.
+export async function chooseColor(): Promise<string | null> {
+  return menu(
+    { title: "Color", items: [{ id: "red", label: "Red" }, { id: "blue", label: "Blue" }] },
+    { onHover: (item) => console.log(`previewing ${item}`) },
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/preview.lua"
+-- aiLib передаёт наведения своего меню в onHover. Вызывать из потока.
+local function chooseColor()
+  return aiLib.menu.show(
+    { title = 'Color', items = { { id = 'red', label = 'Red' }, { id = 'blue', label = 'Blue' } } },
+    { onHover = function(item) print(('previewing %s'):format(item)) end }
+  )
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:menuToggle
+
+Игрок переключил строку-переключатель (пункт с `checked`). Переключатель меняется на месте, и меню остаётся открытым.
+
+**Сторона:** клиент · **Константа:** `MENU_EVENTS.menuToggle` · **Библиотека:** `menu(request, { onToggle })`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Ресурс, который открыл меню.', required: true },
+    requestId: { type: 'number', description: 'Id этого меню.', required: true },
+    itemId: { type: 'string', description: '`id` строки-переключателя.', required: true },
+    checked: { type: 'boolean', description: 'Новое состояние переключателя.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/settings.ts"
+import { menu } from "@aicore-fivem/lib/client";
+
+let sounds = true;
+
+export async function openSettings(): Promise<void> {
+  await menu(
+    { title: "Settings", items: [{ id: "sounds", label: "Sounds", checked: sounds }] },
+    { onToggle: (item, checked) => { if (item === "sounds") sounds = checked; } },
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/settings.lua"
+local sounds = true
+
+-- Вызывать из потока.
+local function openSettings()
+  aiLib.menu.show(
+    { title = 'Settings', items = { { id = 'sounds', label = 'Sounds', checked = sounds } } },
+    { onToggle = function(item, checked) if item == 'sounds' then sounds = checked end end }
+  )
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:inputResult
+
+Игрок подтвердил или закрыл диалог ввода.
+
+**Сторона:** клиент · **Константа:** `MENU_EVENTS.inputResult` · **Библиотека:** `input(request)`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Ресурс, который открыл диалог.', required: true },
+    requestId: { type: 'number', description: 'Id этого диалога.', required: true },
+    values: { type: 'Record<string, string | number> | null', description: 'Значения по `name` полей при подтверждении, `null` при закрытии.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/rename.ts"
+import { input } from "@aicore-fivem/lib/client";
+
+// input() из библиотеки слушает ai-lib:client:inputResult за вас.
+export async function askName(): Promise<string | null> {
+  const values = await input({
+    title: "Rename",
+    confirm: "Save",
+    fields: [{ name: "name", label: "Name", type: "text", maxLength: 32 }],
+  });
+  return values && typeof values.name === "string" ? values.name : null;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/rename.lua"
+-- aiLib.input слушает ai-lib:client:inputResult за вас. Вызывать из потока.
+local function askName()
+  local values = aiLib.input({
+    title = 'Rename',
+    confirm = 'Save',
+    fields = { { name = 'name', label = 'Name', type = 'text', maxLength = 32 } },
+  })
+  return values and values.name or nil
+end
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:promptPressed
+
+Игрок нажал клавишу взаимодействия, пока подсказка была вверху списка. Реагировать должен только ресурс, который показал эту подсказку.
+
+**Сторона:** клиент · **Константа:** `LIB_UI.promptPressedEvent` · **Библиотека:** `onPromptPressed(handler)`
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Ресурс, который показал подсказку.', required: true },
+    id: { type: 'string', description: 'Id подсказки, который этот ресурс передал в `showPrompt`.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/atm.ts"
+import { onPromptPressed, showPrompt } from "@aicore-fivem/lib/client";
+
+showPrompt("atm", "Use ATM");
+// onPromptPressed сам фильтрует по вашему ресурсу.
+onPromptPressed((id) => {
+  if (id === "atm") console.log("open the ATM");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/atm.lua"
+aiLib.showPrompt('atm', 'Use ATM')
+-- aiLib.onPromptPressed сам фильтрует по вашему ресурсу.
+aiLib.onPromptPressed(function(id)
+  if id == 'atm' then print('open the ATM') end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-lib:client:cancelProgress
+
+Игрок нажал клавишу отмены ai-lib, пока была видна полоса прогресса. `progress` из библиотеки с `canCancel: true` слушает это и завершает полосу с `false`.
+
+**Сторона:** клиент · **Константа:** `LIB_UI.cancelProgressEvent`
+
+#### Аргументы
+
+Нет.
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { LIB_UI } from "@aicore-fivem/shared";
+
+// Нужно, только если вы запускаете ShowProgress из ai-lib сами вместо progress() из библиотеки.
+on(LIB_UI.cancelProgressEvent, () => console.log("player cancelled the bar"));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- Нужно, только если вы запускаете ShowProgress из ai-lib сами вместо aiLib.progress.
+AddEventHandler('ai-lib:client:cancelProgress', function() print('player cancelled the bar') end)
+```
+</Tab>
+</Tabs>
+
+## Внутренние события ai-lib
+
+`Zones` и `Points` из библиотеки передают свои проверки в ai-lib и получают ответ через эти события. Не отправляйте их; используйте `Zones` и `Points`.
+
+| Событие | Константа | Аргументы |
+| --- | --- | --- |
+| `ai-lib:client:zone` | `LIB_UI.zoneEvent` | `(owner: string, key: string, inside: boolean)` игрок вошёл в зону или вышел из зоны, которую ai-lib проверяет для `owner`. |
+| `ai-lib:client:modelPoint` | `LIB_UI.modelPointEvent` | `(owner: string, key: string, entity: number)` изменился ближайший объект точки модели (`0` = рядом нет). |

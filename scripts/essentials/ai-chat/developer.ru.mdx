@@ -1,0 +1,190 @@
+---
+title: ai-chat для разработчиков
+description: API чата, на который отвечает ai-chat (ресурс chat из FiveM), его экспорты, события и формат сообщения.
+icon: Code
+---
+
+ai-chat отвечает на API ресурса `chat` из FiveM, поэтому код для чата вы пишете стандартным для FiveM способом. Экспорты отвечают и под `exports['ai-chat']`, и под `exports.chat`.
+
+## ChatMessage
+
+Формат сообщения, который принимает каждый экспорт и событие.
+
+<TypeTable
+  type={{
+    args: { type: 'string[]', description: '`[author, text]` или `[text]`. Цветовые коды `^0`-`^9` отрисовываются; HTML нет.', required: true },
+    color: { type: '[number, number, number] | string', description: 'Цвет автора: `[r, g, b]` (0-255) или цвет CSS.' },
+    multiline: { type: 'boolean', description: 'Позволяет тексту переноситься на несколько строк.' },
+    channel: { type: 'string', description: 'Id канала из панели; его тег показывается перед автором.' },
+  }}
+/>
+
+## Серверные экспорты
+
+### addMessage
+
+Отправляет строку чата одному игроку, нескольким игрокам или всем.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+addMessage(target: number | number[], message: ChatMessage): void
+```
+
+```lua title="Lua"
+exports.chat:addMessage(source, { args = { 'Bank', 'Your salary arrived.' }, color = { 61, 247, 158 } })
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    target: { type: 'number | number[]', description: 'Серверный id, список серверных id или `-1` для всех.', required: true },
+    message: { type: 'ChatMessage', description: 'Строка, которую нужно показать.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. Сообщение без корректного списка `args` отбрасывается.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+function announce(text: string): void {
+  callExport("chat", "addMessage", -1, { args: ["City", text], color: [61, 247, 158], multiline: true });
+}
+announce("The bank closes in 10 minutes.");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function announce(text)
+    exports.chat:addMessage(-1, { args = { 'City', text }, color = { 61, 247, 158 }, multiline = true })
+end
+announce('The bank closes in 10 minutes.')
+```
+</Tab>
+</Tabs>
+
+### registerMessageHook
+
+Запускает вашу функцию для каждого сообщения, которое отправляет игрок, до его доставки. Хук может изменить сообщение, изменить получателей или отменить его. Хуки удаляются, когда ваш ресурс останавливается.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+registerMessageHook(hook: (source: number, message: ChatMessage, ref: HookRef) => void): void
+```
+
+#### HookRef
+
+<TypeTable
+  type={{
+    updateMessage: { type: '(change: Partial<ChatMessage>) => void', description: 'Сливает `change` с сообщением.' },
+    cancel: { type: '() => void', description: 'Отбрасывает сообщение: его никто не получает.' },
+    setRouting: { type: '(target: number | number[]) => void', description: 'Отправляет его вместо этого этим серверным id (`-1` для всех).' },
+  }}
+/>
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+callExport("chat", "registerMessageHook", (source: number, message: { args: string[] }, ref: { cancel(): void }) => {
+  const text = message.args[message.args.length - 1] ?? "";
+  if (/discord\.gg\//i.test(text)) ref.cancel();
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports.chat:registerMessageHook(function(source, message, ref)
+    local text = message.args[#message.args] or ''
+    if text:lower():find('discord%.gg/') then ref.cancel() end
+end)
+```
+</Tab>
+</Tabs>
+
+### registerMode
+
+Добавляет канал из скрипта (режимы чата FiveM). Его колбэк решает, кто получает каждое сообщение, как хук сообщений. Режим удаляется, когда ваш ресурс останавливается.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+registerMode(data: { name: string; displayName?: string; color?: string; cb?: (source: number, message: ChatMessage, ref: HookRef) => void }): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Id режима.', required: true },
+    displayName: { type: 'string', description: 'Текст, который показывается для режима.', default: 'name' },
+    color: { type: 'string', description: 'Цвет режима в CSS.', default: '"#ffffff"' },
+    cb: { type: '(source, message, ref) => void', description: 'Маршрутизирует каждое сообщение режима (`ref.setRouting`, `ref.cancel`).' },
+  }}
+/>
+
+## Клиентские экспорты
+
+| Экспорт | Что делает |
+| --- | --- |
+| `addMessage(message: ChatMessage \| string): void` | Показывает строку только в чате этого игрока. |
+| `addSuggestion(name: string, help: string, params?: { name: string, help: string }[]): void` | Добавляет подсказку команды для этого игрока. |
+
+## События
+
+### chatMessage (server)
+
+Срабатывает на сервере для каждого сообщения, которое отправляет игрок, до доставки. Отмените его (`CancelEvent()`), чтобы отбросить сообщение.
+
+**Сторона:** сервер (локальное событие)
+
+| Аргумент | Тип | Что это |
+| --- | --- | --- |
+| `source` | `number` | Серверный id отправителя. |
+| `author` | `string` | Показываемый автор (имя персонажа). |
+| `text` | `string` | Текст сообщения. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("chatMessage", (source: number, author: string, text: string) => {
+  console.log(`[chat] ${author} (${source}): ${text}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('chatMessage', function(source, author, text)
+    print(('[chat] %s (%d): %s'):format(author, source, text))
+end)
+```
+</Tab>
+</Tabs>
+
+### Клиентские события, которые слушает ai-chat
+
+Отправляйте их с сервера (`TriggerClientEvent`) или из клиентского скрипта (`TriggerEvent`).
+
+| Событие | Аргументы | Что делает |
+| --- | --- | --- |
+| `chat:addMessage` | `message: ChatMessage \| string` | Показывает строку. |
+| `chatMessage` | `author: string, color: [r, g, b], text: string` | Показывает строку (старый стиль). |
+| `chat:addSuggestion` | `name: string, help: string, params?: { name, help }[]` | Добавляет одну подсказку. |
+| `chat:addSuggestions` | `suggestions: { name, help, params? }[]` | Добавляет несколько подсказок. |
+| `chat:removeSuggestion` | `name: string` | Удаляет подсказку. |
+| `chat:addMode` / `chat:removeMode` | `mode` / `name` | Добавляет или удаляет режим скрипта на этом клиенте. |
+| `chat:clear` | нет | Очищает чат этого игрока. |
+
+<Callout type="warn">
+`chat:addTemplate` игнорируется: шаблоны (HTML) никогда не отрисовываются. Сообщения, которые вводят игроки, не отправляются через `_chat:messageEntered`; слушайте `chatMessage` на сервере.
+</Callout>

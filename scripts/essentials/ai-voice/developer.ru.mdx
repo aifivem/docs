@@ -1,0 +1,353 @@
+---
+title: ai-voice для разработчиков
+description: Серверные и клиентские экспорты ai-voice (контракт pma-voice плюс его собственные), state bags и события.
+icon: Code
+---
+
+ai-voice отвечает как pma-voice 7.x: каждый экспорт ниже, который есть в pma-voice, отвечает также под `exports['pma-voice']`. Всё состояние голоса (дальность, частоты, звонки, громкая связь, заглушения) принадлежит серверу, и он пишет state bags игрока; клиенты только просят. Ни один экспорт не ждёт. Они не типизированы в `@aicore-fivem/shared`: из TypeScript используйте `callExport("ai-voice", name, ...args)` из lib.
+
+## Серверные экспорты
+
+### setPlayerRadio
+
+Помещает игрока на радиочастоту и делает её активной (той, на которой он говорит). Имя из pma-voice.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+setPlayerRadio(source: number, channel: number | string): void
+```
+
+```lua title="Lua"
+exports['pma-voice']:setPlayerRadio(source, 5)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    channel: { type: 'number | string', description: 'Частота, от 0.01 до 1,000,000 (числовая строка тоже подходит). `0` покидает все частоты.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Ничего. Выбрасывает ошибку, если `channel` не число. Ничего не делает, если рация отключена в панели. Частота, к которой игроку нельзя присоединиться (рабочая частота или `addChannelCheck`, который ответил нет), отклоняется с уведомлением "You cannot join this frequency". Присоединение к новой частоте покидает предыдущую активную; частоты, которые игрок только слушает, остаются.
+
+### setPlayerCall
+
+Помещает игрока в телефонный звонок или убирает его оттуда. Имя из pma-voice.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+setPlayerCall(source: number, callId: number | string): void
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    callId: { type: 'number | string', description: 'Id звонка (любое число, которое выбирает ваш скрипт телефона, оба игрока получают одно и то же). `0` завершает звонок.', required: true },
+  }}
+/>
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+let nextCall = 1000;
+
+/** Connects two players; returns the call id to end it later. */
+export function connect(caller: number, target: number): number {
+  const id = nextCall++;
+  callExport("ai-voice", "setPlayerCall", caller, id);
+  callExport("ai-voice", "setPlayerCall", target, id);
+  return id;
+}
+
+export function hangUp(...players: number[]): void {
+  for (const p of players) callExport("ai-voice", "setPlayerCall", p, 0);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local nextCall = 1000
+
+local function connect(caller, target)
+    nextCall = nextCall + 1
+    exports['pma-voice']:setPlayerCall(caller, nextCall)
+    exports['pma-voice']:setPlayerCall(target, nextCall)
+    return nextCall
+end
+
+local function hangUp(a, b)
+    exports['pma-voice']:setPlayerCall(a, 0)
+    exports['pma-voice']:setPlayerCall(b, 0)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Собственная игра игрока не может сама присоединиться к звонку (клиентский `setCallChannel`), если скрипт телефона не разрешил это через `addCallCheck` или владелец не включил **Let players' games join calls**. Помещайте игроков в звонки с сервера.
+</Callout>
+
+### getPlayersInRadioChannel
+
+Участники частоты. Также отвечает как `GetPlayersInRadioChannel`. Имя из pma-voice.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+getPlayersInRadioChannel(channel: number | string): Record<string, boolean>
+```
+
+#### Возвращает
+
+Таблица с ключами по серверному id (в виде строки) со значением `true`, пока этот участник говорит, иначе `false`. `{}` для пустой частоты или неверного значения.
+
+### addChannelCheck
+
+Добавляет ваше собственное правило для одной частоты: ваша функция решает, кто может присоединиться. Удаляется, когда ваш ресурс останавливается. Имя из pma-voice.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+addChannelCheck(channel: number, check: (source: number) => boolean): void
+```
+
+```lua title="Lua"
+exports['pma-voice']:addChannelCheck(911, function(source)
+    return exports['ai-core']:GetDutyJob(source) == 'ambulance'
+end)
+```
+
+Сначала проверяются правила частот из панели; затем ваша функция должна ответить истинным значением. Выбрасывает ошибку, если `check` не функция.
+
+### overrideRadioNameGetter
+
+Заменяет имя, которое участники рации видят друг у друга (когда включено **Send names to radio members**). Имя из pma-voice.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+overrideRadioNameGetter(channel: unknown, getter: (source: number) => string): void
+```
+
+Первый аргумент игнорируется (совместимость с pma-voice); геттер используется для каждой частоты.
+
+### isValidPlayer
+
+```ts title="Сигнатура"
+isValidPlayer(source: number): boolean
+```
+
+`true`, если ai-voice знает игрока (зашёл и настроен).
+
+### setPlayerProximityMode
+
+Переключает игрока на одну из дальностей из панели.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+setPlayerProximityMode(source: number, index: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    index: { type: 'number', description: 'Позиция в списке **Ranges** из панели, начиная с 1.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если переключено. `false`, если игрок неизвестен, `index` вне списка или `addProximityCheck` отказал.
+
+### setPlayerRange
+
+Даёт игроку собственную дальность (мегафон, микрофон на сцене) или возвращает ему выбранную им дальность.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+setPlayerRange(source: number, metres: number | null): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    metres: { type: 'number | null', description: 'Дальность, от 0.5 до 100 м. `null` возвращает дальность, которую выбрал игрок.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если установлено. `false`, если игрок неизвестен, `metres` вне диапазона 0.5-100 или `addProximityCheck` отказал.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport, onClientEvent } from "@aicore-fivem/lib/server";
+
+// Предмет-мегафон: 30 м, пока его держат.
+onClientEvent("myscript:megaphone", { args: ([on]) => (typeof on === "boolean" ? [on] : null) }, (source, on) => {
+  callExport("ai-voice", "setPlayerRange", source, on ? 30 : null);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:megaphone', function(on)
+    local src = source
+    exports['ai-voice']:setPlayerRange(src, on == true and 30.0 or nil)
+end)
+```
+</Tab>
+</Tabs>
+
+### getPlayerProximity
+
+```ts title="Сигнатура"
+getPlayerProximity(source: number): { index: number; distance: number; mode: string } | null
+```
+
+Текущая дальность игрока: `index` (позиция в списке), `distance` в метрах, `mode` (название дальности). `null` для неизвестного игрока.
+
+### toggleMute
+
+Заглушает игрока или снимает заглушение. То же, что `/muteply`.
+
+**Сторона:** сервер · **Ожидание:** нет
+
+```ts title="Сигнатура"
+toggleMute(source: number, seconds?: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    seconds: { type: 'number', description: 'Сколько длится заглушение (не больше года). Игнорируется при снятии заглушения.', default: '900' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если заглушение переключено, `false` для неизвестного игрока. Игрок получает уведомление; срабатывает серверное событие `pma-voice:playerMuted`. Заглушения хранятся по лицензии, поэтому сохраняются после переподключения.
+
+### addProximityCheck
+
+Добавляет правило для смены дальности. Ваша функция получает `(source, index, distance)`; ответ `false` отклоняет изменение (и клавишей игрока, и экспортами). Удаляется, когда ваш ресурс останавливается.
+
+```ts title="Сигнатура"
+addProximityCheck(check: (source: number, index: number, distance: number) => boolean | void): void
+```
+
+### Несколько частот
+
+| Экспорт | Возвращает | Что делает |
+| --- | --- | --- |
+| `addPlayerRadioListen(source, channel)` | `boolean` | Позволяет игроку слышать ещё одну частоту, не говоря на ней. `false` при достижении предела **Frequencies at once** из панели, когда это не разрешено или при выключенной рации. Становится активной, если у игрока не было активной. |
+| `removePlayerRadioListen(source, channel)` | `boolean` | Покидает частоту. `false`, если игрока на ней не было. |
+| `setPlayerRadioActive(source, channel)` | `boolean` | Делает одну из частот игрока той, на которой он говорит. `false`, если его на ней нет. |
+| `getPlayerRadioChannels(source)` | `{ active: number, channels: number[] } \| null` | Активная частота (0 = нет) и каждая частота, которую слышит игрок. |
+
+### Дополнительно для телефона
+
+| Экспорт | Возвращает | Что делает |
+| --- | --- | --- |
+| `addCallCheck(check: (source, callId) => boolean)` | ничего | Позволяет скрипту телефона разрешать присоединение из игры игрока: ответ `true` пускает этого игрока в этот звонок. Удаляется, когда ваш ресурс останавливается. |
+| `setPlayerCallSpeaker(source, on)` | `boolean` | Включает или выключает громкую связь звонка игрока. |
+| `getPlayerCallSpeaker(source)` | `boolean` | Включена ли она. |
+
+### Прочее
+
+| Экспорт | Возвращает | Что делает |
+| --- | --- | --- |
+| `setPlayerSubmix(source, name \| null)` | ничего | Постоянный эффект на голосе игрока: имя submix, который зарегистрировали клиенты (bag `submix` из pma-voice). `null` его удаляет. |
+| `getBackend()` | `"mumble" \| "enhanced"` | Используемая голосовая система. |
+
+## Клиентские экспорты
+
+Клиентские экспорты pma-voice (все также под `exports['pma-voice']`):
+
+| Экспорт | Что делает |
+| --- | --- |
+| `setRadioChannel(channel)`, `SetRadioChannel`, `addPlayerToRadio` | Запрашивает у сервера активную частоту (0 покидает все частоты). Рабочие частоты проверяются на сервере. |
+| `removePlayerFromRadio()` | Покидает все частоты. |
+| `setCallChannel(callId)`, `SetCallChannel`, `addPlayerToCall` | Запрашивает присоединение к звонку. Отклоняется, если `addCallCheck` скрипта телефона не разрешает или не включено **Let players' games join calls**. |
+| `removePlayerFromCall()` | Завершает звонок (разрешено всегда). |
+| `setRadioVolume(percent)` / `getRadioVolume()`, `setCallVolume(percent)` / `getCallVolume()` | Собственная громкость игрока, хранится на его ПК. |
+| `setVoiceProperty(name, value)`, `SetMumbleProperty`, `SetTokoProperty` | `radioEnabled`, `micClicks`. |
+| `overrideProximityRange(metres, disableCycle)` / `clearProximityOverride()` | Дальность с клиента. Отклоняется на Enhanced. |
+| `setAllowProximityCycleState(blocked)` | Блокирует или разрешает клавишу дальности. |
+| `overrideProximityCheck(fn)` / `resetProximityCheck()`, `setVoiceState(mode, channel)` | Только Legacy (Mumble). |
+| `toggleMutePlayer(serverId)` | Заглушает другого игрока только для этого игрока. |
+| `toggleRadioAnim()` / `getRadioAnimState()` | Переключатель анимации рации игрока. |
+| `addRadioDisableBit(bit)` / `removeRadioDisableBit(bit)` | Блокирует разговор по рации, пока установлен любой бит (скрипт, который на время отключает рацию). |
+| `registerCustomSubmix(...)`, `setEffectSubmix(...)` | Собственные submix из pma-voice, в реестр submix ai-voice. |
+
+Собственные клиентские экспорты ai-voice:
+
+| Экспорт | Что делает |
+| --- | --- |
+| `addRadioChannel(channel)` / `removeRadioChannel(channel)` / `setActiveRadioChannel(channel)` | Несколько частот с клиентской стороны (проверяется на сервере). |
+| `getRadioChannels()` | Активная частота и список. |
+| `setCallSpeaker(on)` / `getCallSpeaker()` | Громкая связь звонка игрока. |
+| `setRadioAnimDisabled(disabled)` | Отключает анимацию рации для этого игрока. |
+| `createSubmix(name, spec)` / `getSubmix(name)` / `editSubmix(name, spec)` / `listSubmixes()` | Голосовые эффекты. Имя создаётся один раз за игровую сессию и используется повторно; в игре всего 40 слотов, общих с её собственным звуком. |
+| `cycleProximity()` | Переходит к следующей дальности, как клавиша. |
+| `getBackend()` | `"mumble"` или `"enhanced"`. |
+| `isRadioTalking()` | Удерживается ли клавиша рации. |
+
+## State bags
+
+Пишутся сервером на каждом игроке (`Player(source).state`, на клиенте `LocalPlayer.state`). Читайте их; никогда не пишите в них.
+
+| Bag | Значение |
+| --- | --- |
+| `proximity` | `{ index: number, distance: number, mode: string }`: текущая дальность. |
+| `radioChannel` | `number`: активная частота, 0, если нет. |
+| `callChannel` | `number`: id звонка, 0, если нет. |
+| `callSpeaker` | `boolean`: громкая связь звонка включена. |
+| `muted` | `boolean`: заглушён администратором. |
+| `submix` | `string`: постоянный голосовой эффект, заданный через `setPlayerSubmix`. |
+
+GlobalState: `ai-voice:backend` (`"mumble"` или `"enhanced"`), `ai-voice:takeover` (скрипты, которые приносят собственный эффект рации или телефона). ai-voice читает bag `dead` из AI Core и bag `isDead` из pma-voice.
+
+## События
+
+| Событие | Сторона | Аргументы | Когда срабатывает |
+| --- | --- | --- | --- |
+| `pma-voice:setTalkingMode` | Клиент (локальное) | `index: number` | Дальность игрока изменилась. |
+| `pma-voice:radioActive` | Клиент (локальное) | `talking: boolean` | Игрок начал или перестал говорить по рации. |
+| `pma-voice:toggleRadioAnim` | Клиент (локальное) | | Переключатель анимации рации изменился. |
+| `pma-voice:playerMuted` | Сервер (локальное) | `target: number, by: number, muted: boolean, seconds: number` | Игрока заглушили или сняли заглушение (`by` равно 0 для экспорта). |
+
+Сетевые события pma-voice (`pma-voice:syncRadioData`, `addPlayerToRadio`, `removePlayerFromRadio`, `setTalkingOnRadio`, `clSetPlayerRadio`, `syncCallData`, `addPlayerToCall`, `removePlayerFromCall`, `clSetPlayerCall`) сохраняют свои имена и данные для интерфейсов раций, которые их слушают. События рации передают частоту дополнительным последним аргументом; у таблиц участников строковые ключи.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Клиент: показывать иконку «в эфире», пока игрок говорит по рации.
+on("pma-voice:radioActive", (talking: boolean) => {
+  SendNUIMessage({ action: "radio", data: talking });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('pma-voice:radioActive', function(talking)
+    SendNUIMessage({ action = 'radio', data = talking })
+end)
+```
+</Tab>
+</Tabs>

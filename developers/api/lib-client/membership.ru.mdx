@@ -1,0 +1,391 @@
+---
+title: Членство и данные игрока
+description: hasJob, inGang, onDutyIn, allows, onMembershipChange, getPlayerData, onPlayerData и seedPlayerData - персонаж, деньги, работы, дежурство и банды локального игрока в том виде, в каком их присылает ai-core.
+icon: BadgeCheck
+---
+
+ai-core отправляет собственные данные локального игрока на его клиент: один снимок при загрузке персонажа, затем только изменившиеся значения. Эти помощники читают эту копию, поэтому проверка стоит одного чтения из памяти и никогда не спрашивает сервер.
+
+Используйте их для того, что игрок **видит** (`canShow` точки, пункт радиального меню, строка меню). Что игрок может **делать**, решает сервер по тем же данным (`online` на странице [Игроки и персонажи](/ru/docs/developers/api/lib-server/players)): клиентская проверка никогда не является доказательством.
+
+## Данные игрока
+
+Значения, которые хранит ai-core, по ключу ([`AiPlayerData`](/ru/docs/developers/api/types#aiplayerdata)):
+
+<TypeTable
+  type={{
+    character: { type: 'CharacterInfo | null', description: 'Загруженный персонаж (id, имя), null до выбора персонажа.' },
+    money: { type: 'Record<string, number>', description: 'Баланс по имени счёта (cash, bank).' },
+    jobs: { type: 'JobMembership[]', description: 'Все работы персонажа: { job: string; grade: number }.' },
+    duty: { type: 'string | null', description: 'Работа, в которой персонаж на дежурстве, null вне дежурства.' },
+    job: { type: 'JobMembership', description: 'Работа, которую другие скрипты видят как «ту самую» работу: на дежурстве, иначе последняя, где был на дежурстве, иначе первая, иначе безработный.' },
+    gangs: { type: 'GangMembership[]', description: 'Все банды персонажа: { gang: string; grade: number }.' },
+    activeGang: { type: 'string | null', description: 'Банда, за которую персонаж действует сейчас, null, если такой нет.' },
+    metadata: { type: 'Record<string, unknown>', description: 'Произвольные метаданные персонажа (мосты фреймворков хранят здесь метаданные QB / ESX). Обновляются по ключам.' },
+  }}
+/>
+
+Типы членов: [`CharacterInfo`](/ru/docs/developers/api/types#characterinfo), [`JobMembership`](/ru/docs/developers/api/types#jobmembership) и [`GangMembership`](/ru/docs/developers/api/types#gangmembership).
+
+### getPlayerData
+
+Последнее значение одного ключа. При первом использовании в вашем ресурсе также читает всё, что ai-core уже прислал (из экспорта ai-core `GetPlayerData`), поэтому ресурс, перезапущенный после загрузки игрока, сразу получает значения.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+getPlayerData<K extends keyof AiPlayerData>(key: K): AiPlayerData[K] | undefined
+```
+
+```lua title="Lua"
+local value = aiLib.playerData.get(key)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    key: { type: '"character" | "money" | "jobs" | "duty" | "job" | "gangs" | "activeGang" | "metadata"', description: 'Какое значение.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`AiPlayerData[K] | undefined`: значение или `undefined` (`nil` в Lua), если ещё ничего не пришло (персонаж не загружен, ai-core не запущен).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { getPlayerData, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "whoami",
+  () => {
+    const character = getPlayerData("character");
+    const job = getPlayerData("job");
+    const cash = getPlayerData("money")?.cash ?? 0;
+    if (!character) return notify("No character loaded", "error");
+    notify(`${job?.job ?? "unemployed"} (${job?.grade ?? 0}), $${cash}`, "info");
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('whoami', function()
+    local job = aiLib.playerData.get('job')
+    local money = aiLib.playerData.get('money') or {}
+    aiLib.notify(('%s (%d), $%d'):format(job and job.job or 'unemployed', job and job.grade or 0, money.cash or 0), 'info')
+end, false)
+```
+</Tab>
+</Tabs>
+
+### onPlayerData
+
+Запускает обработчик каждый раз, когда ai-core присылает ключ для этого игрока.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+onPlayerData<K extends keyof AiPlayerData>(key: K, handler: (value: AiPlayerData[K]) => void): () => void
+```
+
+```lua title="Lua"
+aiLib.playerData.onChange(key, function(value) end)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    key: { type: 'keyof AiPlayerData', description: 'За каким значением следить.', required: true },
+    handler: { type: '(value: AiPlayerData[K]) => void', description: 'Получает новое значение. Для ключа, который обновляется по частям (metadata), это весь объединённый объект.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+TypeScript: `() => void`, функция, которая удаляет обработчик. Lua ничего не возвращает.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onPlayerData } from "@aicore-fivem/lib/client";
+
+const stop = onPlayerData("money", (money) => {
+  SendNUIMessage({ action: "money", data: { cash: money.cash ?? 0, bank: money.bank ?? 0 } });
+});
+// stop(), когда HUD закрывается насовсем
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.playerData.onChange('money', function(money)
+    SendNUIMessage({ action = 'money', data = { cash = money.cash or 0, bank = money.bank or 0 } })
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Значения, присланные до запуска вашего ресурса, обработчику не повторяются. Прочитайте текущее значение один раз через `getPlayerData` при старте, затем следите за изменениями через `onPlayerData`.
+</Callout>
+
+### seedPlayerData
+
+Заполняет значения вручную. Ключи, у которых уже есть значение, сохраняются. Вам это не нужно: lib сама заполняется из ai-core при первом использовании.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+seedPlayerData(data: Partial<AiPlayerData>): void
+```
+
+Lua-аналога нет.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    data: { type: 'Partial<AiPlayerData>', description: 'Значения по ключу. Задаются только ключи, у которых ещё нет значения.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`void`.
+
+#### Пример
+
+```ts
+import { seedPlayerData } from "@aicore-fivem/lib/client";
+
+// Тестовая обвязка без ai-core.
+seedPlayerData({ jobs: [{ job: "police", grade: 3 }], duty: "police" });
+```
+
+## Проверки членства
+
+### hasJob
+
+Состоит ли игрок в одной из работ с минимальным рангом, на дежурстве или нет.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+hasJob(jobs: readonly string[], minGrade?: number): boolean
+```
+
+Lua-аналога нет: переберите `aiLib.playerData.get('jobs')` (см. пример на Lua для [`points.add`](/ru/docs/developers/api/lib-client/points#pointsadd)).
+
+#### Параметры
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Названия работ. Пустой список означает всех.', required: true },
+    minGrade: { type: 'number', description: 'Наименьший засчитываемый ранг.', default: '0' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если список пуст или игрок состоит в одной из `jobs` с рангом `minGrade` или выше.
+
+#### Пример
+
+```ts
+import { hasJob, onMembershipChange, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+points.add("armory", {
+  coords: { x: 482.6, y: -995.2, z: 30.7 },
+  label: "Armory",
+  canShow: () => hasJob(["police", "sheriff"], 1),
+  onPressed: () => emitNet("mypolice:armory"),
+});
+onMembershipChange(() => points.refresh());
+```
+
+### inGang
+
+Состоит ли игрок в одной из банд с минимальным рангом.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+inGang(gangs: readonly string[], minGrade?: number): boolean
+```
+
+Lua-аналога нет: переберите `aiLib.playerData.get('gangs')`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    gangs: { type: 'string[]', description: 'Названия банд. Пустой список означает всех.', required: true },
+    minGrade: { type: 'number', description: 'Наименьший засчитываемый ранг.', default: '0' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если список пуст или игрок состоит в одной из `gangs` с рангом `minGrade` или выше.
+
+#### Пример
+
+```ts
+import { inGang, radial } from "@aicore-fivem/lib/client";
+
+radial.add({
+  id: "mygang:stash",
+  label: "Gang stash",
+  icon: "box",
+  canShow: () => inGang(["ballas", "vagos"], 2),
+  onPressed: () => emitNet("mygang:stash"),
+});
+```
+
+### onDutyIn
+
+На дежурстве ли игрок в одной из работ.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+onDutyIn(jobs: readonly string[]): boolean
+```
+
+Lua-аналога нет: `aiLib.playerData.get('duty')` это работа на дежурстве.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Названия работ. В отличие от hasJob, пустой список означает никого.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, если работа дежурства игрока входит в `jobs`.
+
+#### Пример
+
+```ts
+import { onDutyIn, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+points.addVehicle("mymech:repair", {
+  label: "Repair",
+  icon: "wrench",
+  canShow: () => onDutyIn(["mechanic"]),
+  onPressed: (vehicle) => emitNet("mymech:repair", NetworkGetNetworkIdFromEntity(vehicle)),
+});
+```
+
+### onMembershipChange
+
+Выполняет функцию, когда меняются работы, дежурство или банды игрока. Используйте, чтобы обновлять точки и блипы, `canShow` которых их читает.
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+onMembershipChange(fn: () => void): void
+```
+
+Lua-аналога нет: `aiLib.playerData.onChange` для `jobs`, `duty` и `gangs`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    fn: { type: '() => void', description: 'Выполняется после каждого изменения работ, дежурства или банд.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`void`.
+
+#### Пример
+
+```ts
+import { onMembershipChange, Points, radial } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+onMembershipChange(() => {
+  points.refresh();
+  radial.refresh();
+});
+```
+
+### allows
+
+Может ли локальный игрок пользоваться местом с правилом доступа. Серверный `online.allows(source, rule)` решает по тому же правилу, поэтому то, что видит игрок, в точности совпадает с тем, чем сервер позволяет пользоваться. Читайте правило из записи панели через `readAccess(record)` (`@aicore-fivem/lib/shared`).
+
+**Сторона:** Клиент · **Ждёт:** нет
+
+```ts title="Сигнатура"
+allows(rule: AccessRule): boolean
+```
+
+Lua-аналога нет.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'Кто может пользоваться местом. Поля ниже.', required: true },
+  }}
+/>
+
+#### AccessRule
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Работы, которые могут им пользоваться.', required: true },
+    gangs: { type: 'string[]', description: 'Банды, которые могут им пользоваться.', required: true },
+    grades: { type: 'Record<string, number>', description: 'Минимальный ранг для каждого названия работы или банды. Отсутствующее название означает ранг 0.', required: true },
+    onDuty: { type: 'boolean', description: 'Члены работ должны быть на дежурстве в этой работе. На членов банд не влияет.', required: true },
+  }}
+/>
+
+Тип: [`AccessRule`](/ru/docs/developers/api/types#accessrule).
+
+#### Возвращает
+
+`boolean`: `true`, если оба списка пусты (все); если игрок состоит в одной из `gangs` с её минимальным рангом; или если игрок состоит в одной из `jobs` с её минимальным рангом (и на дежурстве в ней при `onDuty`). Иначе `false`.
+
+#### Пример
+
+```ts title="resource/client/index.ts"
+import { AdminWorld, allows, callAction, onMembershipChange, Points } from "@aicore-fivem/lib/client";
+import { readAccess, readVec3, RecordObjects, type AccessRule } from "@aicore-fivem/lib/shared";
+
+const world = new AdminWorld(["stashes"]);
+const points = new Points();
+
+interface Stash { coords: { x: number; y: number; z: number }; access: AccessRule }
+const readStash = (_key: string, raw: Record<string, unknown>): Stash | null => {
+  const coords = readVec3(raw.coords);
+  return coords ? { coords, access: readAccess(raw) } : null;
+};
+
+new RecordObjects(world, "stashes", readStash, (id, stash) => {
+  points.add(id, {
+    coords: stash.coords,
+    label: "Stash",
+    canShow: () => allows(stash.access),
+    onPressed: () => callAction("mystash:open", [id], { fallback: "STASH_FAILED" }),
+  });
+  return () => points.remove(id);
+});
+
+onMembershipChange(() => points.refresh());
+```

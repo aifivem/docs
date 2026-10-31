@@ -1,0 +1,184 @@
+---
+title: ai-mysql для разработчиков
+description: Экспорты oxmysql, на которые отвечает ai-mysql, что возвращает каждый из них, формы с промисами, обёртка MySQL.lua и события ошибок.
+icon: Code
+---
+
+<Callout type="info">
+**Пишете ресурс в стиле `ai-*` на TypeScript?** Не используйте ai-mysql. Используйте пакет базы данных AI Core `@aicore-fivem/mysql` в своём ресурсе (без перехода через экспорт на каждый запрос, типизированные таблицы). См. [База данных](/ru/docs/developers/database). ai-mysql предназначен для скриптов на Lua и JavaScript, написанных для oxmysql.
+</Callout>
+
+ai-mysql отвечает на API oxmysql в точности (сигнатуры, правила колбэков, форматы результатов), поэтому собственная документация oxmysql применима. На этой странице перечислено, на что он отвечает, и важные детали.
+
+## Использование из Lua
+
+Загрузите обёртку oxmysql; путь указывает на ai-mysql:
+
+```lua title="fxmanifest.lua"
+server_script '@oxmysql/lib/MySQL.lua'
+```
+
+```lua title="server.lua"
+-- Ждёт результата: вызывайте внутри потока или обработчика события.
+local row = MySQL.single.await('SELECT money FROM my_accounts WHERE owner = ?', { identifier })
+
+-- Форма с колбэком: не ждёт.
+MySQL.update('UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?', { 100, identifier, 100 }, function(affected)
+    if affected == 1 then print('paid') end
+end)
+```
+
+## Экспорты
+
+Каждый экспорт **серверный** и отвечает под `exports['ai-mysql']` и `exports.oxmysql`. Каждый принимает `(query, params?, callback?)`:
+
+- `query`: текст SQL с плейсхолдерами `?` или именованными плейсхолдерами `@name` / `:name`.
+- `params`: массив для `?`, объект для именованных плейсхолдеров. Можно не указывать; тогда колбэк может быть вторым аргументом.
+- `callback`: вызывается с результатом. Без него вызов всё равно выполняется.
+
+У каждого экспорта также есть **форма с промисом** `<name>_async` и `<name>Sync` (`query_async(query, params)` возвращает Promise, который отклоняется при ошибке).
+
+| Экспорт | Отвечает | Для чего использовать |
+| --- | --- | --- |
+| `query` | строки (массив объектов) для SELECT или заголовок результата для других запросов | для чего угодно; `execute` и `fetch` являются старыми псевдонимами |
+| `single` | первую строку или `null` | одна строка по ключу |
+| `scalar` | первый столбец первой строки или `null` | количество, одно значение |
+| `insert` | id новой строки (`insertId`) или `null` | INSERT |
+| `update` | число затронутых строк или `null` | UPDATE, DELETE |
+| `prepare` | подготовленный запрос (бинарный протокол); INSERT отвечает id, UPDATE / DELETE числом затронутых строк, SELECT первой строкой (или её единственным значением). Несколько списков значений выполняют его по разу для каждого. | один и тот же запрос много раз |
+| `rawExecute` | подготовленный запрос с полными, необработанными результатами | когда нужен сырой результат |
+| `transaction` | `true` при фиксации, `false` после отката (всегда через колбэк) | несколько запросов, которые должны все выполниться успешно |
+| `startTransaction` | Promise с `true` при фиксации, `false` после отката | транзакция с логикой между запросами |
+| `store` | возвращает текст запроса в колбэк | старый код, который сохранял запросы |
+| `isReady` | `boolean`: пул открыт | проверки при старте |
+| `awaitConnection` | Promise с `true` после подключения | ожидание при старте |
+
+### transaction
+
+Выполняет несколько запросов на одном соединении; либо все выполняются успешно, либо ни один.
+
+**Сторона:** сервер · **Ожидание:** нет (отвечает через колбэк; `transaction_async` возвращает Promise)
+
+```ts title="Сигнатура"
+transaction(queries: Array<string | [string, unknown[] | object] | { query: string; values?: unknown[] | object; parameters?: unknown[] | object }>, params?: unknown[] | object, cb?: (committed: boolean) => void): void
+```
+
+```lua title="Lua"
+local ok = MySQL.transaction.await({
+    { query = 'UPDATE my_accounts SET money = money - ? WHERE owner = ?', values = { 100, from } },
+    { query = 'UPDATE my_accounts SET money = money + ? WHERE owner = ?', values = { 100, to } },
+})
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    queries: { type: 'array', description: 'Запросы по порядку. Каждый является строкой SQL (с общими `params`), парой `[sql, values]` или `{ query, values }` (также `parameters`).', required: true },
+    params: { type: 'unknown[] | object', description: 'Значения для записей, которые являются простыми строками.' },
+    cb: { type: '(committed: boolean) => void', description: '`true` при фиксации, `false` при откате.' },
+  }}
+/>
+
+#### Возвращает
+
+Напрямую ничего; колбэк получает `true` или `false`. Откат печатает ошибку в консоль и вызывает `oxmysql:transaction-error`.
+
+### startTransaction
+
+Открывает транзакцию и передаёт вашей функции привязанный к ней помощник `query`. Верните `false` из своей функции, чтобы откатить. Время ожидания 30 секунд.
+
+**Сторона:** сервер · **Ожидание:** да (Promise)
+
+```ts title="Сигнатура"
+startTransaction(work: (query: (sql: string, params?: unknown[] | object) => Promise<unknown>) => Promise<boolean | void>): Promise<boolean>
+```
+
+#### Возвращает
+
+`Promise<boolean>`: `true` при фиксации. `false`, если ваша функция вернула `false`, выбросила ошибку или истекли 30 секунд.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Ресурс на чистом JavaScript или TypeScript без @aicore-fivem/mysql.
+const db = exports.oxmysql;
+
+async function pay(from: string, to: string, amount: number): Promise<boolean> {
+  return db.startTransaction(async (query: (sql: string, params?: unknown[]) => Promise<any>) => {
+    const res = await query("UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?", [amount, from, amount]);
+    if (res.affectedRows !== 1) return false; // не хватает денег: откат
+    await query("UPDATE my_accounts SET money = money + ? WHERE owner = ?", [amount, to]);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function pay(from, to, amount)
+    return MySQL.startTransaction(function(query)
+        local res = query('UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?', { amount, from, amount })
+        if res.affectedRows ~= 1 then return false end
+        query('UPDATE my_accounts SET money = money + ? WHERE owner = ?', { amount, to })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+## Старые имена экспортов
+
+| Старый ресурс | Имена | То же, что |
+| --- | --- | --- |
+| ghmattimysql | `execute`, `scalar`, `transaction`, `store` (и `executeSync`, `scalarSync`, ...) | `query`, `scalar`, `transaction`, `store` |
+| mysql-async | `mysql_execute`, `mysql_insert`, `mysql_fetch_all`, `mysql_fetch_scalar`, `mysql_transaction`, `mysql_store` | `update`, `insert`, `query`, `scalar`, `transaction`, `store` |
+
+## Правила колбэков и ошибок
+
+Они повторяют oxmysql:
+
+- Успех: колбэк получает результат.
+- Ошибка в форме с промисом (или `.await` в Lua): промис отклоняется с текстом ошибки.
+- Ошибка с обычным колбэком: ошибка печатается в консоль, а колбэк **не** вызывается.
+
+## События
+
+### oxmysql:error
+
+**Сторона:** сервер (локальное) · срабатывает, когда запрос завершается ошибкой.
+
+<TypeTable
+  type={{
+    query: { type: 'string | undefined', description: 'Текст SQL.' },
+    parameters: { type: 'unknown', description: 'Переданные значения, если известны.' },
+    message: { type: 'string', description: 'Ошибка базы данных.' },
+    resource: { type: 'string', description: 'Ресурс, который отправил запрос.' },
+  }}
+/>
+
+### oxmysql:transaction-error
+
+**Сторона:** сервер (локальное) · срабатывает, когда `transaction` откатывается. Данные `{ message: string, resource: string }`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("oxmysql:error", (e: { query?: string; message: string; resource: string }) => {
+  console.log(`[db] ${e.resource}: ${e.message} (${e.query ?? "?"})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('oxmysql:error', function(e)
+    print(('[db] %s: %s (%s)'):format(e.resource, e.message, e.query or '?'))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Всегда передавайте значения как параметры, никогда не вклеивайте их в текст SQL. Значение от игрока, вставленное прямо в SQL, позволяет ему выполнять собственные запросы.
+</Callout>

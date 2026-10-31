@@ -1,0 +1,107 @@
+---
+title: Сетевые события
+description: Сетевые события, которые может слушать клиентский скрипт (канал данных игрока ai-core), и собственный сетевой трафик ai-core, который другие скрипты не должны вызывать.
+icon: Network
+---
+
+Сетевое событие идёт между сервером и клиентом одного игрока. ai-core отправляет их очень мало: собственные данные игрока уходят один раз при загрузке персонажа, затем только изменившиеся значения и только этому игроку. Всё остальное, что нужно вашему скрипту, - это [клиентское событие](/ru/docs/developers/api/events/client) или [state bag](/ru/docs/developers/api/events/state-bags).
+
+<Callout type="info">
+Эти события редко нужны напрямую. `onPlayerData(key, handler)` из библиотеки (TypeScript) и `aiLib.playerData.onChange(key, handler)` (Lua) слушают оба за вас, сливают патчи денег и метаданных и читают начальные значения из ai-core.
+</Callout>
+
+### ai-core:client:playerData
+
+Сервер отправляет одно значение собственных данных игрока: целое значение одного ключа. Срабатывает один раз на каждый ключ при загрузке персонажа, затем каждый раз, когда это значение меняется (работа, дежурство, банда...).
+
+**Сторона:** с сервера на клиент самого игрока
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    key: { type: '"character" | "money" | "jobs" | "duty" | "job" | "gangs" | "activeGang" | "metadata"', description: 'Какое это значение `AiPlayerData`.', required: true, typeDescriptionLink: '/ru/docs/developers/api/types#aiplayerdata' },
+    value: { type: 'unknown', description: 'Целое новое значение этого ключа (его тип - тип поля в `AiPlayerData`).', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { onPlayerData } from "@aicore-fivem/lib/client";
+
+// Библиотека слушает ai-core:client:playerData и playerDataPatch за вас.
+onPlayerData("job", (job) => console.log(`main job: ${job.job} grade ${job.grade}`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- Только с сервера: aiLib.onServerEvent отбрасывает локальные подделки.
+aiLib.onServerEvent('ai-core:client:playerData', function(key, value)
+  if key == 'job' then print(('main job: %s grade %d'):format(value.job, value.grade)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:playerDataPatch
+
+Сервер отправляет только изменившиеся записи значения-словаря: `money` (новый баланс одного счёта) или `metadata` (один ключ). Слейте патч с тем, что у вас есть.
+
+**Сторона:** с сервера на клиент самого игрока
+
+#### Аргументы
+
+<TypeTable
+  type={{
+    key: { type: '"money" | "metadata"', description: 'Какой словарь изменился.', required: true },
+    patch: { type: 'Record<string, unknown>', description: 'Только изменившиеся записи, например `{ cash: 450 }`. Запись метаданных, равная `null`, удалена.', required: true },
+  }}
+/>
+
+#### Обработчик
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { getPlayerData, onPlayerData } from "@aicore-fivem/lib/client";
+
+// Библиотека сливает патчи: обработчик получает весь слитый словарь денег.
+const show = (money: Record<string, number>): void => SendNUIMessage({ action: "cash", data: money.cash ?? 0 });
+show(getPlayerData("money") ?? {});
+onPlayerData("money", show);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- aiLib.playerData сливает патчи: обработчик получает всю слитую таблицу денег.
+local function show(money) SendNUIMessage({ action = 'cash', data = (money and money.cash) or 0 }) end
+show(aiLib.playerData.get('money'))
+aiLib.playerData.onChange('money', show)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+На клиенте слушайте сетевые события только через `onServerEvent` из библиотеки (TypeScript) или `aiLib.onServerEvent` (Lua). Они проверяют, что событие действительно пришло с сервера; голый обработчик `RegisterNetEvent` срабатывает и тогда, когда другой клиентский ресурс отправляет это имя локально.
+</Callout>
+
+## Собственный трафик ai-core: не вызывать
+
+Эти сетевые события и callback - внутренний трафик ai-core между его сервером и клиентом (или библиотекой). Они перечислены, чтобы вы узнавали их в логах. Никогда не вызывайте их из другого скрипта и не стройте на них ничего: их аргументы могут измениться.
+
+| Имя | Направление | Что |
+| --- | --- | --- |
+| `ai-core:client:spawn` | с сервера на клиент | Помещает загруженного персонажа в мир. |
+| `ai-core:client:chooseSpawn` | с сервера на клиент | Варианты появления, из которых выбирает игрок. |
+| `ai-core:client:openCharacters` | с сервера на клиент | Снова показывает экран персонажей после смены. |
+| `ai-core:client:characterLooks` | с сервера на клиент (latent) | Внешности для экрана персонажей. |
+| `ai-core:client:bills` | с сервера на клиент | Открытые счета игрока в ai-core для списка счетов. |
+| `ai-core:client:stress` | с сервера на клиент | Стресс для HUD, который принимает его только от своего клиента. |
+| `ai-core:client:vehicleKeys`, `ai-core:client:garages` | с сервера на клиент | Вызовы для скриптов ключей и гаражей, у которых есть только клиентский API. |
+| `ai-core:clientError`, `ai-core:fuelReport` | с клиента на сервер | Отчёты об ошибках клиентских бандлов; уровни топлива от клиентских скриптов топлива. |
+| `ai-core:characters`, `ai-core:createCharacter`, `ai-core:deleteCharacter`, `ai-core:selectCharacter`, `ai-core:spawnChoice`, `ai-core:payBill`, `ai-core:vehicleType` | callback | Экран персонажей, выбор появления, счета и спавн транспорта. |
+| `ai-core:admin:*`, `<resource>:admin:world` | оба | Админ-панель и данные панели каждого ресурса. |
+| `ai-lib:client:notify`, `ai-lib:progressFor`, `ai-lib:minigameFor`, `ai-lib:client:progressForCancel` | с сервера на клиент | Уведомления ai-lib, полосы прогресса и мини-игры, запускаемые сервером (используйте `notify`, `progressFor`, `minigameFor` из библиотеки). |

@@ -1,0 +1,84 @@
+---
+title: ai-drugs для разработчиков
+description: Таблица растений, вызовы полиции и причина операции ai-drugs, как продавать известные ему наркотики из другого скрипта, и его приватные события.
+icon: Code
+---
+
+У ai-drugs **нет экспортов**. Продажи и сбор урожая решаются на его сервере, а предметы, деньги и вызовы идут через AI Core. Ниже перечислено то, чем может пользоваться другой скрипт.
+
+## Таблица базы данных `ai_drugs_plants`
+
+Одна строка на каждый куст марихуаны в мире. Создаётся при старте (`sql/main.sql`, через установщик таблиц ai-core). Все строки загружаются один раз при старте и хранятся в памяти; сгнившие растения сервер удаляет, поэтому таблица остаётся маленькой.
+
+| Столбец | Тип | Что хранит |
+| --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | Id растения (автоинкремент). |
+| `owner` | `INT UNSIGNED` | `ai_core_characters.id` того, кто посадил (по нему считаются растения на персонажа). |
+| `x`, `y`, `z` | `FLOAT` | Где стоит растение. |
+| `planted_at` | `DATETIME` | Когда его посадили; рост и гниение отсчитываются от этого момента. |
+
+<Callout type="warn">
+ai-drugs читает таблицу только при старте и дальше держит растения в памяти. Строку, которую другой ресурс вставил, изменил или удалил во время его работы, он не увидит до следующего перезапуска. Меняйте растения только пока ai-drugs остановлен.
+</Callout>
+
+## Вызовы полиции
+
+Продажа может отправить один вызов (по настройке панели **Police alert chance**) через `dispatch.alert` из lib: код `10-31`, текст "Suspicious hand-off reported" («Сообщение о подозрительной передаче»), в позиции продавца, иконка `cannabis`, спрайт блипа 51 красного цвета. Вызов попадает в тот скрипт оповещений, который у вас запущен.
+
+## Деньги
+
+Деньги от продажи идут на счёт из настройки панели **Money account** с причиной операции `drugs:sale`.
+
+## Предметы
+
+Наркотики, которые покупают незнакомцы, берутся из списка панели **Drugs** (по умолчанию `weed_bud`, `coke_baggy`, `meth_baggy`). Чтобы уличные продажи получали товар из вашей нарколаборатории, дайте игроку один из этих предметов: ai-drugs продаёт любой предмет из списка, который есть у игрока.
+
+#### Пример
+
+Скрипт лаборатории, который превращает 5 `weed_bud` в один `coke_baggy` (выдуманный рецепт):
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, onClientCallback, progressFor } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+onClientCallback("mylab:cook", async (source) => {
+  if (!inventory.hasItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  const done = await progressFor(source, { label: "Cooking", duration: 10_000 });
+  if (!done) return fail("LAB_ERR_CANCELLED");
+  if (!inventory.removeItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  inventory.addItem(source, "coke_baggy", 1);
+  notify(source, "You made a baggy", "success");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+RegisterNetEvent('mylab:cook', function()
+  local source = source
+  if not aiLib.inventory.hasItem(source, 'weed_bud', 5) then return end
+  CreateThread(function()
+    local done = aiLib.progressFor(source, { label = 'Cooking', duration = 10000 })
+    if not done then return end
+    if not aiLib.inventory.removeItem(source, 'weed_bud', 5) then return end
+    aiLib.inventory.addItem(source, 'coke_baggy', 1)
+    aiLib.notify(source, 'You made a baggy', 'success')
+  end)
+end)
+```
+</Tab>
+</Tabs>
+
+## Приватные события и колбэки
+
+Собственный контракт скрипта (`resource/common/drugs.ts`). Сервер при каждом вызове проверяет покупателя, расстояние и задержки. Они могут меняться между версиями: не вызывайте и не слушайте их из других ресурсов.
+
+| Имя | Направление | Что передаёт |
+| --- | --- | --- |
+| `ai-drugs:sell` | client callback | `(buyerNetId)`: продать незнакомцу рядом с игроком; отвечает `{ ok, count, price }`. |
+| `ai-drugs:area` | client -> server | `(cellX, cellY)`: ячейка растений игрока изменилась. |
+| `ai-drugs:client:plants` | server -> player | `(reset, puts, removes, serverNow, growMinutes)`: растения вокруг игрока (ячейки 3x3 по 128 м вокруг него, затем изменения). |
+| `ai-drugs:harvest` | client callback | `(plantId)`: собрать готовое растение или уничтожить его (полиция). |

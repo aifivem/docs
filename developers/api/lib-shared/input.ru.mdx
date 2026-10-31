@@ -1,0 +1,516 @@
+---
+title: Действия и ввод от клиента
+description: "fail, isActionOk, replyError и строгие функции чтения readInt, readFinite, readId, readText, readVec3, readVec4, oneArg, asArgs, isRecord."
+icon: ShieldCheck
+---
+
+Всё, что отправляет клиент, читер может подделать: отрицательную сумму, дробь там, где вы ждёте целое число, строку на 10 МБ, объект вместо числа. **Строгие функции чтения** на этой странице превращают одно сырое значение в проверенное значение или в `null`, чтобы отказать. Они никогда не заменяют неверное значение значением по умолчанию (это делают [функции чтения данных панели](/ru/docs/developers/api/lib-shared/panel-data) для файлов, которые редактирует владелец сервера).
+
+Каждое серверное действие отвечает [ActionResult](/ru/docs/developers/api/types#actionresult): `{ ok: true }` или отказом с языковым ключом.
+
+```ts title="TypeScript"
+import { fail, isActionOk, replyError, readInt, readFinite, readId, readText, readVec3, readVec4, oneArg, asArgs, isRecord } from "@aicore-fivem/lib/shared";
+```
+
+Где используются функции чтения: опция `args` у `onClientCallback` и `onClientEvent` (см. [Ввод от клиента](/ru/docs/developers/api/lib-server/client-input)). Парсер получает сырые аргументы массивом и возвращает проверенные массивом или `null`, чтобы отклонить вызов ещё до запуска вашего обработчика.
+
+## Результаты действий
+
+### fail
+
+Создаёт отказ: `{ ok: false, error }`. Верните его из обработчика действия; клиентский `callAction` покажет переведённый текст `error` как уведомление об ошибке.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+fail(error: string): { ok: false; error: string }
+```
+
+```lua title="Lua"
+return aiLib.fail('NOT_ENOUGH_MONEY') -- { ok = false, error = 'NOT_ENOUGH_MONEY' }
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    error: { type: 'string', description: 'Ключ из `locales/en.json` вашего ресурса (`"NOT_ENOUGH_MONEY"`). Клиент ищет его в своём языковом файле; отсутствующий ключ показывается как есть.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`{ ok: false, error: string }`, что подходит к любому `ActionResult`.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt, type ActionResult } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "my-shop:buyWater",
+  { args: oneArg((v) => readInt(v, 1, 10)), lock: true },
+  (source, count): ActionResult => {
+    if (!core.CanCarryItem(source, "water", count)) return fail("NO_SPACE");
+    if (!core.RemoveMoney(source, "cash", count * 5, "Water")) return fail("NOT_ENOUGH_MONEY");
+    core.AddItem(source, "water", count);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+aiLib.onClientCallback('my-shop:buyWater', function(source, count)
+    if math.type(count) ~= 'integer' or count < 1 or count > 10 then return aiLib.fail('INVALID') end
+    if not exports['ai-core']:CanCarryItem(source, 'water', count) then return aiLib.fail('NO_SPACE') end
+    if not exports['ai-core']:RemoveMoney(source, 'cash', count * 5, 'Water') then
+        return aiLib.fail('NOT_ENOUGH_MONEY')
+    end
+    exports['ai-core']:AddItem(source, 'water', count)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+На клиенте `callAction("my-shop:buyWater", [2], { fallback: "BUY_FAILED" })` (в Lua `aiLib.callAction`) показывает отказ за вас. См. [Связь с сервером](/ru/docs/developers/api/lib-client/server).
+
+### isActionOk
+
+Проверяет, является ли ответ успешным `ActionResult` (`ok === true`). Используйте, когда читаете ответ вручную, а не через `callAction`.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+isActionOk(reply: unknown): reply is { ok: true } & Record<string, unknown>
+```
+
+**Lua:** аналога нет; проверьте `type(reply) == 'table' and reply.ok == true`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Что угодно, чем ответил колбэк.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`true`, если `reply` является объектом с `ok: true`. Дополнительные поля не проверяются: разбирайте те, которые читаете.
+
+#### Пример
+
+```ts title="resource/client/index.ts"
+import { triggerServerCallback } from "@aicore-fivem/lib/client";
+import { isActionOk, readId } from "@aicore-fivem/lib/shared";
+
+/** Asks the server to create a garage; answers its new id, or null. */
+async function createGarage(name: string): Promise<number | null> {
+  const reply = await triggerServerCallback("my-garage:create", [name]).catch(() => null);
+  if (!isActionOk(reply)) return null;
+  return readId(reply.id); // дополнительное поле: проверяйте его, как любой другой ввод
+}
+```
+
+### replyError
+
+Языковой ключ отклонённого ответа: его `error` или `fallback`, если ответа нет или он искажён. `null`, если ответ успешный.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+replyError(reply: unknown, fallback: string): string | null
+```
+
+**Lua:** аналога нет.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    reply: { type: 'unknown', description: 'Что угодно, чем ответил колбэк (или `null` после тайм-аута).', required: true },
+    fallback: { type: 'string', description: 'Языковой ключ на случай, если в ответе нет пригодного `error` (тайм-аут, отказ guard-условия, неверная форма).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`null` для успешного ответа. Иначе `error` ответа, если это непустая строка, иначе `fallback`.
+
+#### Пример
+
+```ts title="resource/client/index.ts"
+import { triggerServerCallback, notify, loadLocaleTexts } from "@aicore-fivem/lib/client";
+import { replyError } from "@aicore-fivem/lib/shared";
+
+const texts = loadLocaleTexts();
+
+async function buyWater(): Promise<boolean> {
+  const reply = await triggerServerCallback("my-shop:buy", ["water"]).catch(() => null);
+  const error = replyError(reply, "BUY_FAILED");
+  if (error !== null) notify(texts[error] ?? error, "error");
+  return error === null;
+}
+```
+
+## Строгие функции чтения
+
+### readFinite
+
+Конечное число, иначе `null`. `NaN`, `Infinity`, текст и всё остальное отклоняются.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readFinite(value: unknown): number | null
+```
+
+**Lua:** аналога нет; проверьте `type(value) == 'number' and value == value and value ~= math.huge and value ~= -math.huge`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сырое значение от клиента.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Число или `null`.
+
+#### Пример
+
+```ts
+import { readFinite } from "@aicore-fivem/lib/shared";
+
+readFinite(12.5);     // 12.5
+readFinite(NaN);      // null
+readFinite("12");     // null
+```
+
+### readInt
+
+Целое число от `min` до `max` (оба включительно), иначе `null`. Дроби, `NaN`, `Infinity`, текст и значения вне диапазона отклоняются. Используйте для количеств, сумм, слотов, индексов.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readInt(value: unknown, min: number, max: number): number | null
+```
+
+**Lua:** аналога нет; проверьте `math.type(value) == 'integer' and value >= min and value <= max`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сырое значение от клиента.', required: true },
+    min: { type: 'number', description: 'Наименьшее допустимое значение.', required: true },
+    max: { type: 'number', description: 'Наибольшее допустимое значение.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Число или `null`.
+
+#### Пример
+
+```ts title="resource/server/index.ts"
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readInt, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const prices = new Map<string, number>([["water", 5], ["bread", 3]]);
+
+onClientCallback(
+  "my-shop:buy",
+  {
+    args: ([rawItem, rawCount]) => {
+      const item = readText(rawItem, 64);
+      const count = readInt(rawCount, 1, 50);
+      return item !== null && count !== null ? [item, count] : null;
+    },
+    lock: true,
+  },
+  (source, item, count) => {
+    const price = prices.get(item); // только предметы, которые продаёт этот магазин
+    if (price === undefined) return fail("UNKNOWN_ITEM");
+    if (!core.CanCarryItem(source, item, count)) return fail("NO_SPACE");
+    if (!core.RemoveMoney(source, "cash", price * count, "Shop")) return fail("NOT_ENOUGH_MONEY");
+    core.AddItem(source, item, count);
+    return { ok: true };
+  },
+);
+```
+
+### readId
+
+Положительное 32-битное целое число (от 1 до 2 147 483 647), иначе `null`. Используйте для id записей, токенов и сетевых id, которые отправляет клиент.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readId(value: unknown): number | null
+```
+
+**Lua:** аналога нет; проверьте `math.type(value) == 'integer' and value > 0 and value <= 2147483647`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сырое значение от клиента.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Id или `null`.
+
+#### Пример
+
+```ts title="resource/server/index.ts"
+import { onClientCallback, vehicleFromNet } from "@aicore-fivem/lib/server";
+import { oneArg, readId, fail } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-tow:attach", { args: oneArg(readId) }, (source, netId) => {
+  const vehicle = vehicleFromNet(netId);
+  if (vehicle === 0) return fail("NO_VEHICLE");
+  return { ok: true };
+});
+```
+
+<Callout type="warn">
+Верный id ещё не означает верную цель. Всегда проверяйте, что запись или сущность существует, что игрок может её использовать и что он рядом с ней.
+</Callout>
+
+### readText
+
+Обрезанная по краям непустая строка, урезанная до `max` символов, иначе `null`. Используйте для имён, названий предметов, заметок, текста поиска.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readText(value: unknown, max: number): string | null
+```
+
+**Lua:** аналога нет; проверьте `type(value) == 'string'`, затем обрежьте пробелы и укоротите строку (`value:sub(1, max)`).
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сырое значение от клиента.', required: true },
+    max: { type: 'number', description: 'Сколько символов максимум сохраняется. Более длинный текст укорачивается, а не отклоняется.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Обрезанный текст (не более `max` символов) или `null`, если это не строка или она пуста после обрезки.
+
+#### Пример
+
+```ts
+import { readText } from "@aicore-fivem/lib/shared";
+
+readText("  Hello  ", 64);  // "Hello"
+readText("   ", 64);        // null
+readText(42, 64);           // null
+```
+
+### readVec3
+
+Точка из ввода клиента или экспорта, все координаты конечные, иначе `null`. Принимает объект `{ x, y, z }` и вектор Lua, который приходит в TypeScript как массив `[x, y, z]`.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readVec3(value: unknown): { x: number; y: number; z: number } | null
+```
+
+**Lua:** аналога нет; код на Lua читает `value.x`, `value.y`, `value.z` (работает для векторов и таблиц).
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сырое значение: `{ x, y, z }` или `[x, y, z]`.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Новый объект [Vec3](/ru/docs/developers/api/types#vec3) или `null`.
+
+#### Пример
+
+```ts title="resource/server/index.ts"
+import { registerExport } from "@aicore-fivem/lib/server";
+import { readVec3, type Vec3 } from "@aicore-fivem/lib/shared";
+
+const markers: Vec3[] = [];
+
+// Работает для exports["my-markers"].AddMarker(vector3(1, 2, 3)) из Lua и AddMarker({ x: 1, y: 2, z: 3 }) из TypeScript.
+registerExport("AddMarker", (raw: unknown) => {
+  const point = readVec3(raw);
+  if (!point) return false;
+  markers.push(point);
+  return true;
+});
+```
+
+### readVec4
+
+Точка с направлением, иначе `null`. Принимает `{ x, y, z, heading }`, `{ x, y, z, w }` и `vector4` из Lua (`[x, y, z, w]`). Отсутствующее направление читается как `0`.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+readVec4(value: unknown): { x: number; y: number; z: number; heading: number } | null
+```
+
+**Lua:** аналога нет.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Сырое значение: объект с `heading` или `w` либо массив.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Новый объект [Vec4](/ru/docs/developers/api/types#vec4) (`heading` 0, если направление не задано) или `null`, если координата или заданное направление не является конечным числом.
+
+#### Пример
+
+```ts
+import { readVec4 } from "@aicore-fivem/lib/shared";
+
+readVec4({ x: 1, y: 2, z: 3, w: 90 });  // { x: 1, y: 2, z: 3, heading: 90 }
+readVec4([1, 2, 3]);                    // { x: 1, y: 2, z: 3, heading: 0 }
+readVec4({ x: 1, y: 2 });               // null
+```
+
+### oneArg
+
+Превращает функцию чтения в парсер `args` для колбэка или события, которое принимает ровно одно значение: `{ args: oneArg(readId) }`.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+oneArg<T>(read: (value: unknown) => T | null): (args: unknown[]) => [T] | null
+```
+
+**Lua:** аналога нет.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    read: { type: '(value: unknown) => T | null', description: 'Функция чтения первого аргумента (`readId` или ваша собственная: `(v) => readInt(v, 1, 10)`).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Парсер, который возвращает `[value]` или `null` (отклоняет вызов), если `read` вернула `null`.
+
+#### Пример
+
+```ts title="resource/server/index.ts"
+import { onClientCallback } from "@aicore-fivem/lib/server";
+import { oneArg, readText } from "@aicore-fivem/lib/shared";
+
+const notes = new Map<number, string>();
+
+onClientCallback("my-notes:save", { args: oneArg((v) => readText(v, 500)) }, (source, text) => {
+  notes.set(source, text);
+  return { ok: true };
+});
+```
+
+### asArgs
+
+Оборачивает одно уже разобранное значение как результат `args`: `[value]` или `null`, если значение `null`. Используйте, когда ваша собственная функция проверки возвращает значение или `null`.
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+asArgs<T>(value: T | null): [T] | null
+```
+
+**Lua:** аналога нет.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'T | null', description: 'Разобранное значение или `null` для неверного.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`[value]` или `null`.
+
+#### Пример
+
+```ts title="resource/server/index.ts"
+import { onClientCallback } from "@aicore-fivem/lib/server";
+import { asArgs, toVehicleSetup, type VehicleSetup } from "@aicore-fivem/lib/shared";
+
+const previews = new Map<number, VehicleSetup>();
+
+onClientCallback("my-shop:preview", { args: ([raw]) => asArgs(toVehicleSetup(raw)) }, (source, setup) => {
+  previews.set(source, setup);
+  return { ok: true };
+});
+```
+
+### isRecord
+
+Проверяет, что значение является простым объектом (не `null` и не массивом).
+
+**Сторона:** Клиент, сервер и NUI · **Ждёт:** нет
+
+```ts title="Сигнатура"
+isRecord(value: unknown): value is Record<string, unknown>
+```
+
+**Lua:** аналога нет; проверьте `type(value) == 'table'`.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Любое значение.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`true` для объекта вида `{ a: 1 }`. `false` для `null`, массивов, чисел, строк.
+
+#### Пример
+
+```ts
+import { isRecord, readText } from "@aicore-fivem/lib/shared";
+
+function readNote(raw: unknown): { title: string } | null {
+  if (!isRecord(raw)) return null;
+  const title = readText(raw.title, 80);
+  return title === null ? null : { title };
+}
+```
