@@ -1,0 +1,272 @@
+---
+title: Billing
+description: Send bills (fines, service fees, player invoices), list and pay a player's open bills, through whichever billing script runs or ai-core's own bills.
+icon: Receipt
+---
+
+Bills go through ai-core, never through a billing script's own exports or events. ai-core sends each bill to the **active billing script**: the one the panel's **Billing script** setting picks, or the first one running. Without one, **ai-core's own bills** take it: the player sees a list of open bills on screen and the money moves when they pay. A bill never goes nowhere.
+
+A bill comes **from a job** (the job's `bank` account gets the payment: police fines, a mechanic's fee) or **from a player** (that player gets the payment).
+
+ai-core's own bills in short: open bills are stored per character (offline characters too), at most 20 open bills per character, and paying takes the money from `bank`, then `cash`, in one transaction with the bill's removal.
+
+### GetBillingSystem
+
+Where bills go.
+
+**Side:** Server · **Waits:** no · **Lib:** [`billing.provider()`](/docs/developers/api/lib-server/money#billingprovider)
+
+```ts title="Signature"
+GetBillingSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetBillingSystem() -- 'ai-core' or a script name
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`string | null`: the billing script's resource name, or `"ai-core"` for ai-core's own bills. Since ai-core's own bills are always available, this is not `null` in practice.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Bills to offline characters only work with ai-core's own bills. */
+export function canBillOffline(): boolean {
+  return core.GetBillingSystem() === "ai-core";
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function CanBillOffline()
+  return exports['ai-core']:GetBillingSystem() == 'ai-core'
+end
+```
+</Tab>
+</Tabs>
+
+### SendBill
+
+Sends a bill to a player.
+
+**Side:** Server · **Waits:** no · **Lib:** [`billing.send`](/docs/developers/api/lib-server/money#billingsend)
+
+```ts title="Signature"
+SendBill(bill: BillRequest): boolean
+```
+
+```lua title="Lua"
+local sent = exports['ai-core']:SendBill({ to = target, amount = 250, label = 'Speeding', from = source, job = 'police' })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    bill: { type: 'BillRequest', description: 'The bill. Fields below.', required: true },
+  }}
+/>
+
+#### BillRequest
+
+<TypeTable
+  type={{
+    to: { type: 'number', description: 'Server id of the player who gets the bill. Give `to` or `toCitizenid`, never both.' },
+    toCitizenid: { type: 'string', description: 'Citizen id of the character who gets it, online or offline (letters and digits, up to 16). An offline character only gets it from ai-core own bills.' },
+    amount: { type: 'number', description: 'Whole dollars, 1 to 10,000,000.', required: true },
+    label: { type: 'string', description: 'What it is for (`Speeding`, `Engine repair`), already translated. Cut to 80 characters.', required: true },
+    from: { type: 'number', description: 'Server id of the player who issues it (officer, mechanic). Required for a personal bill (no `job`): that player gets the payment.' },
+    job: { type: 'string', description: 'Job whose account gets the payment (lower-case name, 2-32 characters). Without it the bill is personal.' },
+  }}
+/>
+
+See [BillRequest](/docs/developers/api/types#billrequest).
+
+#### Returns
+
+`boolean`: `true` when the bill was sent. `false` when:
+
+- the bill is invalid: both or neither of `to` / `toCitizenid`, no `label`, `amount` not a whole number from 1 to 10,000,000, neither `job` nor `from`, or `from` equal to the recipient;
+- `from` is given but has no loaded character, or `job` does not exist;
+- the recipient is offline and bills go to a billing script (only ai-core's own bills reach offline characters);
+- the billing script refused it, or the recipient already has 20 open bills with ai-core's own bills.
+
+An offline bill with ai-core's own bills answers `true` once it is valid; the database may still refuse it (unknown citizen id, 20 open bills), which is logged.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, coordsOf, isNear, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readId, readInt } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+// An officer fines the player in front of them; the police account gets the money.
+onClientCallback(
+  "myscript:fine",
+  {
+    args: ([target, amount]) => {
+      const t = readId(target);
+      const a = readInt(amount, 1, 50_000);
+      return t === null || a === null ? null : [t, a];
+    },
+  },
+  (source, target, amount) => {
+    if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+    if (!isNear(target, coordsOf(source), 3)) return fail("TOO_FAR");
+    const sent = core.SendBill({ to: target, amount, label: Locale("BILL_FINE"), from: source, job: "police" });
+    return sent ? { ok: true } : fail("BILL_FAILED");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('myscript:fine', function(source, target, amount)
+  if math.type(target) ~= 'integer' or math.type(amount) ~= 'integer' or amount < 1 or amount > 50000 then
+    return aiLib.fail('BAD_INPUT')
+  end
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  if #(GetEntityCoords(GetPlayerPed(source)) - GetEntityCoords(GetPlayerPed(target))) > 3.0 then return aiLib.fail('TOO_FAR') end
+  local sent = exports['ai-core']:SendBill({ to = target, amount = amount, label = Locale('BILL_FINE'), from = source, job = 'police' })
+  if not sent then return aiLib.fail('BILL_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Never take money from the target yourself as a "forced bill" (`TransferMoney` from their account): a bill is the player's choice to pay.
+</Callout>
+
+### GetUnpaidBills
+
+A player's open (unpaid) bills.
+
+**Side:** Server · **Waits:** no (answers through `done`) · **Lib:** [`billing.unpaid(source)`](/docs/developers/api/lib-server/money#billingunpaid) returns a Promise
+
+```ts title="Signature"
+GetUnpaidBills(source: number, done: (bills: UnpaidBill[] | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetUnpaidBills(source, function(bills) end) -- list or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player.', required: true },
+    done: { type: '(bills) => void', description: 'Called once with the answer.', required: true, typeDescription: '(bills: UnpaidBill[] | null) => void' },
+  }}
+/>
+
+#### Returns
+
+Nothing. `done` gets one entry per open bill with `id` (the billing script's id), `label`, `amount` (what is still owed) and `sender` (job label or player name) ([UnpaidBill](/docs/developers/api/types#unpaidbill)), or `null` when the player has no loaded character or the billing script cannot list bills. Without a function as `done` the call does nothing.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import type { UnpaidBill } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// A city hall counter shows what the player owes.
+onClientCallback("myscript:myBills", async (source) => {
+  const bills = await new Promise<UnpaidBill[] | null>((resolve) => core.GetUnpaidBills(source, resolve));
+  if (!bills) return fail("BILLS_UNAVAILABLE");
+  return { ok: true, bills, total: bills.reduce((sum, b) => sum + b.amount, 0) };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:myBills', function(source)
+  local p = promise.new()
+  exports['ai-core']:GetUnpaidBills(source, function(bills) p:resolve(bills or false) end)
+  local bills = Citizen.Await(p)
+  if not bills then return aiLib.fail('BILLS_UNAVAILABLE') end
+  local total = 0
+  for _, b in ipairs(bills) do total = total + b.amount end
+  return { ok = true, bills = bills, total = total }
+end)
+```
+</Tab>
+</Tabs>
+
+### PayBill
+
+The player pays one of their open bills.
+
+**Side:** Server · **Waits:** no · **Lib:** [`billing.pay`](/docs/developers/api/lib-server/money#billingpay)
+
+```ts title="Signature"
+PayBill(source: number, id: string): boolean
+```
+
+```lua title="Lua"
+local paid = exports['ai-core']:PayBill(source, billId)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player who pays (the recipient of the bill).', required: true },
+    id: { type: 'string', description: 'The bill `id` from `GetUnpaidBills`.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the bill was paid. `false` when the player has no loaded character, the bill is not theirs or gone, they cannot pay it, the billing script refused or only takes payments in its own screen. With ai-core's own bills a personal bill also needs the issuer online (the money goes to their bank).
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "myscript:payBill",
+  { args: ([id]) => { const v = readText(id, 64); return v ? [v] : null; }, lock: true },
+  (source, id) => (core.PayBill(source, id) ? { ok: true } : fail("BILL_NOT_PAID")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:payBill', function(source, id)
+  if type(id) ~= 'string' or not exports['ai-core']:PayBill(source, id) then return aiLib.fail('BILL_NOT_PAID') end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>

@@ -1,0 +1,92 @@
+---
+title: ai-police for developers
+description: The cuffed state bag of ai-police, how its actions reach other scripts through AI Core, and its private events.
+icon: Code
+---
+
+ai-police has **no exports**. Its fines, records, jail sentences, alerts, searches and impounds all go through AI Core's layers, so another script never calls ai-police. What another script can read is the `cuffed` state.
+
+## State bag `cuffed`
+
+`true` on a player's state bag while ai-police holds them cuffed; `false` (or missing) otherwise. The server writes it; every client can read it. The key name is `PLAYER_BAGS.cuffed` in `@aicore-fivem/shared`.
+
+**Side:** Server and client (read) · **Waits:** no
+
+```ts title="Signature"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- server
+local cuffed = LocalPlayer.state.cuffed == true      -- client, the local player
+```
+
+#### Returns
+
+`true` while cuffed. `false` after being uncuffed, `undefined` / `nil` when the player was never cuffed this session.
+
+#### Example
+
+Refuse an item while the player is cuffed:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... open the radio
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... open the radio
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Do not set `cuffed` yourself: ai-police keeps its own list of cuffed players and escorts on the server and only mirrors it into the state bag. A value written by another script is not a real cuff and is overwritten on the next cuff action.
+</Callout>
+
+## What ai-police sends through AI Core
+
+| Action | Layer it uses | What lands there |
+| --- | --- | --- |
+| Write a fine | lib `billing.send` | A bill from the officer's on-duty job, label "Police fine". |
+| Write a fine | lib `mdt.record` | A `fine` record with the amount. |
+| Send to prison | lib `prison.jail` | The sentence, with the officer as `by`. |
+| Send to prison | lib `mdt.record` | An `arrest` record with the minutes. |
+| Shots fired | lib `dispatch.alert` | One alert per 150 m area every 30 s, to the panel's police jobs. |
+| Search | lib `inventory.openInventory` | The target's inventory opens for the officer. |
+| Impound | lib `garages.impound` | The garage script takes the vehicle; if it refuses, the vehicle is deleted. |
+
+To react to any of these, listen on the layer's side (your billing, MDT, prison or alert script), not on ai-police.
+
+## Private events and callbacks
+
+The script's own client-server contract (`resource/common/police.ts`). The server checks duty, distance and the cuffed state on every call. They may change between versions: do not trigger or listen to them from other resources.
+
+| Name | Direction | What it carries |
+| --- | --- | --- |
+| `ai-police:act` | client callback | `(action, target, extra?)`: an officer acts on the closest player (server id) or vehicle (net id). Answers `{ ok }`. |
+| `ai-police:duty` | client callback | `(stationId)`: toggle duty at a station. Answers `{ ok, onDuty }`. |
+| `ai-police:shot` | client -> server | `(x, y, z)`: the player fired a weapon (rate limited, only non-police count). |
+| `ai-police:client:cuffed` | server -> target | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | server -> target | `(officerNetId \| null)`: attach to the officer, or let go. |
+| `ai-police:client:seat` | server -> target | `(vehicleNetId \| null)`: sit in the back of a vehicle, or get out. |

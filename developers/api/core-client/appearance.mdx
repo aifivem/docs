@@ -1,0 +1,324 @@
+---
+title: Appearance
+description: Put a character's look on a ped, read the look a ped wears, open the clothing shop, barber or outfits menu, and dress the player in a job outfit, whatever clothing script runs.
+icon: Shirt
+---
+
+These exports go through ai-core's **appearance layer**: the clothing script the server runs (ai-appearance, tgiann-clothing, illenium-appearance, qb-clothing, crm-appearance, rcore_clothing, bl_appearance) does the work. Your script never touches a clothing script's own format, so it keeps working when the server owner changes it.
+
+A **look** ([`CharacterAppearance`](/docs/developers/api/types#characterappearance)) is `{ model, data }`: the ped model hash and the clothing script's own data. Treat `data` as a closed box: get a look from the server (`appearance.get(charId)` in the server lib, `aiLib.appearance.get` in Lua) or from `GetPedAppearance`, and give it back unchanged.
+
+### ApplyAppearance
+
+Puts a look on a ped through the active clothing script. Use it to dress a local ped as a character (a shop keeper who looks like the owner, a sleeping body, a photo) or to put a stored look back on the player.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+ApplyAppearance(ped: number, look: CharacterAppearance): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:ApplyAppearance(ped, look) -- or aiLib.appearance.apply(ped, look)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'The ped handle. Its model must be the look\'s `model`: create the ped with `look.model`.', required: true },
+    look: { type: 'CharacterAppearance', description: '`{ model, data }` exactly as the server or `GetPedAppearance` gave it.', required: true, typeDescriptionLink: '/docs/developers/api/types#characterappearance' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the clothing script was given the look. `false` when the ped does not exist, its model differs from `look.model`, the look is not a `{ model, data }` table, or no clothing script runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { appearance, onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// The asking player's own stored look.
+onClientCallback("myscript:myLook", async (source) => {
+  const character = core.GetCharacter(source);
+  return character ? await appearance.get(character.id) : null;
+});
+```
+
+```ts title="resource/client/index.ts"
+import { appearance, requestModel, triggerServerCallback } from "@aicore-fivem/lib/client";
+import { toCharacterAppearance } from "@aicore-fivem/shared";
+
+// A local copy of the player standing at a point, dressed like them.
+export async function spawnLookalike(x: number, y: number, z: number): Promise<number> {
+  const look = toCharacterAppearance(await triggerServerCallback("myscript:myLook", []));
+  if (!look) return 0;
+  await requestModel(look.model);
+  const ped = CreatePed(4, look.model, x, y, z, 0, false, false);
+  SetModelAsNoLongerNeeded(look.model);
+  appearance.apply(ped, look);
+  return ped;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+-- The asking player's own stored look.
+aiLib.onClientCallback('myscript:myLook', function(source)
+  local character = exports['ai-core']:GetCharacter(source)
+  return character and aiLib.appearance.get(character.id) or nil
+end)
+```
+
+```lua title="client.lua"
+-- A local copy of the player standing at a point, dressed like them (call from a thread).
+local function spawnLookalike(x, y, z)
+  local look = aiLib.triggerServerCallback('myscript:myLook', {})
+  if not look then return 0 end
+  aiLib.requestModel(look.model)
+  local ped = CreatePed(4, look.model, x, y, z, 0.0, false, false)
+  SetModelAsNoLongerNeeded(look.model)
+  aiLib.appearance.apply(ped, look)
+  return ped
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+On the player's own ped, `ApplyAppearance` changes what they wear now. Whether that change is saved is the clothing script's rule, not ai-core's. To dress the player in a uniform that is never saved, use [WearOutfit](#wearoutfit).
+</Callout>
+
+### GetPedAppearance
+
+Returns the look a ped wears right now, in the same `{ model, data }` shape the server's stored looks use.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+GetPedAppearance(ped: number): CharacterAppearance | null
+```
+
+```lua title="Lua"
+local look = exports['ai-core']:GetPedAppearance(ped) -- or aiLib.appearance.read(ped)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'The ped handle (`cache.ped` for the local player).', required: true },
+  }}
+/>
+
+#### Returns
+
+[`CharacterAppearance`](/docs/developers/api/types#characterappearance): `model` is the ped's model hash, `data` the clothing script's data. `null` when the ped does not exist, no clothing script runs, or the clothing script cannot read that ped (some only read the local player's own ped).
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/photo.ts"
+import { appearance, cache } from "@aicore-fivem/lib/client";
+
+// Copies what the player wears now onto another ped of the same model.
+export function copyPlayerLook(target: number): boolean {
+  const look = appearance.read(cache.ped);
+  return look !== null && appearance.apply(target, look);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/photo.lua"
+-- Copies what the player wears now onto another ped of the same model.
+local function copyPlayerLook(target)
+  local look = aiLib.appearance.read(aiLib.cache.ped)
+  return look ~= nil and aiLib.appearance.apply(target, look)
+end
+```
+</Tab>
+</Tabs>
+
+### OpenClothingMenu
+
+Opens one of the active clothing script's menus for the local player: the clothing shop, the barber, or their saved outfits. Use it for your own shop markers or a wardrobe in a house.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+OpenClothingMenu(menu: ClothingMenu): boolean
+```
+
+```lua title="Lua"
+local opened = exports['ai-core']:OpenClothingMenu(menu) -- or aiLib.appearance.openMenu(menu)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    menu: { type: '"clothing" | "barber" | "outfits"', description: '`clothing`: the clothing shop. `barber`: hair, beard and makeup. `outfits`: the player\'s saved outfits (a wardrobe).', required: true, typeDescriptionLink: '/docs/developers/api/types#clothingmenu' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the clothing script opened the menu. `false` for an unknown `menu`, when no clothing script runs, or when the running one has no such menu.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/wardrobe.ts"
+import { appearance, notify, Points } from "@aicore-fivem/lib/client";
+import { Locale } from "common";
+
+const points = new Points();
+
+// A wardrobe in a motel room.
+points.add("motel_wardrobe", {
+  coords: { x: 151.3, y: -1001.2, z: -99.0 },
+  label: Locale("WARDROBE"),
+  onPressed: () => {
+    if (!appearance.openMenu("outfits")) notify(Locale("NO_WARDROBE"), "error");
+  },
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/wardrobe.lua"
+local Locale = aiLib.locale()
+
+RegisterCommand('wardrobe', function()
+  if not aiLib.appearance.openMenu('outfits') then
+    aiLib.notify(Locale('NO_WARDROBE'), 'error')
+  end
+end, false)
+```
+</Tab>
+</Tabs>
+
+### WearOutfit
+
+Puts a job outfit (a uniform) on the local player until `ReloadSkin`. Only the pieces you list change; the rest of their clothes stay. The outfit is never saved as the player's own look.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+WearOutfit(outfit: JobOutfit): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:WearOutfit(outfit) -- or aiLib.appearance.wearOutfit(outfit)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    outfit: { type: 'JobOutfit', description: 'The pieces to put on. Fields below.', required: true, typeDescriptionLink: '/docs/developers/api/types#joboutfit' },
+  }}
+/>
+
+#### JobOutfit
+
+<TypeTable
+  type={{
+    components: { type: 'OutfitPiece[]', description: 'Clothing components (torso, legs, shoes...): `id` 0-11.', required: true, typeDescriptionLink: '/docs/developers/api/types#outfitpiece' },
+    props: { type: 'OutfitPiece[]', description: 'Props (hats, glasses, watches...): `id` 0-13.', required: true, typeDescriptionLink: '/docs/developers/api/types#outfitpiece' },
+  }}
+/>
+
+#### OutfitPiece
+
+See also [OutfitPiece](/docs/developers/api/types#outfitpiece).
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'The component id (0-11) or prop id (0-13).', required: true },
+    collection: { type: 'string', description: 'The clothing collection name (DLC) the piece comes from; `""` for the base game. At most 64 characters.', required: true },
+    index: { type: 'number', description: 'The drawable index inside that collection (0-1023). For a prop, `-1` takes the prop off.', required: true },
+    texture: { type: 'number', description: 'The texture (color variant). A missing or negative value counts as 0.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the clothing script put the outfit on. `false` when no valid piece is left after checking, no clothing script runs, or the running one cannot wear outfits. Invalid pieces (wrong id range, bad index) are dropped one by one; the valid ones are still worn.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/locker.ts"
+import { appearance } from "@aicore-fivem/lib/client";
+import type { JobOutfit } from "@aicore-fivem/shared";
+
+// A plain uniform from base-game pieces: shirt, trousers, shoes, no hat.
+const UNIFORM: JobOutfit = {
+  components: [
+    { id: 11, collection: "", index: 55, texture: 0 },
+    { id: 4, collection: "", index: 35, texture: 0 },
+    { id: 6, collection: "", index: 25, texture: 0 },
+  ],
+  props: [{ id: 0, collection: "", index: -1, texture: 0 }],
+};
+
+export const putOnUniform = (): boolean => appearance.wearOutfit(UNIFORM);
+export const takeOffUniform = (): boolean => appearance.reloadSkin();
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/locker.lua"
+-- A plain uniform from base-game pieces: shirt, trousers, shoes, no hat.
+local UNIFORM = {
+  components = {
+    { id = 11, collection = '', index = 55, texture = 0 },
+    { id = 4, collection = '', index = 35, texture = 0 },
+    { id = 6, collection = '', index = 25, texture = 0 },
+  },
+  props = { { id = 0, collection = '', index = -1, texture = 0 } },
+}
+
+local function putOnUniform() return aiLib.appearance.wearOutfit(UNIFORM) end
+local function takeOffUniform() return aiLib.appearance.reloadSkin() end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Drawable indexes differ between the male and female freemode models: keep one outfit per model and pick it by the player's model.
+</Callout>
+
+### ReloadSkin
+
+Puts the local player's saved look back on. Use it to take a job outfit off.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+ReloadSkin(): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:ReloadSkin() -- or aiLib.appearance.reloadSkin()
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`boolean`: `true` when the clothing script was asked to reload the look. `false` when no clothing script runs or the running one cannot reload.
+
+#### Example
+
+See the example of [WearOutfit](#wearoutfit).

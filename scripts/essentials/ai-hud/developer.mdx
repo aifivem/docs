@@ -1,0 +1,159 @@
+---
+title: ai-hud for developers
+description: ai-hud's exports for needs (hunger, thirst, stress) and its HUD settings, and what it reads from other scripts.
+icon: Code
+---
+
+Needs are numbers from 0 to 100 kept on the character's metadata (`hunger`, `thirst`, `stress`, the QB keys). Hunger and thirst count down (100 = full); stress counts up (0 = calm). ai-hud is the only script that writes them.
+
+<Callout type="info">
+To add stress from your script, use AI Core's stress layer (lib `stress`, `AddStress` export), which works with whichever HUD runs. Food and drink effects belong on the item: set the item's **Hunger**, **Thirst** and **Stress** values in ai-inventory's panel, and ai-hud applies them when the item is used.
+</Callout>
+
+## Server exports
+
+`SetNeed` and `AddNeed` are typed `AiHudServerExports` in `@aicore-fivem/shared` (`resourceExport("ai-hud")` in TypeScript). `GetNeeds` is not typed: call it with lib `callExport("ai-hud", "GetNeeds", source)`.
+
+### GetNeeds
+
+Reads a loaded player's needs.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+GetNeeds(source: number): { hunger: number; thirst: number; stress: number } | null
+```
+
+```lua title="Lua"
+local needs = exports['ai-hud']:GetNeeds(source) -- table or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`{ hunger, thirst, stress } | null`: each value 0-100 (decimals kept). `null` when the player has no loaded character.
+
+### SetNeed
+
+Sets one need to a value.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+SetNeed(source: number, need: "hunger" | "thirst" | "stress", value: number): void
+```
+
+```lua title="Lua"
+exports['ai-hud']:SetNeed(source, 'hunger', 100)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of a player with a loaded character.', required: true },
+    need: { type: '"hunger" | "thirst" | "stress"', description: 'Which need.', required: true },
+    value: { type: 'number', description: 'The new value. Clamped to 0-100.', required: true },
+  }}
+/>
+
+#### Returns
+
+Nothing. Does nothing when the player has no loaded character or an argument is invalid. The new value is saved to the character and sent to the player's HUD when its rounded value changes.
+
+### AddNeed
+
+Changes one need by an amount.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+AddNeed(source: number, need: "hunger" | "thirst" | "stress", delta: number): void
+```
+
+```lua title="Lua"
+exports['ai-hud']:AddNeed(source, 'thirst', 25)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of a player with a loaded character.', required: true },
+    need: { type: '"hunger" | "thirst" | "stress"', description: 'Which need.', required: true },
+    delta: { type: 'number', description: 'Added to the current value (negative lowers it). The result is clamped to 0-100.', required: true },
+  }}
+/>
+
+#### Returns
+
+Nothing.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport, resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const hud = resourceExport("ai-hud");
+
+// A soda machine: fills thirst a little, refuses when the player is not thirsty.
+onClientCallback("myscript:soda", (source) => {
+  const needs = callExport("ai-hud", "GetNeeds", source) as { thirst: number } | null;
+  if (!needs) return fail("NO_CHARACTER");
+  if (needs.thirst > 90) return fail("NOT_THIRSTY");
+  hud.AddNeed(source, "thirst", 20);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:soda', function()
+    local src = source
+    local needs = exports['ai-hud']:GetNeeds(src)
+    if not needs or needs.thirst > 90 then return end
+    exports['ai-hud']:AddNeed(src, 'thirst', 20)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+These exports only work while ai-hud runs. If the owner replaces ai-hud with another HUD, your calls fail. AI Core's stress layer (`AddStress`) keeps working with other HUDs.
+</Callout>
+
+## Client exports
+
+Typed `AiHudClientExports`.
+
+| Export | What it does |
+| --- | --- |
+| `OpenSettings(): void` | Opens the player's HUD settings (the same as `/hud`). Other scripts open whichever HUD's settings through AI Core's `OpenHudSettings()`. |
+| `SetMinimapAlways(on: boolean): void` | An admin's own switch (ai-admin's menu): keeps the minimap on foot whatever the panel says, for this player only. |
+| `GetMinimapAlways(): boolean` | Whether that switch is on. |
+
+## What ai-hud reads
+
+| Source | What for |
+| --- | --- |
+| AI Core server event `itemUsed (source, name, status)` | Adds the item's `hunger`, `thirst`, `stress` values. |
+| AI Core client event `CORE.clientHudVisibleEvent (visible)` | Hides the HUD while a full-screen menu is open (lib `hud.hide(reason)` from any script). |
+| AI Core key hints (`ai-core:client:keyHints`, `GetKeyHints()`) | The key list on the left. |
+| Vehicle state bag `fuel` | The fuel gauge. |
+| Player state bag `proximity` and the `pma-voice:setTalkingMode` / `pma-voice:radioActive` events | Voice range, talking, radio. |
+| Lib `seatbelt` (AI Core's seatbelt layer) | The seatbelt warning. |
+| Lib `inventory.currentWeapon()` | The weapon box. |
+
+## Events
+
+ai-hud's own events (`resource/common/hud.ts`) are internal. One is open to its own client only: `ai-hud:stress` (client to server, 1 to 5 points, two per second at most). Other scripts add stress on the server through AI Core.

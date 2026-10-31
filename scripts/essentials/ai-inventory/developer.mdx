@@ -1,0 +1,369 @@
+---
+title: ai-inventory for developers
+description: ai-inventory's server and client exports, usable items, script shops, the usedItem event, and the ox_inventory and qb-inventory APIs it answers.
+icon: Code
+---
+
+<Callout type="info">
+For items in your own script use AI Core's inventory layer: lib `inventory` (server `inventory.addItem`, `removeItem`, `getItemCount`, `hasItem`, `canCarryItem`, `registerUsableItem`, `registerStash`, `openInventory`, `registerShop`...; client `inventory.hasItem`, `openInventory`, `currentWeapon`), or `aiLib.inventory` in Lua. It works with whichever inventory the server runs, so the owner can replace ai-inventory. See the [lib reference](/docs/developers/api/lib-server). The exports below are for special cases and for reading what ai-inventory itself answers.
+</Callout>
+
+## Inventory references
+
+Every server export that takes `inv` accepts:
+
+| Value | Inventory |
+| --- | --- |
+| `number` (or a numeric string) | A player's inventory, by server id. The player must have a loaded character. |
+| `string` | A stash by name (a panel stash's key, or a name registered with `RegisterStash`), or a vehicle's trunk or glovebox by plate (`"trunk:<plate>"`, `"glovebox:<plate>"`, or the plate alone for the trunk). |
+| `{ id: string, owner: string \| number }` | One character's copy of a personal stash. |
+
+<Callout type="warn">
+Exports work on inventories that are in memory: online players, stashes registered by scripts, and panel stashes, trunks and gloveboxes someone opened since the restart (they unload after 5 idle minutes). For an inventory that is not loaded, `AddItem` and `RemoveItem` answer `false` and `GetItemCount` answers `0`.
+</Callout>
+
+## Server exports
+
+Typed `AiInventoryServerExports` in `@aicore-fivem/shared`: `resourceExport("ai-inventory")` in TypeScript.
+
+### AddItem
+
+Adds items to an inventory. Stacks with the same name and metadata merge up to the item's stack size; the rest goes to free cells.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+AddItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>, slot?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-inventory']:AddItem(source, 'water', 2)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'number | string | { id, owner }', description: 'The inventory (see Inventory references).', required: true },
+    item: { type: 'string', description: 'Item name, or one of the item\'s **Other names**.', required: true },
+    count: { type: 'number', description: 'How many, a whole number above 0.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Data kept on the stack (a serial, a quality). Stacks merge only with equal metadata.' },
+    slot: { type: 'number', description: 'The cell to put it at (1-based, row by row). Left out: the first place that fits.' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when every unit was added. `false` when the inventory or item is unknown, `count` is not valid, or it does not fit (cells or weight). Nothing is added when it answers `false`.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const inv = resourceExport("ai-inventory");
+
+onClientCallback("myscript:buyWater", (source) => {
+  if (!inv.CanCarryItem(source, "water", 1)) return fail("NO_SPACE");
+  if (!inv.AddItem(source, "water", 1)) return fail("NO_SPACE");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:buyWater', function()
+    local src = source
+    if not exports['ai-inventory']:CanCarryItem(src, 'water', 1) then return end
+    exports['ai-inventory']:AddItem(src, 'water', 1)
+end)
+```
+</Tab>
+</Tabs>
+
+### RemoveItem
+
+Takes items from an inventory.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+RemoveItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>, slot?: number): boolean
+```
+
+<TypeTable
+  type={{
+    inv: { type: 'number | string | { id, owner }', description: 'The inventory.', required: true },
+    item: { type: 'string', description: 'Item name.', required: true },
+    count: { type: 'number', description: 'How many, a whole number above 0.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Only stacks whose metadata matches.' },
+    slot: { type: 'number', description: 'Only from this cell.' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when every unit was taken. `false` when there are not enough (nothing is taken then). A weapon taken from a player is also taken from their hands.
+
+### GetItemCount
+
+```ts title="Signature"
+GetItemCount(inv: number | string, item: string, metadata?: Record<string, unknown>): number
+```
+
+How many units of `item` (matching `metadata` when given) the inventory holds. `0` for an unknown inventory or item. **Side:** Server · **Waits:** no.
+
+### CanCarryItem
+
+```ts title="Signature"
+CanCarryItem(inv: number | string, item: string, count: number, metadata?: Record<string, unknown>): boolean
+```
+
+Whether `count` units would fit (cells and weight), without adding them. **Side:** Server · **Waits:** no.
+
+### GetItems
+
+```ts title="Signature"
+GetItems(inv: number | string): Array<{ name, label, weight, slot, count, amount, metadata, info, stack, unique, close, description, type, image }>
+```
+
+Every stack of the inventory. `count` / `metadata` (ox names) and `amount` / `info` (qb names) hold the same values; `weight` is the stack's total in grams. An empty list for an unknown inventory. **Side:** Server · **Waits:** no.
+
+### GetWeight
+
+```ts title="Signature"
+GetWeight(inv: number | string): { weight: number; maxWeight: number } | null
+```
+
+Carried weight and limit in grams (`maxWeight` 0 = no limit). `null` when the inventory is not loaded. **Side:** Server · **Waits:** no.
+
+### RegisterUsableItem
+
+Runs your function when a player uses an item. The item's animation (if any) plays first; your function runs when it finished.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+RegisterUsableItem(name: string, handler: (source: number, item: { name: string; slot: number; count: number; metadata: Record<string, unknown> }) => unknown): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'The item name.', required: true },
+    handler: { type: '(source, item) => unknown', description: 'Your function. Return `false` to keep the item; anything else takes the item\'s **Used up per use** amount.', required: true },
+  }}
+/>
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, notify } from "@aicore-fivem/lib/server";
+
+const inv = resourceExport("ai-inventory");
+
+inv.RegisterUsableItem("repairkit", (source, item) => {
+  const ped = GetPlayerPed(String(source));
+  const vehicle = GetVehiclePedIsIn(ped, false);
+  if (vehicle === 0) {
+    notify(source, "Sit in a vehicle first", "error");
+    return false; // keep the item
+  }
+  emitNet("myscript:repair", source, NetworkGetNetworkIdFromEntity(vehicle));
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-inventory']:RegisterUsableItem('repairkit', function(source, item)
+    local vehicle = GetVehiclePedIsIn(GetPlayerPed(source), false)
+    if vehicle == 0 then
+        aiLib.notify(source, 'Sit in a vehicle first', 'error')
+        return false -- keep the item
+    end
+    TriggerClientEvent('myscript:repair', source, NetworkGetNetworkIdFromEntity(vehicle))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+The item must have **Can be used** on in the panel for players to use it from the screen, and **Used up per use** above 0 to be consumed. One handler per item name: registering again replaces it. The handler stays after your resource stops; register it once at start.
+</Callout>
+
+### RegisterStash
+
+Registers a stash from a script (a house, a gang locker). Shared stashes are loaded at once and stay loaded.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+RegisterStash(name: string, label: string, slots: number, maxWeight: number, jobs?: string[], personal?: boolean): void
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'The stash id, used to open it and in item exports.', required: true },
+    label: { type: 'string', description: 'The name players see.', required: true },
+    slots: { type: 'number', description: 'How many cells; turned into rows of the panel\'s column count.', default: '50' },
+    maxWeight: { type: 'number', description: 'Weight limit in grams.', default: '100000' },
+    jobs: { type: 'string[]', description: 'Jobs that may open it (any grade). Empty: everyone.' },
+    personal: { type: 'boolean', description: '`true`: every character has its own contents.', default: 'false' },
+  }}
+/>
+
+A script stash has no place in the world: open it with `OpenInventory`.
+
+### OpenInventory
+
+Opens an inventory on a player's screen, next to their own.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+OpenInventory(source: number, inv: number | string): boolean
+```
+
+#### Returns
+
+`boolean`: `true` when opened. `false` when the player has no loaded inventory, the inventory is unknown or not loaded, or it is the player's own.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const inv = resourceExport("ai-inventory");
+inv.RegisterStash("gang_ballas", "Ballas locker", 60, 200_000);
+
+onClientCallback("myscript:openLocker", (source) => {
+  return inv.OpenInventory(source, "gang_ballas") ? { ok: true } : fail("CANNOT_OPEN");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-inventory']:RegisterStash('gang_ballas', 'Ballas locker', 60, 200000)
+
+RegisterNetEvent('myscript:openLocker', function()
+    exports['ai-inventory']:OpenInventory(source, 'gang_ballas')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Check on the server that the player may open it (gang, distance) before calling `OpenInventory`: the export opens what you ask.
+</Callout>
+
+### ClearInventory
+
+```ts title="Signature"
+ClearInventory(inv: number | string): void
+```
+
+Empties an inventory. **Side:** Server · **Waits:** no.
+
+### RegisterShop and OpenShop
+
+A shop without a place, opened by your script (a phone app, an NPC menu). Buying is allowed only while that player has it open, paid from cash, then bank. A panel shop with the same id wins.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+RegisterShop(name: string, label: string, items: Array<{ name: string; price: number }>): void
+OpenShop(source: number, name: string): boolean
+```
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'The shop id.', required: true },
+    label: { type: 'string', description: 'The name players see. Defaults to `name`.', required: true },
+    items: { type: '{ name: string; price: number }[]', description: 'Products: item name and a whole price of 0 or more per unit. Invalid rows are left out.', required: true },
+  }}
+/>
+
+`OpenShop` returns `false` when the shop is unknown or the player has no inventory.
+
+### Items
+
+```ts title="Signature"
+Items(name?: string): { name, label, weight, stack, unique, close, description, type, image, useable } | Record<string, ...> | null
+```
+
+One item definition (ox shape), every definition by name when `name` is left out, or `null` for an unknown name. `stack` is `true` when the stack size is above 1; `unique` when it is 1. **Side:** Server · **Waits:** no.
+
+## Client exports
+
+| Export | Returns | What it does |
+| --- | --- | --- |
+| `OpenSelf()` | nothing | Opens the player's own screen with the ground, trunk or glovebox around (like **F2**). |
+| `OpenInventory(type, data)` | nothing | `type` `"stash"` or `"shop"` with `data` the id (or `{ id }`), `"drop"` with a drop id; anything else opens the player's own. The server still checks access. |
+| `CloseInventory()` | nothing | Closes the screen. |
+| `GetItemCount(item: string)` | `number` | How many the player carries. |
+| `HasItem(items, amount?)` | `boolean` | `items` is a name, a list (each at least `amount`, default 1) or `{ name: count }`. |
+| `GetPlayerItems()` | `array` | The player's stacks (`name`, `label`, `slot`, `count`, `amount`, `metadata`, `info`, `weight`, `stack`, `close`, `description`). |
+
+`OpenSelf` and `HasItem` are typed `AiInventoryClientExports`.
+
+## Events
+
+### ai-inventory:usedItem
+
+Fires on the server after every use of an item.
+
+**Side:** Server (local event)
+
+| Argument | Type | What it is |
+| --- | --- | --- |
+| `source` | `number` | The player. |
+| `name` | `string` | The item name. |
+| `slot` | `number` | The cell the stack was in. |
+| `metadata` | `Record<string, unknown>` | The stack's metadata. |
+| `status` | `{ hunger?, thirst?, stress? }` | The item's need values from the panel. |
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("ai-inventory:usedItem", (source: number, name: string) => {
+  if (name === "joint") emitNet("myscript:highEffect", source);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('ai-inventory:usedItem', function(source, name)
+    if name == 'joint' then TriggerClientEvent('myscript:highEffect', source) end
+end)
+```
+</Tab>
+</Tabs>
+
+AI Core turns this into its own `ai-core:itemUsed (source, name, status)` event, the one to listen to if your script should work with any inventory.
+
+## ox_inventory API
+
+ai-inventory `provide`s `ox_inventory` and answers its exports (written against ox_inventory 2.44). Inventories are named as in ox: a player source, a stash name, `{ id, owner }` for personal stashes, a plate for trunks.
+
+- **Server:** `AddItem` (returns `success, response`, calls `cb`), `RemoveItem`, `GetItem`, `GetItemCount`, `Search` (`count` / `slots`), `CanCarryItem`, `CanCarryWeight`, `CanCarryAmount`, `GetInventory`, `GetInventoryItems`, `GetSlot`, `GetSlotWithItem`, `GetSlotsWithItem`, `GetSlotIdWithItem`, `GetSlotIdsWithItem`, `GetEmptySlot`, `SetMetadata`, `SetDurability`, `SetMaxWeight`, `RegisterStash`, `ClearInventory`, `Items`, `ItemList`, `forceOpenInventory` (stash, player, shop), `CreateTemporaryStash`, `CustomDrop`, `RemoveInventory`, `SwapSlots`.
+- **Client:** `openInventory`, `closeInventory`, `Search`, `GetItemCount`, `GetPlayerItems`, `GetPlayerWeight`, `GetPlayerMaxWeight`, `Items`, `useSlot`, `getCurrentWeapon` / `GetCurrentWeapon`. `displayMetadata`, `weaponWheel` and `setStashTarget` are accepted and do nothing.
+- **Not answered:** hooks (`registerHook`, `removeHooks`), `UpdateVehicle`, `ConfiscateInventory` / `ReturnInventory`, `GetContainerFromSlot`, `RegisterShop` (shops come from the panel or ai-inventory's own `RegisterShop`).
+
+## qb-inventory API
+
+ai-inventory `provide`s `qb-inventory` (2.0 API). Returned items carry both shapes: `count` / `metadata` and `amount` / `info`.
+
+- **Server:** `AddItem(identifier, item, amount, slot, info)`, `RemoveItem`, `HasItem` (a name, a list or `{ name = amount }`), `GetItemCount`, `GetItemByName`, `GetItemsByName`, `GetItemBySlot`, `CanAddItem`, `GetFreeWeight`, `GetSlots`, `ClearInventory`, `SetItemData`, `CreateInventory`, `OpenInventory`, `OpenInventoryById`, `RemoveInventory`, `CloseInventory`.
+- **Client:** `HasItem`, `CloseInventory`.
+- **Not answered:** hooks and listeners, `CreateShop` / `OpenShop`, `SetInventory`, `GetInventory`, `SaveInventory`, `LoadInventory`, `UseItem`, `GetFirstSlotByItem`, `GetSlotsByItem`, `GetTotalWeight`.
+
+## Database and logs
+
+Table `ai_inventory_inventories`: one row per stored inventory (`id`, `items` JSON). Only ai-inventory writes it; changes are saved every 30 seconds, on unload and on stop. Log channels: `moves` (off by default), `drops`, `gives`, `purchases`, `crafting`.

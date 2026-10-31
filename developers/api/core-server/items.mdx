@@ -1,0 +1,995 @@
+---
+title: Items
+description: Add, remove, count and check items in any inventory, register stashes, script shops and usable items, read item definitions and carried weight.
+icon: Package
+---
+
+Every item call goes through ai-core, never through an inventory script's own exports. ai-core forwards each call to the **active inventory**: the one the panel's **Inventory script** setting picks, or the first one running when it is set to automatic (ai-inventory, ox_inventory, qb-inventory, tgiann-inventory and the others in the compatibility list). When the server owner swaps inventories, your script keeps working unchanged.
+
+What to know:
+
+- An **inventory** is named by an `InventoryRef`: a player's server id (a number) for that player's pockets, or a text id for anything else (a stash name, a trunk plate). See [InventoryRef](/docs/developers/api/types#inventoryref).
+- **Item names** are the inventory's item names (`water`, `bandage`, `WEAPON_PISTOL`).
+- **Metadata** is a table of extra values on one stack (a serial number, durability). See [ItemMetadata](/docs/developers/api/types#itemmetadata).
+- While **no inventory runs**, every call answers its "nothing" value: `false`, `0`, an empty list or `null`.
+- Stashes, shops and usable items you register are **kept by ai-core** and handed to every inventory that becomes active later, including after an inventory restart. Register them once when your script starts.
+
+### AddItem
+
+Gives items to an inventory.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.addItem`](/docs/developers/api/lib-server/items#inventoryadditem)
+
+```ts title="Signature"
+AddItem(inv: InventoryRef, item: string, count?: number, metadata?: ItemMetadata, slot?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:AddItem(source, 'water', 2)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'InventoryRef', description: 'A player server id, or a stash / trunk id.', required: true, typeDescription: 'number | string' },
+    item: { type: 'string', description: 'Item name.', required: true },
+    count: { type: 'number', description: 'How many. A number of 1 or more; a fraction is rounded down.', default: '1' },
+    metadata: { type: 'ItemMetadata', description: 'Extra values for the new stack. Anything that is not a table is ignored.' },
+    slot: { type: 'number', description: 'Slot to put them in (a whole number above 0). Ignored otherwise; the inventory picks.' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the inventory added the items. `false` when they do not fit, the item does not exist in the inventory, an argument is wrong (`count` below 1, empty item name) or no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const TAP = { x: 1206.4, y: -3110.2, z: 5.6 };
+
+onClientCallback("myscript:fillBottle", { guards: [near(TAP, 2)], lock: true }, (source) => {
+  if (!core.RemoveItem(source, "empty_bottle")) return fail("NO_BOTTLE");
+  if (!core.AddItem(source, "water")) {
+    core.AddItem(source, "empty_bottle");
+    return fail("NO_SPACE");
+  }
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local TAP = vector3(1206.4, -3110.2, 5.6)
+
+aiLib.onClientCallback('myscript:fillBottle', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - TAP) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:RemoveItem(source, 'empty_bottle') then return aiLib.fail('NO_BOTTLE') end
+  if not exports['ai-core']:AddItem(source, 'water') then
+    exports['ai-core']:AddItem(source, 'empty_bottle')
+    return aiLib.fail('NO_SPACE')
+  end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### RemoveItem
+
+Takes items from an inventory.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.removeItem`](/docs/developers/api/lib-server/items#inventoryremoveitem)
+
+```ts title="Signature"
+RemoveItem(inv: InventoryRef, item: string, count?: number, metadata?: ItemMetadata, slot?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RemoveItem(source, 'lockpick', 1)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'InventoryRef', description: 'A player server id, or a stash / trunk id.', required: true, typeDescription: 'number | string' },
+    item: { type: 'string', description: 'Item name.', required: true },
+    count: { type: 'number', description: 'How many. A number of 1 or more; a fraction is rounded down.', default: '1' },
+    metadata: { type: 'ItemMetadata', description: 'Only take stacks with these metadata values.' },
+    slot: { type: 'number', description: 'Only take from this slot (a whole number above 0).' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the items were taken. `false` when the inventory holds fewer (none are taken then), an argument is wrong or no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, minigameFor, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:pickLock", { lock: true }, async (source) => {
+  if (!core.HasItem(source, "lockpick")) return fail("NO_LOCKPICK");
+  const result = await minigameFor(source, { game: "lockpick", minMs: 1500 });
+  if (result === "broken") core.RemoveItem(source, "lockpick");
+  return result === "won" ? { ok: true } : fail("LOCKPICK_FAILED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:pickLock', function(source)
+  if not exports['ai-core']:HasItem(source, 'lockpick') then return aiLib.fail('NO_LOCKPICK') end
+  local result = aiLib.minigameFor(source, { game = 'lockpick', minMs = 1500 })
+  if result == 'broken' then exports['ai-core']:RemoveItem(source, 'lockpick') end
+  if result ~= 'won' then return aiLib.fail('LOCKPICK_FAILED') end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### GetItemCount
+
+How many of an item an inventory holds.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.getItemCount`](/docs/developers/api/lib-server/items#inventorygetitemcount)
+
+```ts title="Signature"
+GetItemCount(inv: InventoryRef, item: string, metadata?: ItemMetadata): number
+```
+
+```lua title="Lua"
+local count = exports['ai-core']:GetItemCount(source, 'fish')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'InventoryRef', description: 'A player server id, or a stash / trunk id.', required: true, typeDescription: 'number | string' },
+    item: { type: 'string', description: 'Item name.', required: true },
+    metadata: { type: 'ItemMetadata', description: 'Only count stacks with these metadata values.' },
+  }}
+/>
+
+#### Returns
+
+`number`: the total over every stack. `0` when there is none, an argument is wrong or no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// The fish buyer shows how much the player would get.
+onClientCallback("myscript:fishQuote", (source) => ({
+  ok: true,
+  price: core.GetItemCount(source, "fish") * 25,
+}));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:fishQuote', function(source)
+  return { ok = true, price = exports['ai-core']:GetItemCount(source, 'fish') * 25 }
+end)
+```
+</Tab>
+</Tabs>
+
+### HasItem
+
+Whether an inventory holds at least a number of an item.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.hasItem`](/docs/developers/api/lib-server/items#inventoryhasitem)
+
+```ts title="Signature"
+HasItem(inv: InventoryRef, item: string, count?: number): boolean
+```
+
+```lua title="Lua"
+local has = exports['ai-core']:HasItem(source, 'repairkit')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'InventoryRef', description: 'A player server id, or a stash / trunk id.', required: true, typeDescription: 'number | string' },
+    item: { type: 'string', description: 'Item name.', required: true },
+    count: { type: 'number', description: 'How many are needed (1 or more; a fraction is rounded down).', default: '1' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the inventory holds `count` or more. `false` when it holds fewer, `count` is below 1, or no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, progressFor, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:repair", { lock: true }, async (source) => {
+  if (!core.HasItem(source, "repairkit")) return fail("NO_KIT");
+  if (!(await progressFor(source, { label: Locale("REPAIRING"), duration: 8000 }))) return fail("CANCELLED");
+  if (!core.RemoveItem(source, "repairkit")) return fail("NO_KIT");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('myscript:repair', function(source)
+  if not exports['ai-core']:HasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+  if not aiLib.progressFor(source, { label = Locale('REPAIRING'), duration = 8000 }) then return aiLib.fail('CANCELLED') end
+  if not exports['ai-core']:RemoveItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Check again with `RemoveItem`'s answer after anything that waits (a progress bar, a minigame): the player may have dropped the item meanwhile.
+</Callout>
+
+### CanCarryItem
+
+Whether items would fit in an inventory (weight and slots), without adding them.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.canCarryItem`](/docs/developers/api/lib-server/items#inventorycancarryitem)
+
+```ts title="Signature"
+CanCarryItem(inv: InventoryRef, item: string, count?: number, metadata?: ItemMetadata): boolean
+```
+
+```lua title="Lua"
+local fits = exports['ai-core']:CanCarryItem(source, 'water', 5)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'InventoryRef', description: 'A player server id, or a stash / trunk id.', required: true, typeDescription: 'number | string' },
+    item: { type: 'string', description: 'Item name.', required: true },
+    count: { type: 'number', description: 'How many (1 or more; a fraction is rounded down).', default: '1' },
+    metadata: { type: 'ItemMetadata', description: 'Metadata the stack would get (some inventories stack by metadata).' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when they fit. `false` when they do not, an argument is wrong or no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:buyWater", { lock: true }, (source) => {
+  if (!core.CanCarryItem(source, "water", 5)) return fail("NO_SPACE");
+  if (!core.RemoveMoney(source, "cash", 50, "shop_water")) return fail("NOT_ENOUGH_MONEY");
+  core.AddItem(source, "water", 5);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:buyWater', function(source)
+  if not exports['ai-core']:CanCarryItem(source, 'water', 5) then return aiLib.fail('NO_SPACE') end
+  if not exports['ai-core']:RemoveMoney(source, 'cash', 50, 'shop_water') then return aiLib.fail('NOT_ENOUGH_MONEY') end
+  exports['ai-core']:AddItem(source, 'water', 5)
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### GetItems
+
+Every stack in an inventory, with labels.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.getItems`](/docs/developers/api/lib-server/items#inventorygetitems)
+
+```ts title="Signature"
+GetItems(inv: InventoryRef): InventoryStack[]
+```
+
+```lua title="Lua"
+local stacks = exports['ai-core']:GetItems(source) -- list of tables
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'InventoryRef', description: 'A player server id, or a stash / trunk id.', required: true, typeDescription: 'number | string' },
+  }}
+/>
+
+#### Returns
+
+`InventoryStack[]`: one entry per stack with `name`, `label`, `count`, `slot` and `metadata`. See [InventoryStack](/docs/developers/api/types#inventorystack). An empty list for an empty or unknown inventory, a wrong argument or no inventory running.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// A pawn shop lists every item the player carries that it buys.
+const BUYS: Record<string, number> = { gold_ring: 120, rolex: 400 };
+
+onClientCallback("myscript:pawnList", (source) => ({
+  ok: true,
+  rows: core.GetItems(source)
+    .filter((stack) => BUYS[stack.name] !== undefined)
+    .map((stack) => ({ slot: stack.slot, label: stack.label, count: stack.count, price: BUYS[stack.name] })),
+}));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local BUYS = { gold_ring = 120, rolex = 400 }
+
+aiLib.onClientCallback('myscript:pawnList', function(source)
+  local rows = {}
+  for _, stack in ipairs(exports['ai-core']:GetItems(source)) do
+    if BUYS[stack.name] then
+      rows[#rows + 1] = { slot = stack.slot, label = stack.label, count = stack.count, price = BUYS[stack.name] }
+    end
+  end
+  return { ok = true, rows = rows }
+end)
+```
+</Tab>
+</Tabs>
+
+### ClearInventory
+
+Empties an inventory completely.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.clearInventory`](/docs/developers/api/lib-server/items#inventoryclearinventory)
+
+```ts title="Signature"
+ClearInventory(inv: InventoryRef): void
+```
+
+```lua title="Lua"
+exports['ai-core']:ClearInventory(source)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    inv: { type: 'InventoryRef', description: 'A player server id, or a stash / trunk id.', required: true, typeDescription: 'number | string' },
+  }}
+/>
+
+#### Returns
+
+Nothing. A wrong argument or no running inventory does nothing.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("clearinv", { help: "Empties a player inventory", params: [{ name: "id", type: "playerId" }], restricted: true }, (_source, args) => {
+  core.ClearInventory(args.id);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('clearinv', { help = 'Empties a player inventory', params = { { name = 'id', type = 'playerId' } }, restricted = true }, function(_, args)
+  exports['ai-core']:ClearInventory(args.id)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+This cannot be undone. Keep it behind an admin command or a clear game rule (a prison intake that stores the items first).
+</Callout>
+
+### RegisterStash
+
+Creates a stash: a storage box players open by its name. ai-core keeps it and registers it again with every inventory that becomes active.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.registerStash`](/docs/developers/api/lib-server/items#inventoryregisterstash)
+
+```ts title="Signature"
+RegisterStash(name: string, label: string, slots: number, maxWeight: number, jobs?: string[]): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterStash('police_evidence', 'Evidence', 100, 500000, { 'police' })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Unique stash id, also the `InventoryRef` to open it (`police_evidence`).', required: true },
+    label: { type: 'string', description: 'Title shown on the stash screen. Pass a translated text.', required: true, default: 'name' },
+    slots: { type: 'number', description: 'Number of slots (above 0, rounded down).', required: true, default: '50' },
+    maxWeight: { type: 'number', description: 'Weight limit in the inventory unit (grams in ai-inventory). Above 0.', required: true, default: '100000' },
+    jobs: { type: 'string[]', description: 'Jobs allowed to open it in inventories that check jobs. Empty: everyone.', default: '[]' },
+  }}
+/>
+
+The defaults apply when a value is missing or wrong.
+
+#### Returns
+
+Nothing. Without a text `name` the call does nothing. Registering the same name again replaces the stash.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const LOCKER = { x: 474.9, y: -994.7, z: 26.3 };
+
+// Once at start; ai-core hands it to inventories that start later.
+core.RegisterStash("police_evidence", Locale("STASH_EVIDENCE"), 100, 500_000, ["police"]);
+
+onClientCallback("myscript:openEvidence", { guards: [near(LOCKER, 2)] }, (source) => {
+  if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+  return core.OpenInventory(source, "police_evidence") ? { ok: true } : fail("STASH_FAILED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local LOCKER = vector3(474.9, -994.7, 26.3)
+
+exports['ai-core']:RegisterStash('police_evidence', Locale('STASH_EVIDENCE'), 100, 500000, { 'police' })
+
+aiLib.onClientCallback('myscript:openEvidence', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - LOCKER) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  if not exports['ai-core']:OpenInventory(source, 'police_evidence') then return aiLib.fail('STASH_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### OpenInventory
+
+Opens a stash, a trunk or another player's inventory on a player's screen, next to their own.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.openInventory`](/docs/developers/api/lib-server/items#inventoryopeninventory)
+
+```ts title="Signature"
+OpenInventory(source: number, inv: InventoryRef): boolean
+```
+
+```lua title="Lua"
+local opened = exports['ai-core']:OpenInventory(source, 'police_evidence')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player who sees the screen.', required: true },
+    inv: { type: 'InventoryRef', description: 'What to open: a stash id, a trunk id, or another player server id (searching a player).', required: true, typeDescription: 'number | string' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the inventory opened the screen. `false` when it could not (unknown stash, the player has no inventory), an argument is wrong or no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, isNear, coordsOf, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Police search a handcuffed player standing next to them.
+onClientCallback("myscript:search", { args: oneArg(readId) }, (source, target) => {
+  if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+  if (target === source || !isNear(target, coordsOf(source), 2)) return fail("TOO_FAR");
+  return core.OpenInventory(source, target) ? { ok: true } : fail("SEARCH_FAILED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:search', function(source, target)
+  if math.type(target) ~= 'integer' or target == source then return aiLib.fail('BAD_TARGET') end
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  local a, b = GetEntityCoords(GetPlayerPed(source)), GetEntityCoords(GetPlayerPed(target))
+  if #(a - b) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:OpenInventory(source, target) then return aiLib.fail('SEARCH_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+The inventory does no range or permission check here. Check the job, the distance and the target's state yourself before you call it.
+</Callout>
+
+### RegisterShop
+
+Creates a script shop: a list of items with prices that your script opens for a player (an armory, a vending machine). The inventory draws the shop and takes the payment its own way (cash, then bank). ai-core keeps it and hands it to every inventory that becomes active.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.registerShop`](/docs/developers/api/lib-server/items#inventoryregistershop)
+
+```ts title="Signature"
+RegisterShop(name: string, label: string, items: ShopProduct[]): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterShop('police_armoury', 'Armoury', { { name = 'bandage', price = 0 } })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Unique shop id (`police_armoury`).', required: true },
+    label: { type: 'string', description: 'Title of the shop screen. Pass a translated text.', required: true, default: 'name' },
+    items: { type: 'ShopProduct[]', description: 'The products: `{ name, price }` with a whole price of 0 or more per item. At most 200; rows with a wrong name or price are skipped.', required: true, typeDescription: '{ name: string; price: number }[]' },
+  }}
+/>
+
+See [ShopProduct](/docs/developers/api/types#shopproduct).
+
+#### Returns
+
+Nothing. Without a text `name` or with no valid product the call does nothing. Registering the same name again replaces the shop.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const ARMOURY = { x: 482.6, y: -995.2, z: 30.7 };
+
+core.RegisterShop("police_armoury", Locale("SHOP_ARMOURY"), [
+  { name: "WEAPON_STUNGUN", price: 0 },
+  { name: "bandage", price: 10 },
+]);
+
+onClientCallback("myscript:armoury", { guards: [near(ARMOURY, 2)] }, (source) => {
+  if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+  return core.OpenShop(source, "police_armoury") ? { ok: true } : fail("SHOP_FAILED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local ARMOURY = vector3(482.6, -995.2, 30.7)
+
+exports['ai-core']:RegisterShop('police_armoury', Locale('SHOP_ARMOURY'), {
+  { name = 'WEAPON_STUNGUN', price = 0 },
+  { name = 'bandage', price = 10 },
+})
+
+aiLib.onClientCallback('myscript:armoury', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - ARMOURY) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  if not exports['ai-core']:OpenShop(source, 'police_armoury') then return aiLib.fail('SHOP_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### OpenShop
+
+Opens a shop registered with `RegisterShop` on a player's screen.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.openShop`](/docs/developers/api/lib-server/items#inventoryopenshop)
+
+```ts title="Signature"
+OpenShop(source: number, name: string): boolean
+```
+
+```lua title="Lua"
+local opened = exports['ai-core']:OpenShop(source, 'police_armoury')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player.', required: true },
+    name: { type: 'string', description: 'Shop id given to `RegisterShop`.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the shop opened. `false` when no shop has that name, the active inventory has no script shops, it could not open, or no inventory runs.
+
+#### Example
+
+See the `RegisterShop` example above: register once at start, then open after your own job and distance checks.
+
+<Callout type="warn">
+Like `OpenInventory`, this does no range or access check. Check them first.
+</Callout>
+
+### RegisterUsableItem
+
+Makes an item usable: when a player uses it in the inventory, your function runs. ai-core keeps the function, so it works with inventories that start later and survives an inventory restart.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.registerUsableItem`](/docs/developers/api/lib-server/items#inventoryregisterusableitem)
+
+```ts title="Signature"
+RegisterUsableItem(name: string, handler: UsableItemHandler): void
+// UsableItemHandler = (source: number, item: UsedItem) => unknown
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterUsableItem('bandage', function(source, item) end)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Item name.', required: true },
+    handler: { type: 'UsableItemHandler', description: 'Runs on every use with the player server id and the used stack (`name`, `slot`, `count`, `metadata`). Return `false` to keep the item.', required: true, typeDescription: '(source: number, item: UsedItem) => unknown' },
+  }}
+/>
+
+See [UsableItemHandler](/docs/developers/api/types#usableitemhandler) and [UsedItem](/docs/developers/api/types#useditem).
+
+#### Returns
+
+Nothing. Without a text `name` or a function the call does nothing. A second call for the same item replaces the handler.
+
+What happens to the item after use depends on the inventory: inventories that take a used item themselves (ai-inventory takes the item's **consume** amount) keep it when your handler returns `false`; other inventories follow their own item settings, so remove the item yourself there when needed.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { progressFor, resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+core.RegisterUsableItem("bandage", (source) => {
+  // The handler must answer at once; the timed part runs on its own.
+  void (async () => {
+    if (!(await progressFor(source, { label: Locale("BANDAGING"), duration: 4000 }))) return;
+    if (!core.RemoveItem(source, "bandage")) return;
+    emitNet("myscript:client:heal", source, 25); // your client script adds the health
+  })();
+  return false; // keep it: it is removed above once the bar finished
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+exports['ai-core']:RegisterUsableItem('bandage', function(source, item)
+  CreateThread(function()
+    if not aiLib.progressFor(source, { label = Locale('BANDAGING'), duration = 4000 }) then return end
+    if not exports['ai-core']:RemoveItem(source, 'bandage') then return end
+    TriggerClientEvent('myscript:client:heal', source, 25) -- your client script adds the health
+  end)
+  return false
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+A use also fires the server event `ai-core:itemUsed (src, name, status)`, which item effects like hunger and thirst follow. See [Events and state](/docs/developers/api/events).
+</Callout>
+
+### GetItemDefinition
+
+One item as the active inventory defines it: label, weight, whether it stacks, picture.
+
+**Side:** Server · **Waits:** no · **Lib:** [`inventory.getItemDefinition`](/docs/developers/api/lib-server/items#inventorygetitemdefinition)
+
+```ts title="Signature"
+GetItemDefinition(name: string): ItemDefinition | null
+```
+
+```lua title="Lua"
+local def = exports['ai-core']:GetItemDefinition('water') -- table or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Item name.', required: true },
+  }}
+/>
+
+#### Returns
+
+`ItemDefinition | null`: the item with `name`, `label`, `weight`, `unique`, `close`, `description` and `image` when the inventory has one. See [ItemDefinition](/docs/developers/api/types#itemdefinition). `null` for an unknown item, an empty name or no running inventory.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+/** "You received 2x Water" with the inventory's own label. */
+export function giveWithNotice(source: number, item: string, count: number): void {
+  if (!core.AddItem(source, item, count)) return;
+  const label = core.GetItemDefinition(item)?.label ?? item;
+  notify(source, Locale("NOTIFY_RECEIVED", count, label), "success");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+function GiveWithNotice(source, item, count)
+  if not exports['ai-core']:AddItem(source, item, count) then return end
+  local def = exports['ai-core']:GetItemDefinition(item)
+  aiLib.notify(source, Locale('NOTIFY_RECEIVED', count, def and def.label or item), 'success')
+end
+```
+</Tab>
+</Tabs>
+
+### GetItemDefinitions
+
+Every item the active inventory defines, keyed by name. Use it rarely (building a list once); for one item use `GetItemDefinition`.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+GetItemDefinitions(): Record<string, ItemDefinition>
+```
+
+```lua title="Lua"
+local items = exports['ai-core']:GetItemDefinitions() -- table keyed by item name
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`Record<string, ItemDefinition>`: every item. An empty table while no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Warns at start about items in your config that the inventory does not know. */
+export function checkItems(names: string[]): void {
+  const known = core.GetItemDefinitions();
+  for (const name of names) if (!known[name]) console.log(`unknown item: ${name}`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function CheckItems(names)
+  local known = exports['ai-core']:GetItemDefinitions()
+  for _, name in ipairs(names) do
+    if not known[name] then print('unknown item: ' .. name) end
+  end
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Run such a check after the inventory started: right after a server start the inventory may not be running yet and the table is empty.
+</Callout>
+
+### GetInventoryWeight
+
+What a player carries and can carry, by weight.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+GetInventoryWeight(source: number): { weight: number; maxWeight: number } | null
+```
+
+```lua title="Lua"
+local w = exports['ai-core']:GetInventoryWeight(source) -- { weight, maxWeight } or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`{ weight, maxWeight } | null`: carried weight and the limit, in grams. `null` when the active inventory does not tell them, the player has no inventory loaded or no inventory runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:weight", (source) => {
+  const w = core.GetInventoryWeight(source);
+  return { ok: true, free: w ? w.maxWeight - w.weight : null };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:weight', function(source)
+  local w = exports['ai-core']:GetInventoryWeight(source)
+  return { ok = true, free = w and (w.maxWeight - w.weight) or nil }
+end)
+```
+</Tab>
+</Tabs>
+
+### UseItem
+
+Runs the handler registered for an item, as if the player used it. ai-core's ESX / QB bridge calls it (from `ESX.UseItem` and QB's `CanUseItem`); a normal script has no reason to.
+
+**Side:** Server · **Waits:** no · **Lib:** none (bridge only)
+
+```ts title="Signature"
+UseItem(source: number, name: string, item?: unknown): unknown
+```
+
+```lua title="Lua"
+local result = exports['ai-core']:UseItem(source, 'bandage', stack)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player.', required: true },
+    name: { type: 'string', description: 'Item name.', required: true },
+    item: { type: 'unknown', description: 'The stack as the inventory gave it; turned into a `UsedItem` for the handler.' },
+  }}
+/>
+
+#### Returns
+
+`unknown`: what the handler returned. `false` when no handler is registered, the arguments are wrong or the handler threw (it is logged).
+
+#### Example
+
+No example: inventories and the bridge call it. To react to a use, register the item with `RegisterUsableItem`.
+
+### IsUsableItem
+
+Whether a handler is registered for an item. ai-core's bridge uses it.
+
+**Side:** Server · **Waits:** no · **Lib:** none (bridge only)
+
+```ts title="Signature"
+IsUsableItem(name: string): boolean
+```
+
+```lua title="Lua"
+local usable = exports['ai-core']:IsUsableItem('bandage')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Item name.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when some resource registered the item with `RegisterUsableItem`. `false` otherwise.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Item tooltips show "Use" only for usable items. */
+export function canUse(item: string): boolean {
+  return core.IsUsableItem(item);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function CanUse(item)
+  return exports['ai-core']:IsUsableItem(item)
+end
+```
+</Tab>
+</Tabs>

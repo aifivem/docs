@@ -1,0 +1,271 @@
+---
+title: ai-death for developers
+description: Revive, heal and the down state through AI Core's medical layer, ai-death's server exports, the dead state bag and the QB revive event.
+icon: Code
+---
+
+<Callout type="info">
+To revive, heal or check a downed player from your script, use the lib's `medical` (TypeScript) or ai-core's `RevivePlayer` / `HealPlayer` / `IsPlayerDead` exports (Lua). They go through AI Core's medical layer and work with whichever death script runs (ai-death, qbx_medical, qb-ambulancejob, esx_ambulancejob, wasabi_ambulance...). The ai-death exports further down are what that layer calls while ai-death runs.
+</Callout>
+
+## Lib functions (recommended)
+
+### medical.revive
+
+Gets a downed player up where they lie.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+medical.revive(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RevivePlayer(source)
+```
+
+There is no `aiLib.medical` in Lua: call ai-core's export as above.
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the downed player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`true` when the player was down and is now up. `false` when they were not down or no death script runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, medical, notify } from "@aicore-fivem/lib/server";
+
+// /revive <id> for ai-core admins.
+addCommand(
+  "revive",
+  { help: "Revive a player", restricted: true, params: [{ name: "id", type: "playerId" }] as const },
+  (source, { id }) => {
+    if (!medical.revive(id) && source > 0) notify(source, "That player is not down", "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.addCommand('revive', {
+  help = 'Revive a player',
+  restricted = true,
+  params = { { name = 'id', type = 'playerId' } },
+}, function(source, args)
+  if not exports['ai-core']:RevivePlayer(args.id) and source > 0 then
+    aiLib.notify(source, 'That player is not down', 'error')
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+### medical.heal
+
+Full health for a player who is **not** down.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+medical.heal(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:HealPlayer(source)
+```
+
+#### Returns
+
+`true` when a death script took the call. `false` when no death script runs.
+
+<Callout type="warn">
+With ai-death, healing a downed player gets the ped up but keeps the down state. Check `medical.isDead(source)` and call `medical.revive` first.
+</Callout>
+
+### medical.isDead
+
+Whether a player is down.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+medical.isDead(source: number): boolean
+```
+
+```lua title="Lua"
+local down = exports['ai-core']:IsPlayerDead(source)
+```
+
+#### Returns
+
+`true` while the player is down. `false` when they are up or no death script runs.
+
+### medical.provider
+
+The death script the medical layer uses.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+medical.provider(): string | null
+```
+
+```lua title="Lua"
+local name = exports['ai-core']:GetMedicalSystem() -- 'ai-death', 'qbx_medical'... or nil
+```
+
+#### Returns
+
+The resource name, or `null` / `nil` when no supported death script runs.
+
+### medical.isDead (client)
+
+The local player's down state, on the client, whatever death script runs. Death scripts keep a downed ped alive to animate it, so `IsEntityDead` alone is not enough.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+medical.isDead(): boolean
+medical.onChange(fn: (dead: boolean) => void): void
+```
+
+```lua title="Lua"
+local down = exports['ai-core']:IsDead()
+```
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { medical, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand("emote", () => {
+  if (medical.isDead()) return notify("Not while down", "error");
+  // ... play the emote
+}, false);
+
+medical.onChange((dead) => {
+  if (dead) SendNUIMessage({ action: "close" }); // close your screen when the player goes down
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- client.lua
+RegisterCommand('emote', function()
+  if exports['ai-core']:IsDead() then return end
+  -- ... play the emote
+end, false)
+```
+</Tab>
+</Tabs>
+
+## Server exports
+
+The medical layer calls these while ai-death runs. Typed as `AiDeathServerExports` in `@aicore-fivem/shared`, so `resourceExport("ai-death")` knows them. `Revive` and `IsDead` also answer as `exports.qbx_medical:Revive` / `IsDead`. Each export also answers under its lower-case twin (`revive`).
+
+### Revive
+
+```ts title="Signature"
+Revive(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-death']:Revive(source)
+```
+
+Gets a downed player up where they lie. `true` when they were down, `false` otherwise.
+
+### IsDead
+
+```ts title="Signature"
+IsDead(source: number): boolean
+```
+
+```lua title="Lua"
+local down = exports['ai-death']:IsDead(source)
+```
+
+`true` while the player is down.
+
+### Heal
+
+```ts title="Signature"
+Heal(source: number): void
+```
+
+```lua title="Lua"
+exports['ai-death']:Heal(source)
+```
+
+Full health for a player who is not down. Returns nothing. On a downed player it gets the ped up but the down state stays: call `Revive` first.
+
+## State bag `dead`
+
+`true` on the player's state bag while ai-death holds them down; the server writes it. The key is `PLAYER_BAGS.dead` in `@aicore-fivem/shared`.
+
+```lua title="Lua"
+local down = Player(source).state.dead == true   -- server
+local down = LocalPlayer.state.dead == true      -- client, the local player
+```
+
+```ts title="TypeScript"
+import { PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const dead = new PlayerState(PLAYER_BAGS.dead, stateBoolean);
+const down = dead.get(source) === true;
+```
+
+Read it only when you know ai-death runs; `medical.isDead` works with every death script.
+
+## Character metadata `isdead`
+
+`true` while down, stored on the character (QBCore's key), so a player who reconnects while down comes back down. Do not write it: ai-death sets it when the player goes down and clears it when they get up.
+
+## Client event `hospital:client:Revive`
+
+QBCore's revive event. When the server sends it to a player, ai-death revives them where they stand (QB scripts and admin menus use it).
+
+**Side:** Server -> client · **Arguments:** none
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+emitNet("hospital:client:Revive", target);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+TriggerClientEvent('hospital:client:Revive', target)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+This event does not clear the server's down state the way `medical.revive` does. Use `medical.revive(source)` in new code.
+</Callout>
+
+## Private events and callbacks
+
+The script's own contract (`resource/common/death.ts`). They may change between versions: do not trigger or listen to them from other resources.
+
+| Name | Direction | What it carries |
+| --- | --- | --- |
+| `ai-death:client:down` | server -> player | `(seconds, medics, callSeconds)`: the player is down; respawn opens after `seconds`, `medics` are free now, a doctor can be called again after `callSeconds`. |
+| `ai-death:client:revive` | server -> player | `(point \| null)`: back on their feet at a hospital, or where they lie. |
+| `ai-death:respawn` | client callback | `()`: respawn at the nearest hospital after the timer (pays the fee). |
+| `ai-death:treat` | client callback | `(hospitalId)`: paid treatment at a check-in point. |
+| `ai-death:distress` | client callback | `()`: call a doctor; answers `{ ok, seconds }`. |

@@ -1,0 +1,604 @@
+---
+title: ai-vehicles for developers
+description: Server exports, state bags and events of ai-vehicles, and the qbx_vehicles API it answers.
+icon: Code
+---
+
+ai-vehicles has server exports only. They are all synchronous (no Promise, no waiting in Lua), except `SpawnVehicle`, which answers through a callback. Types are in `@aicore-fivem/shared` (`vehicles.ts`).
+
+```ts title="TypeScript"
+import { resourceExport } from "@aicore-fivem/lib/server";
+const vehicles = resourceExport("ai-vehicles");
+```
+
+```lua title="Lua"
+local vehicles = exports['ai-vehicles']
+```
+
+<Callout type="info">
+To give, take or check keys, store a vehicle in a garage or read fuel, use the lib's layers (`vehicleKeys`, `garages`, `fuel`): they work with whichever key, garage or fuel script the server runs. Call ai-vehicles directly only for ownership itself.
+</Callout>
+
+## Types
+
+### VehicleOwner
+
+Who owns a vehicle.
+
+<TypeTable
+  type={{
+    type: { type: '"character" | "job" | "gang" | "resource"', description: '`character`: one character. `job` / `gang`: a fleet every member of that job or gang may use. `resource`: held by a script, no player has it (a used car lot listing).', required: true },
+    id: { type: 'string', description: 'The character id as text (`"12"`), the job or gang name (`"police"`), or the holding resource name. A number is accepted and turned into text. At most 64 characters.', required: true },
+  }}
+/>
+
+### OwnedVehicle
+
+What `GetVehicle` and `GetVehicles` return.
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'The vehicle id in ai-vehicles.', required: true },
+    plate: { type: 'string', description: 'The plate, `AI` and six characters, made from the id.', required: true },
+    owner: { type: 'VehicleOwner', description: 'Who owns it.', required: true },
+    model: { type: 'string', description: 'The model name in lower case (`"sultan"`).', required: true },
+    props: { type: 'VehicleProps | null', description: 'The saved look and tuning (`VehicleProps` from `@aicore-fivem/lib/shared`). `null` until the first save.', required: true },
+    setup: { type: 'VehicleSetup | null', description: 'A look the vehicle spawns with while it has no props (a color picked at the shop). Cleared by the first props save.', required: true },
+    state: { type: '"garage" | "out" | "impound"', description: 'Parked, in the world, or waiting at the impound.', required: true },
+    garage: { type: 'string | null', description: 'The garage id it is parked in. `null` while out, or for a fleet vehicle that shows in every garage of its job or gang.', required: true },
+    fuel: { type: 'number', description: 'Fuel, 0-100.', required: true },
+    engine: { type: 'number', description: 'Engine health, -4000 to 1000.', required: true },
+    body: { type: 'number', description: 'Body health, 0-1000.', required: true },
+  }}
+/>
+
+## Server exports
+
+### CreateVehicle
+
+Registers a new owned vehicle and parks it. Use it when a player gets a vehicle (a purchase, a reward, an admin gift). It does not spawn the car: take it out with `SpawnVehicle` or let the player pick it up at a garage.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+CreateVehicle(owner: VehicleOwner, model: string, garage: string | null, props?: VehicleProps): { id: number; plate: string } | null
+```
+
+```lua title="Lua"
+local created = exports['ai-vehicles']:CreateVehicle(owner, model, garage, props) -- { id = number, plate = string } or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Who will own it.', required: true },
+    model: { type: 'string', description: 'The model name (`"sultan"`). Stored in lower case. The model is not checked: pass a model that exists.', required: true },
+    garage: { type: 'string | null', description: 'The ai-garages garage id it waits in (`"pillbox"`). `null`: no garage (a fleet vehicle then shows in every garage of its job or gang).', required: true },
+    props: { type: 'VehicleProps', description: 'A starting look. Ignored when it is not a valid `VehicleProps` object. The plate inside is always replaced with the vehicle\'s own.' },
+  }}
+/>
+
+#### Returns
+
+`{ id, plate }` of the new vehicle. `null` when `owner` is not a valid owner or `model` is not text.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+const vehicles = resourceExport("ai-vehicles");
+
+// Gives the player a Sultan, parked at the Motel Parking garage.
+export function giveSultan(source: number): string | null {
+  const character = core.GetCharacter(source);
+  if (!character) return null;
+  const created = vehicles.CreateVehicle(
+    { type: "character", id: String(character.id) },
+    "sultan",
+    "pillbox",
+  );
+  return created?.plate ?? null;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Gives the player a Sultan, parked at the Motel Parking garage.
+local function giveSultan(source)
+  local character = exports['ai-core']:GetCharacter(source)
+  if not character then return nil end
+  local created = exports['ai-vehicles']:CreateVehicle(
+    { type = 'character', id = tostring(character.id) }, 'sultan', 'pillbox')
+  return created and created.plate
+end
+```
+</Tab>
+</Tabs>
+
+### GetVehicle
+
+Finds one owned vehicle by its id or plate.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+GetVehicle(ref: number | string): OwnedVehicle | null
+```
+
+```lua title="Lua"
+local vehicle = exports['ai-vehicles']:GetVehicle(ref) -- table or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    ref: { type: 'number | string', description: 'A vehicle id (number) or a plate (text).', required: true },
+  }}
+/>
+
+#### Returns
+
+The `OwnedVehicle`, or `null` when no vehicle in memory has that id or plate (also when it belongs to an offline character).
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const vehicle = vehicles.GetVehicle("AI00001A");
+if (vehicle) console.log(vehicle.model, vehicle.state, vehicle.fuel);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local vehicle = exports['ai-vehicles']:GetVehicle('AI00001A')
+if vehicle then print(vehicle.model, vehicle.state, vehicle.fuel) end
+```
+</Tab>
+</Tabs>
+
+### GetVehicles
+
+Every vehicle of one owner.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+GetVehicles(owner: VehicleOwner): OwnedVehicle[]
+```
+
+```lua title="Lua"
+local list = exports['ai-vehicles']:GetVehicles(owner) -- array
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'A character who is online, or any job or gang fleet.', required: true },
+  }}
+/>
+
+#### Returns
+
+An array of `OwnedVehicle`. Empty for an invalid owner, an owner without vehicles, or an offline character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const fleet = vehicles.GetVehicles({ type: "job", id: "police" });
+const parked = fleet.filter((v) => v.state === "garage").length;
+console.log(`police: ${parked} of ${fleet.length} cars parked`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local fleet = exports['ai-vehicles']:GetVehicles({ type = 'job', id = 'police' })
+local parked = 0
+for _, v in ipairs(fleet) do
+  if v.state == 'garage' then parked = parked + 1 end
+end
+print(('police: %d of %d cars parked'):format(parked, #fleet))
+```
+</Tab>
+</Tabs>
+
+### IsOwnedPlate
+
+Whether a plate belongs to an owned vehicle in memory.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+IsOwnedPlate(plate: string): boolean
+```
+
+```lua title="Lua"
+local owned = exports['ai-vehicles']:IsOwnedPlate(plate)
+```
+
+#### Returns
+
+`true` when an owned vehicle has this plate. `false` for an unknown plate, a non-text value, or a vehicle of an offline character.
+
+### GetVehicleIdByEntity
+
+The ai-vehicles id of a spawned owned vehicle.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+GetVehicleIdByEntity(entity: number): number | null
+```
+
+```lua title="Lua"
+local id = exports['ai-vehicles']:GetVehicleIdByEntity(entity)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    entity: { type: 'number', description: 'A server entity handle (`NetworkGetEntityFromNetworkId(netId)`).', required: true },
+  }}
+/>
+
+#### Returns
+
+The vehicle id, or `null` when the entity is not an owned vehicle spawned by ai-vehicles.
+
+### GetEntity
+
+The entity of a spawned owned vehicle.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+GetEntity(id: number): number | null
+```
+
+```lua title="Lua"
+local entity = exports['ai-vehicles']:GetEntity(id)
+```
+
+#### Returns
+
+The server entity handle, or `null` when the vehicle is not out or its entity no longer exists.
+
+### GetPlateOwners
+
+Every owned vehicle in memory as `[plate, ownerType, ownerId]`. A script that must check many plates (a key system) reads this once at its start, then follows the [`ai-vehicles:owners`](#ai-vehiclesowners) event, instead of calling an export for every check.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+GetPlateOwners(): Array<[plate: string, type: VehicleOwnerType, id: string]>
+```
+
+```lua title="Lua"
+local owners = exports['ai-vehicles']:GetPlateOwners() -- { { plate, type, id }, ... }
+```
+
+#### Returns
+
+An array of triples. Empty when no vehicle is in memory.
+
+### SaveVehicle
+
+Saves the condition and look of a vehicle: fuel, damage, state, garage, and props (colors, extras, dirt). The stored tuning (`mods`, `neon`) never changes here, so a look read from a player's client cannot save a mod menu's work. Use `SaveTuning` for tuning.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+SaveVehicle(id: number, change: { props?: VehicleProps; fuel?: number; engine?: number; body?: number; state?: VehicleState; garage?: string | null }): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SaveVehicle(id, change)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'The vehicle id.', required: true },
+    change: { type: 'object', description: 'Only the fields you pass change. Fields below.', required: true },
+  }}
+/>
+
+#### change
+
+<TypeTable
+  type={{
+    props: { type: 'VehicleProps', description: 'The new look. Ignored when it is not a valid `VehicleProps` object. Saving props ends the vehicle\'s spawn setup.' },
+    fuel: { type: 'number', description: 'Fuel, clamped to 0-100.' },
+    engine: { type: 'number', description: 'Engine health, clamped to -4000 to 1000.' },
+    body: { type: 'number', description: 'Body health, clamped to 0-1000.' },
+    state: { type: '"garage" | "out" | "impound"', description: 'The new state. Any other value is ignored.' },
+    garage: { type: 'string', description: 'The garage id. Only text is taken: this export cannot clear the garage (use `StoreVehicle` with `null`).' },
+  }}
+/>
+
+#### Returns
+
+Nothing. An unknown id does nothing.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// A repair job finished: full engine and body.
+vehicles.SaveVehicle(vehicleId, { engine: 1000, body: 1000 });
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- A repair job finished: full engine and body.
+exports['ai-vehicles']:SaveVehicle(vehicleId, { engine = 1000, body = 1000 })
+```
+</Tab>
+</Tabs>
+
+### SaveTuning
+
+Saves full props, tuning included (`mods`, `neon`). Meant for tuning shops only: AI Core's own tuning shop, ai-mechanic, is the only ai-* script that calls it.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+SaveTuning(id: number, props: VehicleProps): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SaveTuning(id, props)
+```
+
+#### Returns
+
+Nothing. Invalid props are ignored. The plate inside the props is always replaced with the vehicle's own.
+
+<Callout type="warn">
+Never pass props that came straight from a player's client without checking them on the server: whatever you save here is the car's tuning from now on.
+</Callout>
+
+### StoreVehicle
+
+Parks a vehicle: deletes its entity if it is out and sets its state and garage.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+StoreVehicle(id: number, garage: string | null, state?: VehicleState): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:StoreVehicle(id, garage, state)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'The vehicle id.', required: true },
+    garage: { type: 'string | null', description: 'The garage id, or `null` for none.', required: true },
+    state: { type: '"garage" | "out" | "impound"', description: 'The new state.', default: '"garage"' },
+  }}
+/>
+
+#### Returns
+
+Nothing. It does not save the condition first: call `SaveVehicle` before it when the damage and fuel should be kept. To park through whatever garage script the server runs, use the lib's `garages.store` instead.
+
+### SetOwner
+
+Gives a vehicle to another owner (a sale between players, a car moved into a job fleet).
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+SetOwner(id: number, owner: VehicleOwner): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SetOwner(id, owner)
+```
+
+#### Returns
+
+Nothing. An invalid owner or unknown id does nothing. The keys of the old owner are not taken: remove them through the lib's `vehicleKeys.remove` if needed.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+vehicles.SetOwner(vehicleId, { type: "job", id: "mechanic" });
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:SetOwner(vehicleId, { type = 'job', id = 'mechanic' })
+```
+</Tab>
+</Tabs>
+
+### DeleteVehicle
+
+Deletes an owned vehicle for good: its entity if it is out, and its database row.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+DeleteVehicle(id: number): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:DeleteVehicle(id)
+```
+
+#### Returns
+
+Nothing.
+
+<Callout type="error">
+This cannot be undone. The vehicle, its look and its tuning are gone.
+</Callout>
+
+### SpawnVehicle
+
+Creates the entity of an owned vehicle in the world with its look, plate, fuel and state bags, and gives the keys to `asker` through the active key system. The vehicle's state becomes `out`.
+
+**Side:** Server · **Waits:** no (the result arrives in `cb`)
+
+```ts title="Signature"
+SpawnVehicle(id: number, at: { x: number; y: number; z: number; heading: number }, asker: number, cb: (netId: number | null) => void, purpose?: KeyPurpose, setup?: VehicleSetup): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SpawnVehicle(id, at, asker, function(netId) end, purpose, setup)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'The vehicle id.', required: true },
+    at: { type: '{ x, y, z, heading }', description: 'Where it appears. `heading` in degrees; `w` is accepted instead of `heading`, a missing one is 0. A point with a non-number coordinate spawns nothing and `cb` is never called.', required: true },
+    asker: { type: 'number', description: 'Server id of a player near the point. Their client tells the server the model\'s type, and they get the keys.', required: true },
+    cb: { type: '(netId: number | null) => void', description: 'Called with the network id of the new entity, or `null` when it could not be created.', required: true },
+    purpose: { type: 'KeyPurpose', description: 'Why the asker gets the key: `"purchase"`, `"garage"`, `"job"`, `"rental"` or `"temporary"`. Key systems that tell them apart use it.', default: '"garage"' },
+    setup: { type: 'VehicleSetup', description: 'A look kept with a vehicle that has no props yet (for example `{ colors: [12, 12] }`), applied on every spawn until its first props save.' },
+  }}
+/>
+
+#### Returns
+
+Nothing. `cb` gets the network id, or `null` when the vehicle does not exist, is already out, is being spawned right now, or the game could not create it.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+export function bringOut(source: number, vehicleId: number): void {
+  const ped = GetPlayerPed(String(source));
+  const [x, y, z] = GetEntityCoords(ped);
+  const heading = GetEntityHeading(ped);
+  vehicles.SpawnVehicle(vehicleId, { x: x + 3, y, z, heading }, source, (netId) => {
+    if (netId === null) console.log(`vehicle ${vehicleId} could not come out`);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function bringOut(source, vehicleId)
+  local ped = GetPlayerPed(source)
+  local coords = GetEntityCoords(ped)
+  local at = { x = coords.x + 3.0, y = coords.y, z = coords.z, heading = GetEntityHeading(ped) }
+  exports['ai-vehicles']:SpawnVehicle(vehicleId, at, source, function(netId)
+    if not netId then print(('vehicle %d could not come out'):format(vehicleId)) end
+  end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+A vehicle that is already out is refused (`cb(null)`). If its entity later disappears while it is out, it moves to the impound state.
+</Callout>
+
+## Events
+
+### ai-vehicles:owners
+
+Fires when vehicles enter ai-vehicles' memory or change owner, and when plates leave memory. One batch per server tick. Read `GetPlateOwners` once at start, then apply these batches to keep a plate-to-owner copy. The name is `VEHICLES_EVENTS.owners` in `@aicore-fivem/shared`.
+
+**Side:** Server (local event, not sent to clients)
+
+<TypeTable
+  type={{
+    puts: { type: 'Array<[plate: string, type: VehicleOwnerType, id: string]>', description: 'Vehicles that entered memory or got a new owner.', required: true },
+    removes: { type: 'string[]', description: 'Plates that left memory (the owner went offline, the vehicle was deleted).', required: true },
+  }}
+/>
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+import { VEHICLES_EVENTS } from "@aicore-fivem/shared";
+
+const owners = new Map<string, string>();
+for (const [plate, type, id] of resourceExport("ai-vehicles").GetPlateOwners())
+  owners.set(plate, `${type}:${id}`);
+
+on(VEHICLES_EVENTS.owners, (puts: [string, string, string][], removes: string[]) => {
+  for (const [plate, type, id] of puts) owners.set(plate, `${type}:${id}`);
+  for (const plate of removes) owners.delete(plate);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local owners = {}
+for _, row in ipairs(exports['ai-vehicles']:GetPlateOwners()) do
+  owners[row[1]] = row[2] .. ':' .. row[3]
+end
+
+AddEventHandler('ai-vehicles:owners', function(puts, removes)
+  for _, row in ipairs(puts) do owners[row[1]] = row[2] .. ':' .. row[3] end
+  for _, plate in ipairs(removes) do owners[plate] = nil end
+end)
+```
+</Tab>
+</Tabs>
+
+## State bags
+
+ai-vehicles sets these on every owned vehicle it spawns. Names are in `VEHICLE_BAGS` (`@aicore-fivem/shared`).
+
+| Bag | Type | Meaning |
+| --- | --- | --- |
+| `ai:owned` | `true` | The entity is an owned vehicle. |
+| `ai:vid` | `number` | Its id in ai-vehicles. |
+| `ai:props` | `VehicleProps` | The saved look. ai-core's client that owns the entity applies it. |
+| `ai:setup` | `VehicleSetup` | A spawn look for a vehicle without props, applied once. |
+| `fuel` | `number` | Fuel 0-100. The fuel script keeps it from then on. |
+
+```lua title="Lua (client)"
+local vehicle = GetVehiclePedIsIn(PlayerPedId(), false)
+if Entity(vehicle).state['ai:owned'] then
+  print('owned vehicle', Entity(vehicle).state['ai:vid'])
+end
+```
+
+## qbx_vehicles API
+
+ai-vehicles `provide`s `qbx_vehicles`, so these calls reach it. Shapes follow Qbox: `state` is `0` out, `1` garage, `2` impound.
+
+| Export | What it does |
+| --- | --- |
+| `GetPlayerVehicles(filters: { citizenid?, garage? })` | Vehicles of an online character, optionally only one garage. Returns `{ id, citizenid, modelName, garage, state, depotPrice, props }[]`. |
+| `GetPlayerVehicle(id: number)` | One vehicle in the same shape, or `nil`. |
+| `CreatePlayerVehicle(request: { model, citizenid, garage?, props? })` | Creates a vehicle for an online character. Returns the id, or `nil, { code, message }` (`bad_request`, `not_found`). |
+| `SetPlayerVehicleOwner(id: number, citizenid: string)` | New owner (online). `true` when it worked. |
+| `DeletePlayerVehicles(idType: "plate" \| "vehicleId", idValue)` | Deletes one vehicle. `true` when found. |
+| `GetVehicleIdByPlate(plate: string)` | The id, or `nil`. |
+| `DoesPlayerVehiclePlateExist(plate: string)` | `true` when the plate is owned. |
+| `SaveVehicle(entity: number, options: { props?, state?, garage? })` | Saves a spawned vehicle, tuning included. Takes AI Core's props or the ox_lib / qb-core props shape. Props of another model than the entity are refused (state and garage still save). |
+
+`GetPlayerVehicle` returns props in AI Core's `VehicleProps` shape, not ox_lib's. `depotPrice` is always `0`.

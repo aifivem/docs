@@ -1,0 +1,121 @@
+---
+title: Area streaming
+description: "AreaStream: world objects (drops, plants, bodies, props) sent only to the players near them, as one snapshot and then only the changes."
+icon: Radar
+---
+
+```ts title="TypeScript"
+import { AreaStream } from "@aicore-fivem/lib/server";
+```
+
+### AreaStream
+
+Keeps world items (dropped items, plants, placed props, bodies) on a grid of cells and sends each player only the items of the cells around them. A player who starts following gets one snapshot of their area; after that they only get changes: an item added, changed, moved or removed, or new cells coming into range when they move. Who has an item is worked out from the cells, so nothing is stored per player and item, and it scales to very many items and players. Followers are freed when they drop.
+
+Use one `AreaStream` per kind of item, created at module level. On the client, `new AreaFollower(event, cellSize)` ([Lib: client](/docs/developers/api/lib-client)) sends `(cx, cy)` on its own event whenever the player's cell changes (checked every 2 seconds), for `followReported`; your client code listens to the stream's `event` and keeps the items.
+
+**Side:** Server · **Waits:** no
+
+No Lua twin.
+
+```ts title="Signature"
+new AreaStream<T extends AreaItem, V = T>(options: AreaStreamOptions<T, V>)
+```
+
+#### AreaItem
+
+What every item must have:
+
+<TypeTable
+  type={{
+    id: { type: "number | string", description: "Unique id of the item.", required: true },
+    x: { type: "number", description: "World X position, used to find its cell.", required: true },
+    y: { type: "number", description: "World Y position.", required: true },
+  }}
+/>
+
+#### AreaStreamOptions
+
+<TypeTable
+  type={{
+    event: { type: "string", description: "The client event the messages go on. The client gets `(reset: boolean, puts: V[], removes: id[], ...extra)`: `reset` true means forget everything first (a snapshot).", required: true },
+    view: { type: "(item: T) => V", description: "What a client gets of an item: leave out server-only fields.", required: true },
+    cellSize: { type: "number", description: "Cell size in metres. The client must use the same value.", default: "64" },
+    range: { type: "number", description: "Cells around the follower’s own cell they know: 1 means the 3x3 cells around them.", default: "1" },
+    chunk: { type: "number", description: "Most items per event. A longer list goes as several small events, which keep their order.", default: "50" },
+    alsoTo: { type: "(item: T) => number | undefined", description: "A player who gets this item wherever they are (the body a player carries).", required: false },
+    extra: { type: "() => unknown[]", description: "Values appended to every event (a server clock for countdowns).", required: false },
+  }}
+/>
+
+#### Items
+
+| Method | What it does | Returns |
+| --- | --- | --- |
+| `set(item: T, resend = true): void` | Adds or updates an item. Followers around it get a put; followers that lost it when it moved get a remove. With `resend` false, only followers who did not have it yet get the put (for an item whose clients follow its changes themselves). | `void` |
+| `delete(id): void` | Removes an item; the followers who had it get a remove. | `void` |
+| `load(items: Iterable<T>): void` | Files many items without a message each (loading from the database at start), then sends every follower its area again as a snapshot. | `void` |
+| `get(id): T \| undefined` | One item. | the item or `undefined` |
+| `values(): Generator<T>` | Every item. | a generator |
+| `size: number` | How many items. | `number` |
+| `cellOf(x, y): { cx, cy }` | The cell of a point on this stream's grid. | cell coordinates |
+| `countAt(x, y): number` | Items in the cell of a point (a per-cell cap). | `number` |
+| `around(x, y, cells = 1): Generator<T>` | Items in the cell of a point and `cells` cells around it (spacing and merge checks). | a generator |
+| `recipients(id): Set<number>` | The players whose client has the item now. | a set of server ids |
+| `knows(source, id): boolean` | Whether the player's client has the item now. | `boolean` |
+
+#### Followers
+
+| Method | What it does | Returns |
+| --- | --- | --- |
+| `start(source, at = coordsOf(source)): void` | The player starts following at a point (default: the ped's server position) and gets a snapshot. | `void` |
+| `follow(source, cx, cy): void` | The player's current cell: a first call starts following with a snapshot, a change sends only the difference. | `void` |
+| `followReported(source, cx, cy): boolean` | `follow` for a cell the client sent, refused unless it is within one cell of the ped's server position (a client's cell may lag one behind). | `true` when accepted |
+| `followAll(): void` | Reads every follower's server position and sends the difference to those who changed cell. Call it from an `every` timer when the client does not report cells. | `void` |
+| `stop(source, tell = false): void` | The player stops following (logout, a private world). `tell` empties their client. | `void` |
+| `following(source): boolean` | Whether the player follows. | `boolean` |
+
+#### Example
+
+```ts
+import { AreaStream, onClientEvent, onCharacter, every } from "@aicore-fivem/lib/server";
+import { readInt } from "@aicore-fivem/lib/shared";
+
+interface Plant { id: number; x: number; y: number; z: number; growth: number; owner: number }
+
+const plants = new AreaStream<Plant, { id: number; x: number; y: number; z: number; growth: number }>({
+  event: "my-plants:stream",
+  view: ({ id, x, y, z, growth }) => ({ id, x, y, z, growth }), // the owner stays on the server
+});
+
+// At start: plants.load(rowsFromDatabase);
+
+onCharacter({
+  loaded: (source) => plants.start(source),
+  unloaded: (source) => plants.stop(source),
+});
+
+// The client's AreaFollower reports its cell when it changes.
+onClientEvent(
+  "my-plants:cell",
+  {
+    args: ([cx, cy]) => {
+      const x = readInt(cx, -1000, 1000);
+      const y = readInt(cy, -1000, 1000);
+      return x !== null && y !== null ? [x, y] : null;
+    },
+  },
+  (source, cx, cy) => {
+    plants.followReported(source, cx, cy);
+  },
+);
+
+// Growth changes reach only the players near each plant.
+every(60_000, () => {
+  for (const plant of plants.values()) if (plant.growth < 100) plants.set({ ...plant, growth: plant.growth + 1 });
+});
+```
+
+<Callout type="warn">
+Never build your own cell index, watcher sets or snapshot code next to it. A dropped player's `alsoTo` items are let go (the next player with that id never gets them), but your script still updates the item itself (where the body lies now). The `cellSize` on the server and on the client's `AreaFollower` must match.
+</Callout>

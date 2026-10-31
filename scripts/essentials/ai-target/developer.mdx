@@ -1,0 +1,256 @@
+---
+title: ai-target for developers
+description: The ox_target client API that ai-target answers, the option shape, what an option's handler receives, and the HandleInteract export.
+icon: Code
+---
+
+<Callout type="info">
+For your own places, NPCs and model options use AI Core's interaction points: lib `Points` in TypeScript or `aiLib.Points` in Lua (see the [lib reference](/docs/developers/api/lib-client)). A point shows as a prompt or as a target marker, whichever the owner picked, on whichever target script runs, and the same `onPressed` runs either way. Call the API below only when you port a script written for ox_target.
+</Callout>
+
+## Exports
+
+Every export is **client side**, answers under both `exports['ai-target']` and `exports.ox_target` (ai-target `provide`s ox_target), and does not wait. Options belong to the resource that added them and are removed when it stops.
+
+### TargetOption
+
+The option shape every `add*` export takes, one option or a list. An option without a `label` is left out.
+
+<TypeTable
+  type={{
+    label: { type: 'string', description: 'Text shown on the marker or in the options menu (up to 80 characters).', required: true },
+    name: { type: 'string', description: 'Option id, used by the `remove*` exports to remove one option. Defaults to the label.' },
+    icon: { type: 'string', description: 'Font Awesome solid icon: `fa-solid fa-store`, `fas fa-store` or `store`.' },
+    distance: { type: 'number', description: 'Reach in metres. The marker shows 3 m further. Capped at 50.', default: '2.5' },
+    groups: { type: 'string | string[] | Record<string, number>', description: 'Jobs or gangs that see the option: one name, a list of names, or `{ name: minimumGrade }`. Any membership counts; on duty is not checked.' },
+    canInteract: { type: '(entity: number, distance: number, coords: number[], name: string) => boolean', description: 'Shown only while this returns true. A function that throws hides the option and is logged.' },
+    onSelect: { type: '(data: TargetResponse) => void', description: 'Runs in your resource when the player uses the option. Takes priority over the fields below.' },
+    export: { type: 'string', description: 'Calls an export instead: `"resource.exportName"`, or `"exportName"` of the adding resource. Gets `(null, data)`.' },
+    event: { type: 'string', description: 'Emits this client event with `data`.' },
+    serverEvent: { type: 'string', description: 'Sends this server event with `data` (the entity as a network id, 0 when not networked).' },
+    command: { type: 'string', description: 'Runs this command (`ExecuteCommand`).' },
+  }}
+/>
+
+### TargetResponse
+
+What `onSelect`, `export`, `event` and `serverEvent` receive.
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'The option\'s name.' },
+    label: { type: 'string', description: 'The option\'s label.' },
+    entity: { type: 'number', description: 'The entity handle (0 for a zone). For `serverEvent` its network id instead, 0 when not networked.' },
+    coords: { type: 'number[]', description: '`[x, y, z]` of the marker.' },
+    distance: { type: 'number', description: 'Distance from the player to the marker, in metres.' },
+    zone: { type: 'number | undefined', description: 'The zone id when the option sits on a zone.' },
+  }}
+/>
+
+### addBoxZone
+
+Adds a box-shaped zone with options. `addSphereZone` and `addPolyZone` work the same with other shapes.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+addBoxZone(data: { coords: Vec3; size?: Vec3; rotation?: number; name?: string; options: TargetOption | TargetOption[] }): number
+addSphereZone(data: { coords: Vec3; radius?: number; name?: string; options: TargetOption | TargetOption[] }): number
+addPolyZone(data: { points: Vec3[]; thickness?: number; name?: string; options: TargetOption | TargetOption[] }): number
+```
+
+```lua title="Lua"
+local id = exports.ox_target:addBoxZone({ coords = vec3(x, y, z), size = vec3(2, 2, 2), rotation = 0, options = { ... } })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    coords: { type: 'Vec3', description: 'Centre of a box or sphere. A Lua `vector3` or a table / object with `x`, `y`, `z`.', required: true },
+    size: { type: 'Vec3', description: 'Box size in metres (box only).', default: '{ x: 2, y: 2, z: 2 }' },
+    rotation: { type: 'number', description: 'Box heading in degrees (box only).', default: '0' },
+    radius: { type: 'number', description: 'Sphere radius in metres (sphere only).', default: '2' },
+    points: { type: 'Vec3[]', description: 'Corners of a polygon, at least 3 (poly only). The height is the average of their `z`.', required: true },
+    thickness: { type: 'number', description: 'Polygon height in metres, centred on the average `z` (poly only).', default: '4' },
+    name: { type: 'string', description: 'A name to remove the zone by, instead of its number.' },
+    options: { type: 'TargetOption | TargetOption[]', description: 'The options on the zone.', required: true },
+  }}
+/>
+
+#### Returns
+
+`number`: the zone id. `0` when the coordinates are missing or invalid (a warning is logged).
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/client";
+
+const zone = callExport("ox_target", "addBoxZone", {
+  coords: { x: 441.8, y: -982.0, z: 30.7 },
+  size: { x: 1.5, y: 1.5, z: 2 },
+  rotation: 0,
+  options: [
+    {
+      name: "duty",
+      label: "Go on duty",
+      icon: "clipboard-check",
+      groups: "police",
+      onSelect: () => emitNet("myscript:toggleDuty"),
+    },
+  ],
+}) as number;
+
+on("onResourceStop", (name: string) => {
+  if (name === GetCurrentResourceName()) callExport("ox_target", "removeZone", zone);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local zone = exports.ox_target:addBoxZone({
+    coords = vec3(441.8, -982.0, 30.7),
+    size = vec3(1.5, 1.5, 2),
+    rotation = 0,
+    options = {
+        {
+            name = 'duty',
+            label = 'Go on duty',
+            icon = 'clipboard-check',
+            groups = 'police',
+            onSelect = function() TriggerServerEvent('myscript:toggleDuty') end,
+        },
+    },
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Zones of a resource are removed when that resource stops, so the stop handler above is optional. Remove a zone yourself when the place goes away while your resource keeps running.
+</Callout>
+
+### removeZone
+
+Removes a zone. **Side:** Client · **Waits:** no.
+
+```ts title="Signature"
+removeZone(id: number | string): void
+```
+
+`id` is the number `add*Zone` returned, or the zone's `name`.
+
+### zoneExists
+
+**Side:** Client · **Waits:** no.
+
+```ts title="Signature"
+zoneExists(id: number | string): boolean
+```
+
+Returns `true` while the zone with that number or name exists.
+
+### addModel
+
+Puts options on every entity of these models (doors of a model, ATMs, dumpsters).
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+addModel(models: string | number | Array<string | number>, options: TargetOption | TargetOption[]): void
+removeModel(models: string | number | Array<string | number>, names?: string | string[]): void
+```
+
+```lua title="Lua"
+exports.ox_target:addModel({ 'prop_atm_01', 'prop_atm_02' }, { { name = 'atm', label = 'Use ATM', icon = 'credit-card', onSelect = openAtm } })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    models: { type: 'string | number | Array<string | number>', description: 'Model names or hashes.', required: true },
+    options: { type: 'TargetOption | TargetOption[]', description: 'The options to add.', required: true },
+    names: { type: 'string | string[]', description: '`removeModel` only: option names to remove. Left out: every option on those models.' },
+  }}
+/>
+
+#### Returns
+
+Nothing.
+
+### addEntity and addLocalEntity
+
+`addEntity` puts options on networked entities by **network id** (vehicles or peds the server created). `addLocalEntity` puts them on entities by **handle** (a ped or prop your client created). Each has a `remove*` twin taking the same ids and optional option names.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+addEntity(netIds: number | number[], options: TargetOption | TargetOption[]): void
+removeEntity(netIds: number | number[], names?: string | string[]): void
+addLocalEntity(entities: number | number[], options: TargetOption | TargetOption[]): void
+removeLocalEntity(entities: number | number[], names?: string | string[]): void
+```
+
+### Global options by kind
+
+Options on every ped, vehicle, object or player.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+addGlobalPed(options: TargetOption | TargetOption[]): void
+addGlobalVehicle(options: TargetOption | TargetOption[]): void
+addGlobalObject(options: TargetOption | TargetOption[]): void
+addGlobalPlayer(options: TargetOption | TargetOption[]): void
+removeGlobalPed(names?: string | string[]): void   // and removeGlobalVehicle, removeGlobalObject, removeGlobalPlayer
+```
+
+```lua title="Lua"
+exports.ox_target:addGlobalVehicle({
+    { name = 'myscript_wash', label = 'Wash vehicle', icon = 'soap', distance = 2.0,
+      canInteract = function(entity) return GetVehicleDirtLevel(entity) > 5.0 end,
+      onSelect = function(data) TriggerServerEvent('myscript:wash', VehToNet(data.entity)) end },
+})
+```
+
+<Callout type="warn">
+`addGlobalOption` (an option on nothing) is not offered. It logs a warning and does nothing. Put such actions on the radial menu instead (lib `radial`).
+</Callout>
+
+### disableTargeting
+
+Turns the markers off (`true`) or back on (`false`) for this player. **Side:** Client · **Waits:** no.
+
+```ts title="Signature"
+disableTargeting(state: boolean): void
+```
+
+### isActive
+
+**Side:** Client · **Waits:** no.
+
+```ts title="Signature"
+isActive(): boolean
+```
+
+Returns `true` while at least one marker is near the player.
+
+### HandleInteract
+
+ai-target's own export (not ox_target's). AI Core's interaction key asks it first: it runs the option in focus.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+HandleInteract(): boolean
+```
+
+Returns `true` when an option in focus was used (or its menu opened), `false` when nothing is in focus, so the key goes on to the prompts. Typed in `AiTargetClientExports`. You do not need to call it.
+
+## Events
+
+None for other scripts.

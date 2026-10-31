@@ -1,0 +1,253 @@
+---
+title: Admin panel and commands
+description: Exports behind ai-core's admin panel - panel registration, panel changes, the Commands tab, lookup lists and other scripts' settings screens on the dashboard.
+icon: LayoutDashboard
+---
+
+ai-core hosts one admin panel for every script. Most exports on this page are plumbing that `@aicore-fivem/lib` calls for you: a script built with the lib's `AdminPanel` and `addCommand` never calls `RegisterAdminPanel`, `AdminPanelChanged` or `RegisterCommands` itself. They are documented so you know what happens and can support them from another language. `RegisterExternalPanel` and `GetLookupValues` are useful to any script.
+
+### RegisterAdminPanel
+
+Announces that the calling resource has a panel section. ai-core then asks it for its schema and data whenever an admin opens the panel.
+
+**Side:** Server · **Waits:** no · **Lib:** called by the lib's [`AdminPanel`](/docs/developers/api/lib-server/admin-panel#adminpanel) when it starts
+
+```ts title="Signature"
+RegisterAdminPanel(resource: string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterAdminPanel(GetCurrentResourceName())
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Kept for older callers and ignored: the panel always belongs to the resource that calls.', required: true },
+  }}
+/>
+
+#### Returns
+
+Nothing. The registration is dropped when the resource stops.
+
+#### Example
+
+No example: the lib's `AdminPanel` calls it. A resource that registers without the lib must also answer the exports ai-core calls back (`AdminPanelSnapshot`, `AdminPanelData`, `AdminPanelSummary`, typed `AdminPanelResourceExports` in `@aicore-fivem/shared`), which is the lib's job.
+
+### AdminPanelChanged
+
+A panel resource tells ai-core that one of its records changed. ai-core forwards the change to every admin who has the panel open, so their screen updates without reloading.
+
+**Side:** Server · **Waits:** no · **Lib:** called by the lib's [`AdminPanel`](/docs/developers/api/lib-server/admin-panel#adminpanel) after every saved change
+
+```ts title="Signature"
+AdminPanelChanged(delta: AdminDelta): void
+```
+
+```lua title="Lua"
+exports['ai-core']:AdminPanelChanged({ resource = GetCurrentResourceName(), file = 'shops', key = 'shop_1', value = record })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    delta: { type: 'AdminDelta', description: 'What changed: `resource`, `file` (the data file name), `key` (the record, absent for a whole settings file) and the new `value` (`null` for a deleted record).', required: true, typeDescription: '{ resource: string; file: string; key?: string; value: unknown }' },
+  }}
+/>
+
+See [AdminDelta](/docs/developers/api/types#admindelta).
+
+#### Returns
+
+Nothing. ai-core does not check the delta; it sends it as given.
+
+#### Example
+
+No example: the lib's `AdminPanel` calls it after a change was validated and saved.
+
+### RegisterCommands
+
+Lists a resource's commands in the panel's **Commands** tab, with their help, parameters and who may use them.
+
+**Side:** Server · **Waits:** no · **Lib:** called by the lib's [`addCommand`](/docs/developers/api/lib-server/commands#addcommand) (TypeScript and Lua `aiLib.addCommand`)
+
+```ts title="Signature"
+RegisterCommands(resource: string, commands: CommandInfo[]): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterCommands(GetCurrentResourceName(), commands)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Kept for older callers and ignored: the commands belong to the resource that calls.', required: true },
+    commands: { type: 'CommandInfo[]', description: 'Every command of the resource: `names` (first = the name, rest = aliases), `help`, `params` and `aces` (`null` = everyone). Invalid entries are skipped with a console warning.', required: true },
+  }}
+/>
+
+See [CommandInfo](/docs/developers/api/types#commandinfo) and [CommandParam](/docs/developers/api/types#commandparam).
+
+#### Returns
+
+Nothing. The list is dropped when the resource stops. For commands restricted to a principal (`group.admin`), ai-core also grants that principal `command.<name>`, which needs `add_ace resource.ai-core command.add_ace allow` (and `command.remove_ace`) in `permission.cfg`.
+
+#### Example
+
+No example: use the lib's `addCommand` (TypeScript) or `aiLib.addCommand` (Lua) and the command shows up in the tab by itself. Commands made with a bare `RegisterCommand` are listed too, marked as plain.
+
+### GetLookupValues
+
+The values of one lookup list: the item names of the active inventory, the job names, gang names and so on. The lib's panel validation uses it to check that a value an admin typed exists.
+
+**Side:** Server · **Waits:** no · **Lib:** used by the lib's [`AdminPanel`](/docs/developers/api/lib-server/admin-panel#adminpanel) validation
+
+```ts title="Signature"
+GetLookupValues(source: LookupSource): string[]
+```
+
+```lua title="Lua"
+local items = exports['ai-core']:GetLookupValues('item') -- list of item names
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'LookupSource', description: 'Which list.', required: true, typeDescription: '"item" | "job" | "gang" | "account" | "resource" | "player" | "vehicle" | "ped"' },
+  }}
+/>
+
+| `source` | Values |
+| --- | --- |
+| `item` | Item names of the active inventory. |
+| `job` / `gang` | Job / gang names from the panel. |
+| `account` | Account type names (`cash`, `bank`...). |
+| `resource` | Names of started resources. |
+| `player` | Citizen ids of players with a loaded character. |
+| `vehicle` / `ped` | Always empty: only the admin's game can list models. |
+
+See [LookupSource](/docs/developers/api/types#lookupsource).
+
+#### Returns
+
+`string[]`: the values, sorted by their label. An empty list for an unknown `source`, for `vehicle` and `ped`, and when the list is not known yet (no inventory runs): treat empty as "cannot check", not as "nothing is valid".
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Checks a reward item from your config; unknown is fine while no inventory runs. */
+export function isKnownItem(name: string): boolean {
+  const items = core.GetLookupValues("item");
+  return items.length === 0 || items.includes(name);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function IsKnownItem(name)
+  local items = exports['ai-core']:GetLookupValues('item')
+  if #items == 0 then return true end
+  for _, item in ipairs(items) do
+    if item == name then return true end
+  end
+  return false
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+The list is built fresh on every call (the item list can be long). Call it when you validate, not in a loop.
+</Callout>
+
+### RegisterExternalPanel
+
+Lists another script's own settings screen on ai-core's panel dashboard, so the server owner finds every script's settings in one place. The card opens the screen with a chat command, or shows a web page inside the panel.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+RegisterExternalPanel(panel: {
+  id?: string;
+  label: string;
+  icon?: string;
+  description?: string;
+  command?: string;
+  url?: string;
+}): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterExternalPanel({ label = 'My script', command = 'myscriptconfig' })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    panel: { type: 'object', description: 'The dashboard card. Fields below.', required: true },
+  }}
+/>
+
+#### Panel fields
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Card id, unique within your resource (2-48 letters, digits, `_`, `.`, `-`). A second call with the same id replaces the card.', default: 'the resource name' },
+    label: { type: 'string', description: 'Card title. Cut to 48 characters.', required: true },
+    icon: { type: 'string', description: 'Icon name for the card. Cut to 32 characters.' },
+    description: { type: 'string', description: 'One line under the title. Cut to 160 characters.' },
+    command: { type: 'string', description: 'Chat command that opens your screen (a leading `/` is removed). Give `command` or `url`.' },
+    url: { type: 'string', description: 'A web page shown inside the panel. Only `https://` addresses (an NUI page of your resource or a site you trust); cut to 300 characters.' },
+  }}
+/>
+
+#### Returns
+
+Nothing. Without a `label`, or without both `command` and `url`, the card is not added. Cards are dropped when your resource stops.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Once at start.
+core.RegisterExternalPanel({
+  label: "My script",
+  icon: "gear",
+  description: "Shops, prices and rewards",
+  command: "myscriptconfig",
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-core']:RegisterExternalPanel({
+  label = 'My script',
+  icon = 'gear',
+  description = 'Shops, prices and rewards',
+  command = 'myscriptconfig',
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+A script you cannot change can be listed by lines in its `fxmanifest.lua` instead: `ai_admin_label`, `ai_admin_command` or `ai_admin_url`, and optionally `ai_admin_icon` and `ai_admin_description`. The server owner can also add cards by hand in the panel.
+</Callout>

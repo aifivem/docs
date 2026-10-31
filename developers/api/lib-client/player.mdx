@@ -1,0 +1,773 @@
+---
+title: The local player
+description: The cached ped, vehicle, seat and weapon, the player object (position, teleport, animations), screen fades, other players' peds and the nearest player.
+icon: User
+---
+
+Everything about the player sitting at this computer. Read values from `cache` instead of calling `PlayerPedId()` in loops: ai-core keeps one watcher for every resource and pushes changes, so no script polls for them.
+
+### cache
+
+The local player's most read values, kept current by ai-core's one watcher. Like ox_lib's `cache`: read `cache.ped` instead of calling `PlayerPedId()`, and `cache.vehicle` instead of `GetVehiclePedIsIn` every frame. Reading a key is a plain memory read, safe in loops and per-frame code.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+const cache: PlayerCache // read only
+```
+
+```lua title="Lua"
+local ped = aiLib.cache.ped
+```
+
+#### Keys
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'The local ped handle. It changes when the model changes (a new character, a clothing model swap); onCache("ped") tells you.' },
+    playerId: { type: 'number', description: 'The local player index (PlayerId()), used by natives that take a player.' },
+    serverId: { type: 'number', description: 'The local player server id (the source the server sees).' },
+    vehicle: { type: 'number | false', description: 'The vehicle the player sits in, false on foot.' },
+    seat: { type: 'number | false', description: 'The seat in vehicle: -1 driver, 0 front passenger, 1 and up the back seats. false on foot.' },
+    weapon: { type: 'number | false', description: 'The weapon hash in hand, false when unarmed.' },
+  }}
+/>
+
+The type is [`PlayerCache`](/docs/developers/api/types#playercache).
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, every } from "@aicore-fivem/lib/client";
+
+// Speed shown while driving, read from the cache every 200 ms.
+every(200, () => {
+  if (cache.vehicle === false || cache.seat !== -1) return;
+  const kmh = GetEntitySpeed(cache.vehicle) * 3.6;
+  SendNUIMessage({ action: "speed", data: Math.round(kmh) });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local cache = aiLib.cache
+
+aiLib.every(200, function()
+    if not cache.vehicle or cache.seat ~= -1 then return end
+    local kmh = GetEntitySpeed(cache.vehicle) * 3.6
+    SendNUIMessage({ action = 'speed', data = math.floor(kmh + 0.5) })
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+`cache.ped` lags a model change by up to 100 ms. Right after you change the model (`SetPlayerModel`), call `PlayerPedId()` once. The `player` actions below already read the ped fresh.
+</Callout>
+
+### onCache
+
+Runs a handler whenever one cached value changes: the player got into or out of a vehicle, changed seat, drew or put away a weapon, or got a new ped. Use it instead of checking the value on a timer.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+onCache<K extends keyof PlayerCache>(key: K, handler: (value: PlayerCache[K], old: PlayerCache[K]) => void): void
+```
+
+```lua title="Lua"
+aiLib.cache.onChange(key, function(value, old) end)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    key: { type: '"ped" | "playerId" | "serverId" | "vehicle" | "seat" | "weapon"', description: 'The cache key to watch.', required: true },
+    handler: { type: '(value, old) => void', description: 'Gets the new value and the one before. Runs once per change, after cache already holds the new value.', required: true },
+  }}
+/>
+
+#### Returns
+
+`void`. There is no way to remove the handler; keep one per feature at the top of the file.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onCache, inventory, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+
+// Points whose canShow reads cache.vehicle are checked again.
+onCache("vehicle", () => points.refresh());
+
+// The weapon item in hand, read only when the weapon changes.
+onCache("weapon", (weapon) => {
+  const item = weapon === false ? null : inventory.currentWeapon();
+  SendNUIMessage({ action: "weapon", data: item });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local points = aiLib.Points.new()
+
+aiLib.cache.onChange('vehicle', function()
+    points:refresh()
+end)
+
+aiLib.cache.onChange('weapon', function(weapon)
+    local item = weapon and aiLib.inventory.currentWeapon() or nil
+    SendNUIMessage({ action = 'weapon', data = item })
+end)
+```
+</Tab>
+</Tabs>
+
+### readPlayerState
+
+Reads a ped's vehicle, seat and weapon right now, without the cache. ai-core's watcher uses it; you need it only for a ped that is not the local one, or to compare with the cache by hand.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+readPlayerState(ped: number): { vehicle: number | false; seat: number | false; weapon: number | false }
+```
+
+No Lua twin.
+
+#### Parameters
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Any ped handle.', required: true },
+  }}
+/>
+
+#### Returns
+
+An object with `vehicle` (the vehicle handle, `false` on foot), `seat` (-1 driver and up, `false` on foot) and `weapon` (the hash in hand, `false` when unarmed).
+
+#### Example
+
+```ts
+import { playerPed, readPlayerState } from "@aicore-fivem/lib/client";
+
+const ped = playerPed(12);
+if (ped !== 0 && readPlayerState(ped).seat === -1) console.log("player 12 is driving");
+```
+
+### readWeapon
+
+The weapon in a ped's hand right now, `false` when unarmed.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+readWeapon(ped: number): number | false
+```
+
+No Lua twin.
+
+#### Parameters
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Any ped handle.', required: true },
+  }}
+/>
+
+#### Returns
+
+`number | false`: the weapon hash, or `false` when the ped holds `WEAPON_UNARMED`.
+
+#### Example
+
+```ts
+import { nearestPlayer, playerPed, readWeapon } from "@aicore-fivem/lib/client";
+
+const id = nearestPlayer(5);
+if (id !== null && readWeapon(playerPed(id)) !== false) console.log("the player next to you is armed");
+```
+
+## player
+
+One object for the local ped: where it is, moving it, animations. Reads use `cache.ped`; actions read the ped fresh, so they also work right after a model change.
+
+### player.ped
+
+The local ped handle (the same value as `cache.ped`).
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+player.ped: number // read-only property
+```
+
+No Lua twin: use `aiLib.cache.ped`.
+
+#### Returns
+
+`number`: the ped handle.
+
+#### Example
+
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+SetPedArmour(player.ped, 100);
+```
+
+### player.coords
+
+The ped's position now.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+player.coords(): Vec3
+```
+
+```lua title="Lua"
+local coords = aiLib.player.coords() -- vector3
+```
+
+#### Returns
+
+A [`Vec3`](/docs/developers/api/types#vec3) `{ x, y, z }` in TypeScript (z is the ped's root, about 1 m above the floor). Lua returns a `vector3`.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { locationName, player } from "@aicore-fivem/lib/client";
+
+const here = player.coords();
+console.log(`${locationName(here).street} at ${here.x.toFixed(1)}, ${here.y.toFixed(1)}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local here = aiLib.player.coords()
+print(('%s at %.1f, %.1f'):format(aiLib.locationName(here).street, here.x, here.y))
+```
+</Tab>
+</Tabs>
+
+### player.heading
+
+The direction the ped faces, in degrees (0-360, 0 = north).
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+player.heading(): number
+```
+
+```lua title="Lua"
+local heading = aiLib.player.heading()
+```
+
+#### Returns
+
+`number`: the heading in degrees.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+// Save the spot and direction for a panel record.
+const spot = { ...player.coords(), heading: player.heading() };
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local c = aiLib.player.coords()
+local spot = vector4(c.x, c.y, c.z, aiLib.player.heading())
+```
+</Tab>
+</Tabs>
+
+### player.distanceTo
+
+Straight distance from the ped to a point, in metres.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+player.distanceTo(point: Vec3): number
+```
+
+```lua title="Lua"
+local metres = aiLib.player.distanceTo(point) -- vector3 or { x, y, z }
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    point: { type: 'Vec3', description: 'The point to measure to: { x, y, z } (Lua also takes a vector3).', required: true },
+  }}
+/>
+
+#### Returns
+
+`number`: metres, measured in 3D.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, player } from "@aicore-fivem/lib/client";
+
+const counter = { x: 25.7, y: -1347.3, z: 29.5 };
+if (player.distanceTo(counter) > 3) notify("Walk to the counter first", "error");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local counter = vector3(25.7, -1347.3, 29.5)
+if aiLib.player.distanceTo(counter) > 3.0 then aiLib.notify('Walk to the counter first', 'error') end
+```
+</Tab>
+</Tabs>
+
+### player.freeze
+
+Freezes the ped in place, or lets it move again.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+player.freeze(state: boolean): void
+```
+
+```lua title="Lua"
+aiLib.player.freeze(frozen)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    state: { type: 'boolean', description: 'true freezes the ped, false lets it move. Lua names it frozen.', required: true },
+  }}
+/>
+
+#### Returns
+
+`void`.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+player.freeze(true);
+setTimeout(() => player.freeze(false), 5000);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.player.freeze(true)
+SetTimeout(5000, function() aiLib.player.freeze(false) end)
+```
+</Tab>
+</Tabs>
+
+### player.teleport
+
+Moves the player and waits until the world around the new spot has loaded, behind a black screen fade. Without `z` (or with `ground: "find"`), it searches the ground under x and y: use that for the map waypoint.
+
+**Side:** Client · **Waits:** yes (Promise in TypeScript, yields the thread in Lua)
+
+```ts title="Signature"
+player.teleport(to: { x: number; y: number; z?: number }, options?: TeleportOptions): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.player.teleport(to, options) -- call inside a thread
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    to: { type: '{ x: number; y: number; z?: number }', description: 'Where to go. Leave z out to land on the ground under x / y. Lua also takes a vector3.', required: true },
+    options: { type: 'TeleportOptions', description: 'Heading, ground handling, fade, vehicle. Fields below.', default: '{}' },
+  }}
+/>
+
+#### TeleportOptions
+
+<TypeTable
+  type={{
+    heading: { type: 'number', description: 'Direction to face after the move, in degrees. Unchanged when left out.' },
+    ground: { type: 'boolean | "find"', description: 'true: z is the floor (a point picked in the panel) and the feet stand on it. false: z is the ped root, as player.coords() gives it. "find": search the ground under x / y and ignore z.', default: 'true' },
+    fade: { type: 'boolean', description: 'Fade the screen to black before the move and back in after.', default: 'true' },
+    keepVehicle: { type: 'boolean', description: 'Take the vehicle the player sits in along.', default: 'false' },
+  }}
+/>
+
+#### Returns
+
+`Promise<void>` that resolves once the player stands at the new spot and the collision there has loaded (or after 5 seconds without it). Lua returns nothing.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, player, waypoint } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "tpm",
+  async () => {
+    const target = waypoint();
+    if (!target) return notify("Set a waypoint first", "error");
+    await player.teleport(target, { keepVehicle: true }); // no z: lands on the ground
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('tpm', function()
+    local target = aiLib.waypoint()
+    if not target then return aiLib.notify('Set a waypoint first', 'error') end
+    aiLib.player.teleport(target, { keepVehicle = true })
+end, false)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+The TypeScript ground search stands the frozen ped at rising heights, waits for the collision at each one, and skips surfaces inside MLO or IPL interiors, so it never lands on a roof or inside a building above the street. The Lua version takes the first ground it finds and waits at most 3 seconds for the collision.
+</Callout>
+
+### player.playAnim
+
+Plays an animation on the ped. It loads the animation dictionary first.
+
+**Side:** Client · **Waits:** yes in TypeScript (resolves when the animation started); yields in Lua while the dictionary loads
+
+```ts title="Signature"
+player.playAnim(dict: string, clip: string, options?: AnimOptions): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.player.playAnim(dict, clip, options) -- call inside a thread
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    dict: { type: 'string', description: 'Animation dictionary (mini@repair).', required: true },
+    clip: { type: 'string', description: 'Animation name inside the dictionary (fixing_a_player).', required: true },
+    options: { type: 'AnimOptions', description: 'How it plays. Fields below.', default: '{}' },
+  }}
+/>
+
+#### AnimOptions
+
+<TypeTable
+  type={{
+    flag: { type: 'number', description: 'TaskPlayAnim flag. 49 = upper body only, loops, the player can walk.', default: '49' },
+    duration: { type: 'number', description: 'How long it plays, in milliseconds. -1 plays until stopped.', default: '-1' },
+    blendIn: { type: 'number', description: 'Blend in speed.', default: '8' },
+    blendOut: { type: 'number', description: 'Blend out speed.', default: '-8' },
+  }}
+/>
+
+#### Returns
+
+`Promise<void>` that resolves when the animation started. It **rejects** when the dictionary does not exist or does not load in 10 seconds. Lua returns nothing and does nothing when the dictionary does not load.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+export async function handOver(): Promise<void> {
+  await player.playAnim("mp_common", "givetake1_a", { flag: 48, duration: 1500 });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.player.playAnim('mp_common', 'givetake1_a', { flag = 48, duration = 1500 })
+end)
+```
+</Tab>
+</Tabs>
+
+### player.stopAnim
+
+Stops whatever the ped is doing (`ClearPedTasks`): animations and scenarios.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+player.stopAnim(): void
+```
+
+```lua title="Lua"
+aiLib.player.stopAnim()
+```
+
+#### Returns
+
+`void`.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player } from "@aicore-fivem/lib/client";
+
+export async function readClipboard(): Promise<void> {
+  await player.playAnim("amb@world_human_clipboard@male@idle_a", "idle_c");
+  setTimeout(() => player.stopAnim(), 4000);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.player.playAnim('amb@world_human_clipboard@male@idle_a', 'idle_c')
+    Wait(4000)
+    aiLib.player.stopAnim()
+end)
+```
+</Tab>
+</Tabs>
+
+### player.holdAnim
+
+Keeps an animation playing until you stop it, putting it back when a fall or bump interrupts it. Documented with the props on [Peds, blips and props](/docs/developers/api/lib-client/world-objects#playerholdanim).
+
+## Fades and other players
+
+### fadeOut
+
+Fades the screen to black and waits until it is fully black. Use it to hide a teleport, a model swap or a scene change.
+
+**Side:** Client · **Waits:** yes (Promise in TypeScript, yields the thread in Lua)
+
+```ts title="Signature"
+fadeOut(ms?: number): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.fadeOut(ms) -- call inside a thread
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Length of the fade, in milliseconds.', default: '300' },
+  }}
+/>
+
+#### Returns
+
+`Promise<void>` that resolves when the screen is black, or after `ms` + 2 seconds at the latest. It never rejects.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { fadeIn, fadeOut } from "@aicore-fivem/lib/client";
+
+export async function moveToSquare(): Promise<void> {
+  await fadeOut();
+  SetEntityCoords(PlayerPedId(), -269.4, -955.3, 31.2, false, false, false, false);
+  await fadeIn();
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.fadeOut()
+    SetEntityCoords(PlayerPedId(), -269.4, -955.3, 31.2, false, false, false, false)
+    aiLib.fadeIn()
+end)
+```
+</Tab>
+</Tabs>
+
+### fadeIn
+
+Fades the screen back in and waits until it is clear. The pair of [`fadeOut`](#fadeout).
+
+**Side:** Client · **Waits:** yes (Promise in TypeScript, yields the thread in Lua)
+
+```ts title="Signature"
+fadeIn(ms?: number): Promise<void>
+```
+
+```lua title="Lua"
+aiLib.fadeIn(ms) -- call inside a thread
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Length of the fade, in milliseconds.', default: '400' },
+  }}
+/>
+
+#### Returns
+
+`Promise<void>` that resolves when the screen is clear, or after `ms` + 2 seconds at the latest. It never rejects.
+
+#### Example
+
+See [`fadeOut`](#fadeout): the two are always used together.
+
+### playerPed
+
+The ped of a player by server id. For the local player it returns `cache.ped`; for another player it returns 0 when that player is not near enough to be streamed to this client.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+playerPed(serverId: number): number
+```
+
+```lua title="Lua"
+local ped = aiLib.playerPed(serverId)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    serverId: { type: 'number', description: 'The player server id (the source the server uses).', required: true },
+  }}
+/>
+
+#### Returns
+
+`number`: the ped handle, or `0` when the player is not in scope on this client.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onServerEvent, playerPed } from "@aicore-fivem/lib/client";
+
+// The server tells everyone near that a player was cuffed.
+onServerEvent(
+  "myscript:cuffed",
+  { args: ([id]) => (typeof id === "number" ? [id] : null) },
+  (id) => {
+    const ped = playerPed(id);
+    if (ped !== 0) SetEnableHandcuffs(ped, true);
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onServerEvent('myscript:cuffed', function(id)
+    local ped = aiLib.playerPed(id)
+    if ped ~= 0 then SetEnableHandcuffs(ped, true) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Never use `GetPlayerPed(-1)` or `GetPlayerPed(GetPlayerFromServerId(id))` by hand: an unknown id gives -1, and `GetPlayerPed(-1)` is the local ped, so the action hits the wrong player.
+</Callout>
+
+### nearestPlayer
+
+The closest other player within a distance, as a server id. Walks only the players streamed to this client. Use it to pick the target of give, search, cuff or tackle actions, then send that id to the server, which checks the distance again.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+nearestPlayer(metres: number, options?: { from?: Vec3; filter?: (serverId: number, ped: number) => boolean }): number | null
+```
+
+```lua title="Lua"
+local serverId = aiLib.nearestPlayer(metres, options) -- integer or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    metres: { type: 'number', description: 'The search radius, in metres.', required: true },
+    options: { type: '{ from?, filter? }', description: 'Optional. Fields below.', default: '{}' },
+  }}
+/>
+
+#### Options
+
+<TypeTable
+  type={{
+    from: { type: 'Vec3', description: 'Measure from this point instead of the local ped (a point in front of the player for a tackle). Lua also takes a vector3.' },
+    filter: { type: '(serverId: number, ped: number) => boolean', description: 'Skips players it returns false for (dead, in a vehicle, already cuffed).' },
+  }}
+/>
+
+#### Returns
+
+`number | null`: the server id of the closest player that passed `filter`, or `null` (`nil` in Lua) when nobody is within `metres`. The local player is never returned.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, nearestPlayer, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "givecash",
+  async (_src: number, args: string[]) => {
+    const target = nearestPlayer(3, { filter: (_id, ped) => !IsPedInAnyVehicle(ped, false) });
+    if (target === null) return notify("Nobody is close enough", "error");
+    await callAction("myscript:give", [target, Number(args[0])], { fallback: "GIVE_FAILED" });
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('givecash', function(_, args)
+    local target = aiLib.nearestPlayer(3.0, {
+        filter = function(_, ped) return not IsPedInAnyVehicle(ped, false) end,
+    })
+    if not target then return aiLib.notify('Nobody is close enough', 'error') end
+    aiLib.callAction('myscript:give', { target, tonumber(args[1]) }, { fallback = 'GIVE_FAILED' })
+end, false)
+```
+</Tab>
+</Tabs>

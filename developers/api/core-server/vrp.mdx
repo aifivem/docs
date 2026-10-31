@@ -1,0 +1,169 @@
+---
+title: vRP bridge
+description: The exports ai-core's built-in vRP bridge uses - vRP's data store, its database API, the permission mapping and the permission list.
+icon: Plug
+---
+
+ai-core runs vRP scripts through its built-in vRP bridge (it `provide`s `vrp`). The bridge's Lua side reaches ai-core's TypeScript side through the exports on this page. **They exist for that bridge**: a vRP script uses vRP's own API (`vRP.getUData`, `vRP.query`, `vRP.hasPermission`...), which the bridge answers, and an ai-* script never needs them. The panel's vRP mapping (permissions, groups, items) is edited in the admin panel, not through these exports.
+
+They are listed so the reference is complete. Each one answers at once or through a callback, like every ai-core export.
+
+### VrpGetData
+
+Reads one value of vRP's key-value store (what vRP's `getUData`, `getCData`, `getSData` and `getGData` read). Values travel as hex text so any bytes survive the trip between Lua and TypeScript.
+
+**Side:** Server · **Waits:** no (answers through `done`; at once for a cached key) · **Lib:** none (bridge only)
+
+```ts title="Signature"
+VrpGetData(kind: string, owner: string, key: string, done: (hex: string) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpGetData('u', tostring(userId), 'myscript:data', function(hex) end)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Which store: `u` (user / account data), `c` (character data), `s` (server data) or `g` (global data).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'The owner id as text (the account id for `u`, the character id for `c`). At most 64 characters.', required: true },
+    key: { type: 'string', description: 'The data key. 1 to 100 characters.', required: true },
+    done: { type: '(hex: string) => void', description: 'Called once with the value as hex text.', required: true },
+  }}
+/>
+
+#### Returns
+
+Nothing. `done` gets the value as hex, or `""` when the key is unset or an argument is wrong. Data of loaded accounts and characters stays cached, so it answers at once.
+
+#### Example
+
+No example: vRP scripts call `vRP.getUData` and friends, which the bridge turns into this export.
+
+### VrpSetData
+
+Stores one value in vRP's key-value store. It is written to the database (`ai_core_vrp_data`) within a second, and when its character unloads.
+
+**Side:** Server · **Waits:** no · **Lib:** none (bridge only)
+
+```ts title="Signature"
+VrpSetData(kind: string, owner: string, key: string, hex: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:VrpSetData('u', tostring(userId), 'myscript:data', hex)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Which store: `u`, `c`, `s` or `g` (as for `VrpGetData`).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'The owner id as text. At most 64 characters.', required: true },
+    key: { type: 'string', description: 'The data key. 1 to 100 characters.', required: true },
+    hex: { type: 'string', description: 'The value as hex text (pairs of 0-9 / a-f). At most 16,000,000 characters.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the value was stored. `false` (with a console warning) when an argument is wrong or `hex` is not valid hex text.
+
+#### Example
+
+No example: vRP scripts call `vRP.setUData` and friends.
+
+### VrpQuery
+
+vRP's database API (`vRP.query`, `vRP.execute`, `vRP.scalar` of prepared statements) on ai-core's database pool. `@name` placeholders are filled from the params table; several statements in one text run in order inside one transaction, and the last one answers.
+
+**Side:** Server · **Waits:** no (answers through `done`) · **Lib:** none (bridge only)
+
+```ts title="Signature"
+VrpQuery(
+  sql: string,
+  params: unknown,
+  mode: "query" | "execute" | "scalar",
+  done: (error: string | null, ...answer: unknown[]) => void,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpQuery('SELECT 1 AS n', {}, 'scalar', function(err, value) end)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    sql: { type: 'string', description: 'The SQL text of the prepared statement.', required: true },
+    params: { type: 'unknown', description: 'A table of named values (`@name`), a list for `?` placeholders, or an empty table for none.', required: true },
+    mode: { type: '"query" | "execute" | "scalar"', description: 'What to answer. Any other value counts as `query`.', required: true },
+    done: { type: '(error, ...answer) => void', description: 'Called once: `error` is `null` on success.', required: true, typeDescription: '(error: string | null, ...answer: unknown[]) => void' },
+  }}
+/>
+
+#### Returns
+
+Nothing. `done` gets, after the error slot: for `query` the rows and the affected count; for `execute` the affected count; for `scalar` the first column of the first row (or `null`). On failure `done` gets only the error text (`"empty query"` for an empty `sql`).
+
+#### Example
+
+No example: vRP scripts call `vRP.prepare` and `vRP.query`. Other resources use `@aicore-fivem/mysql` (ai-* scripts) or `ai-mysql`'s oxmysql API.
+
+### GetVrpConfig
+
+The panel's vRP mapping (`data/vrp.json`): which ai-core jobs, gangs, grades and admins hold which vRP permissions, what vRP group names mean, and which inventory item each vRP item id is.
+
+**Side:** Server · **Waits:** no · **Lib:** none (bridge only)
+
+```ts title="Signature"
+GetVrpConfig(): VrpConfig
+```
+
+```lua title="Lua"
+local config = exports['ai-core']:GetVrpConfig()
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`VrpConfig`: `defaults` (built-in prefix rules), `permissions` (rules), `groups` (vRP group name to job / gang / grade / admin) and `items` (vRP item id to item name). See [VrpConfig](/docs/developers/api/types#vrpconfig). After a panel change ai-core fires the server event `ai-core:vrp:config` with the same shape.
+
+#### Example
+
+No example: the bridge reads it to answer `vRP.hasPermission` and `vRP.hasGroup`.
+
+### VrpPermissionAsked
+
+Records a permission string a vRP script asked for, so the panel can list every permission the server's scripts use and the owner can map them.
+
+**Side:** Server · **Waits:** no · **Lib:** none (bridge only)
+
+```ts title="Signature"
+VrpPermissionAsked(permission: string): boolean
+```
+
+```lua title="Lua"
+local new = exports['ai-core']:VrpPermissionAsked('police.armory')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    permission: { type: 'string', description: 'The permission string (`police.armory`). 1 to 100 characters.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the permission was new and is now recorded. `false` when it was already known, is not a valid text, or the recorded list is full.
+
+#### Example
+
+No example: the bridge calls it from `vRP.hasPermission`.

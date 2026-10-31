@@ -1,0 +1,84 @@
+---
+title: ai-drugs for developers
+description: The plant table, alerts and ledger reason of ai-drugs, how to sell drugs it knows from another script, and its private events.
+icon: Code
+---
+
+ai-drugs has **no exports**. Sales and harvests are decided on its server, and items, money and alerts go through AI Core. What another script can use is listed below.
+
+## Database table `ai_drugs_plants`
+
+One row per weed plant in the world. Created at start (`sql/main.sql`, through ai-core's table installer). All rows are loaded once at start and kept in memory; rotten plants are deleted by the server, so the table stays small.
+
+| Column | Type | What it holds |
+| --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | The plant id (auto increment). |
+| `owner` | `INT UNSIGNED` | `ai_core_characters.id` of the planter (plants per character are counted by this). |
+| `x`, `y`, `z` | `FLOAT` | Where the plant stands. |
+| `planted_at` | `DATETIME` | When it was planted; growth and rot are counted from here. |
+
+<Callout type="warn">
+ai-drugs reads the table only at start and then keeps its plants in memory. A row inserted, changed or deleted by another resource while it runs is not seen until the next restart. Change plants only while ai-drugs is stopped.
+</Callout>
+
+## Police alerts
+
+A sale may send one alert (by the panel's **Police alert chance**) through the lib's `dispatch.alert`: code `10-31`, the "Suspicious hand-off reported" text, at the seller's position, icon `cannabis`, blip sprite 51 red. It reaches whichever alert script runs.
+
+## Money
+
+Sale money goes to the panel's **Money account** with the ledger reason `drugs:sale`.
+
+## Items
+
+The drugs strangers buy are the panel's **Drugs** list (`weed_bud`, `coke_baggy`, `meth_baggy` by default). To feed street sales from your own drug lab, give the player one of these items: ai-drugs sells whatever listed item the player carries.
+
+#### Example
+
+A lab script that turns 5 `weed_bud` into one `coke_baggy` (a made-up recipe):
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, onClientCallback, progressFor } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+onClientCallback("mylab:cook", async (source) => {
+  if (!inventory.hasItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  const done = await progressFor(source, { label: "Cooking", duration: 10_000 });
+  if (!done) return fail("LAB_ERR_CANCELLED");
+  if (!inventory.removeItem(source, "weed_bud", 5)) return fail("LAB_ERR_ITEMS");
+  inventory.addItem(source, "coke_baggy", 1);
+  notify(source, "You made a baggy", "success");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+RegisterNetEvent('mylab:cook', function()
+  local source = source
+  if not aiLib.inventory.hasItem(source, 'weed_bud', 5) then return end
+  CreateThread(function()
+    local done = aiLib.progressFor(source, { label = 'Cooking', duration = 10000 })
+    if not done then return end
+    if not aiLib.inventory.removeItem(source, 'weed_bud', 5) then return end
+    aiLib.inventory.addItem(source, 'coke_baggy', 1)
+    aiLib.notify(source, 'You made a baggy', 'success')
+  end)
+end)
+```
+</Tab>
+</Tabs>
+
+## Private events and callbacks
+
+The script's own contract (`resource/common/drugs.ts`). The server checks the buyer, the distance and the cooldowns on every call. They may change between versions: do not trigger or listen to them from other resources.
+
+| Name | Direction | What it carries |
+| --- | --- | --- |
+| `ai-drugs:sell` | client callback | `(buyerNetId)`: sell to the stranger next to the player; answers `{ ok, count, price }`. |
+| `ai-drugs:area` | client -> server | `(cellX, cellY)`: the player's plant cell changed. |
+| `ai-drugs:client:plants` | server -> player | `(reset, puts, removes, serverNow, growMinutes)`: the plants around the player (the 3x3 cells of 128 m around them, then changes). |
+| `ai-drugs:harvest` | client callback | `(plantId)`: harvest a ready plant, or destroy it (police). |

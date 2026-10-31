@@ -1,0 +1,170 @@
+---
+title: Lib for Lua
+description: "aiLib: how a Lua resource loads ai-lib, when to use a thread, how Lua vectors and tables cross into TypeScript, and where every function is documented."
+icon: FileCode
+---
+
+`aiLib` is the Lua version of `@aicore-fivem/lib`. It comes with the **ai-lib** resource and loads like ox_lib: one line in your manifest, then `aiLib.<name>` anywhere in your Lua files. It is a port written in Lua (not a wrapper around the JavaScript lib), and it speaks the same network formats as the TypeScript lib, so a Lua client and a TypeScript server (or the reverse) answer each other's callbacks.
+
+## Setup
+
+<Steps>
+<Step>
+### Add ai-lib to your manifest
+
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+`shared_script` loads it on both sides. `dependency` makes sure ai-lib starts before your resource.
+</Step>
+<Step>
+### Make sure ai-lib starts first
+
+In your server config, start ai-core and ai-lib (in the order ai-core's server template uses) before your resource. ai-core is needed for the helpers that go through it (players, money, items...):
+
+```ini title="server.cfg"
+ensure ai-core
+ensure ai-lib
+ensure my-resource
+```
+</Step>
+<Step>
+### Call aiLib
+
+```lua title="client.lua"
+RegisterCommand('hello', function()
+    aiLib.notify('Hello from aiLib', 'success')
+end, false)
+```
+
+```lua title="server.lua"
+aiLib.addCommand('hello', { help = 'Says hello' }, function(source)
+    aiLib.notify(source, 'Hello from aiLib', 'success')
+end)
+```
+</Step>
+</Steps>
+
+### How modules load
+
+`aiLib` starts almost empty. The first time you read `aiLib.notify` (or any other name), ai-lib loads that module from `lua/<side>/<name>.lua`, else `lua/shared/<name>.lua`, and keeps it. A name that does not exist on your side raises the error `ai-lib has no "<name>" on the client` (or `server`).
+
+The module runs **inside your resource**. Everything you create with it (points, zones, keybinds, commands, callbacks, blips) belongs to your resource and goes away when your resource stops. There is no registry to clean up.
+
+### aiLib.side
+
+Which side the code runs on.
+
+**Side:** Client and server · **Waits:** no
+
+```lua title="Lua"
+aiLib.side -- 'client' or 'server'
+```
+
+**TypeScript:** no twin (a TypeScript file is bundled for one side; `IsDuplicityVersion()` tells the server).
+
+#### Returns
+
+`'client'` or `'server'`.
+
+#### Example
+
+```lua title="shared.lua"
+if aiLib.side == 'server' then
+    print('loaded on the server')
+end
+```
+
+## Functions that wait
+
+Some functions wait for an answer: the server, the player, or the game. In Lua they pause your code until the answer comes (TypeScript returns a Promise instead). Pausing only works **inside a thread**:
+
+| Waits on the client | Waits on the server |
+| --- | --- |
+| `triggerServerCallback`, `callAction`, `progress`, `menu.show`, `input`, `itemPicker`, `skillCheck`, `lockpick`, `fadeOut`, `fadeIn`, `player.teleport`, `waitForEntity`, `waitFor`, the `request*` loaders, `pedHeadshot` | `triggerClientCallback`, `progressFor`, `minigameFor`, `spawnVehicle`, `billing.unpaid`, `appearance.get`, `waitFor` |
+
+Command handlers and net event handlers already run in their own thread. Anywhere else (a point's `onPressed`, a keybind, a menu listener, the main chunk of a file), start one:
+
+```lua title="client.lua"
+local points = aiLib.Points.new()
+points:add('shop', {
+    coords = vector3(25.7, -1347.3, 29.5),
+    label = 'Open shop',
+    icon = 'basket-shopping',
+    onPressed = function()
+        CreateThread(function()
+            local pick = aiLib.menu.show({ title = 'Shop', items = { { id = 'water', label = 'Water ($5)' } } })
+            if pick then aiLib.callAction('myshop:buy', { pick }, { fallback = 'BUY_FAILED' }) end
+        end)
+    end,
+})
+```
+
+<Callout type="error">
+Never wait inside an `aiLib.every` job: all jobs of your resource share one thread, so a `Wait` there holds every other job. Start a thread from the job instead.
+</Callout>
+
+## Lua vectors and tables
+
+Lua has real vector types (`vector3(x, y, z)`, `vector4(x, y, z, w)`) and plain tables (`{ x = 1.0, y = 2.0, z = 3.0 }`). Both have `.x`, `.y`, `.z`, so code that only reads those fields works with either.
+
+- **aiLib functions accept both.** Anywhere a page says `Vec3`, pass a `vector3` or a table with `x`, `y`, `z`. A `Vec4` is a `vector4` (heading in `w`) or a table with `x`, `y`, `z` and `heading` (or `w`).
+- **aiLib returns vectors where Lua expects them**: `aiLib.player.coords()` and `aiLib.raycast(...)` give `vector3`s, so `#(a - b)` works on them.
+- **Crossing into TypeScript, a vector becomes an array.** A `vector3` sent to an export or a callback of a TypeScript resource arrives as `[x, y, z]`. Only readers built for that (lib `readVec3` / `readVec4`) accept it. When you call an export of ai-core or another `ai-*` script with a point, pass a plain table: `{ x = pos.x, y = pos.y, z = pos.z }`. aiLib does this conversion itself where it hands a point over (the `face` of `progressFor`).
+
+```lua title="Lua"
+local pos = GetEntityCoords(PlayerPedId())          -- vector3
+local point = { x = pos.x, y = pos.y, z = pos.z }  -- safe for any export or callback
+```
+
+Other differences from the TypeScript pages:
+
+| TypeScript | Lua |
+| --- | --- |
+| `null`, `undefined` | `nil` |
+| Array `["a", "b"]` (index from 0) | List `{ 'a', 'b' }` (index from 1) |
+| `options.timeout` | `options.timeout` (same field names) |
+| Method `points.add(...)` | Method with a colon: `points:add(...)` |
+| Class `new Points()` | `aiLib.Points.new()` |
+| `Promise<T>` | The value itself, inside a thread |
+| `callback args: unknown[]` | A list: `{ id, count }`. A `nil` in the middle cuts the list, so put optional values last. |
+
+## Callbacks across languages
+
+`aiLib.triggerServerCallback` / `aiLib.onClientCallback` (and the reverse pair) use the same event names and payload as the TypeScript lib. A Lua client can call a TypeScript server's `onClientCallback`, and a TypeScript client can call a Lua server's `aiLib.onClientCallback`. Server actions answer the same [ActionResult](/docs/developers/api/types#actionresult) (`{ ok = true }` or `aiLib.fail('KEY')`), which `aiLib.callAction` shows for you.
+
+## JavaScript without a bundler
+
+A plain JavaScript resource (no build step) gets the same global `aiLib` with the TypeScript lib's `/shared` helpers plus the `/client` or `/server` ones:
+
+```lua title="fxmanifest.lua"
+dependency 'ai-lib'
+client_script '@ai-lib/dist/client.js'
+server_script '@ai-lib/dist/server.js'
+```
+
+```js title="client.js"
+aiLib.notify("Hello from JavaScript", "success");
+```
+
+Those functions match the TypeScript pages exactly (Promises, `null`, arrays).
+
+## Not on the Lua side
+
+These TypeScript helpers have no Lua twin: the admin panel (`AdminPanel`, `AdminWorld`, `RecordObjects`), `PendingActions`, `PlayerMap`, `Cooldowns`, `KeyedCooldowns` (a Lua table does it), the strict input readers (check with `type()` and `math.type()`), the position helpers (Lua has vector math), the state bag classes (Lua reads `Entity(e).state` itself; the server writes), the vehicle props readers, and the database helpers (Lua resources use ai-mysql's oxmysql API).
+
+## Pages
+
+<Cards>
+  <Card title="Lua-only helpers" href="/docs/developers/api/lua/reference" description="aiLib.playerData, aiLib.online, aiLib.isAdmin and the aiLib.menu table: the functions whose Lua form differs from TypeScript." />
+  <Card title="Every aiLib function" href="/docs/developers/api/lua/functions" description="The full list with side, whether it waits, and the page that documents it." />
+</Cards>

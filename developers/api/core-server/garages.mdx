@@ -1,0 +1,291 @@
+---
+title: Garages
+description: Impound and store vehicles, open a garage menu and list a player's garaged vehicles through whichever garage script the server runs.
+icon: Warehouse
+---
+
+Garage calls go through ai-core, never through a garage script's own exports or events (ai-garages included). ai-core forwards each call to the **active garage script**: the one the panel's **Garage script** setting picks, or the first one running (ai-garages, jg-advancedgarages, tgiann-realparking and the others in the compatibility list). Each script answers only the actions it really has, so any action can answer `false` or `null` with one script and work with another.
+
+A vehicle is a **server entity handle**.
+
+### GetGarageSystem
+
+The resource name of the garage script ai-core forwards to.
+
+**Side:** Server · **Waits:** no · **Lib:** [`garages.provider()`](/docs/developers/api/lib-server/vehicles#garagesprovider)
+
+```ts title="Signature"
+GetGarageSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetGarageSystem() -- string or nil
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`string | null`: the garage script's resource name. `null` when none runs.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("garagesystem", { help: "Shows the garage script in use", restricted: true }, () => {
+  console.log(core.GetGarageSystem() ?? "none");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('garagesystem', { help = 'Shows the garage script in use', restricted = true }, function()
+  print(exports['ai-core']:GetGarageSystem() or 'none')
+end)
+```
+</Tab>
+</Tabs>
+
+### ImpoundVehicle
+
+Sends a vehicle in the world to the impound. With garage scripts that only have an impound form on the player's screen, it opens that form for the player in `by` instead.
+
+**Side:** Server · **Waits:** no · **Lib:** [`garages.impound`](/docs/developers/api/lib-server/vehicles#garagesimpound)
+
+```ts title="Signature"
+ImpoundVehicle(vehicle: number, by?: number): boolean
+```
+
+```lua title="Lua"
+local taken = exports['ai-core']:ImpoundVehicle(vehicle, source)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Server entity handle of the vehicle.', required: true },
+    by: { type: 'number', description: 'Server id of the player who impounds it (an officer). Needed by scripts with an impound form; ignored when not online.' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the garage script took the vehicle over (or opened its form). `false` when nothing took it: no garage script runs, it has no impound, the vehicle is not one it knows, or `vehicle` is not an existing vehicle. On `false` the vehicle is still in the world: delete it yourself if it must go.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, vehicleNearPlayer } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:impound", { args: oneArg(readId) }, (source, netId) => {
+  if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+  const vehicle = vehicleNearPlayer(source, netId, { metres: 5 });
+  if (!vehicle) return fail("TOO_FAR");
+  if (!core.ImpoundVehicle(vehicle, source)) DeleteEntity(vehicle);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:impound', function(source, netId)
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 5 })
+  if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:ImpoundVehicle(vehicle, source) then DeleteEntity(vehicle) end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### StoreVehicleInGarage
+
+Puts a vehicle in the world into a garage, with its condition.
+
+**Side:** Server · **Waits:** no · **Lib:** [`garages.store`](/docs/developers/api/lib-server/vehicles#garagesstore)
+
+```ts title="Signature"
+StoreVehicleInGarage(vehicle: number, garage?: string | null, by?: number): boolean
+```
+
+```lua title="Lua"
+local stored = exports['ai-core']:StoreVehicleInGarage(vehicle, 'legion', source)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Server entity handle of the vehicle.', required: true },
+    garage: { type: 'string | null', description: 'The garage script garage id. `null` or left out: the script picks.', default: 'null' },
+    by: { type: 'number', description: 'Server id of the player who stores it. Scripts with a client API act on this player game; ignored when not online.' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the garage script took the vehicle. `false` when nothing took it (no garage script, no store action, unknown garage, a vehicle the script does not own) or `vehicle` is not an existing vehicle.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, vehicleOf } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// A valet stores the car the player is driving into the nearest garage.
+onClientCallback("myscript:valetStore", (source) => {
+  const vehicle = vehicleOf(source, { driver: true });
+  if (!vehicle) return fail("NOT_DRIVING");
+  return core.StoreVehicleInGarage(vehicle, null, source) ? { ok: true } : fail("STORE_FAILED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:valetStore', function(source)
+  local ped = GetPlayerPed(source)
+  local vehicle = GetVehiclePedIsIn(ped, false)
+  if vehicle == 0 or GetPedInVehicleSeat(vehicle, -1) ~= ped then return aiLib.fail('NOT_DRIVING') end
+  if not exports['ai-core']:StoreVehicleInGarage(vehicle, nil, source) then return aiLib.fail('STORE_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### OpenGarage
+
+Opens the active garage script's garage menu for a player.
+
+**Side:** Server · **Waits:** no · **Lib:** [`garages.open`](/docs/developers/api/lib-server/vehicles#garagesopen)
+
+```ts title="Signature"
+OpenGarage(source: number, garage?: string | null): boolean
+```
+
+```lua title="Lua"
+local opened = exports['ai-core']:OpenGarage(source, 'legion')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player.', required: true },
+    garage: { type: 'string | null', description: 'The garage script garage id. `null` or left out: the script default.', default: 'null' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the menu opened. `false` when the player is not online, no garage script runs or it has no menu that can be opened from outside.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const MOTEL_GARAGE = { x: 273.1, y: -343.9, z: 44.9 };
+
+onClientCallback("myscript:motelGarage", { guards: [near(MOTEL_GARAGE, 3)] }, (source) =>
+  core.OpenGarage(source, "motel") ? { ok: true } : fail("GARAGE_FAILED"),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local MOTEL_GARAGE = vector3(273.1, -343.9, 44.9)
+
+aiLib.onClientCallback('myscript:motelGarage', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - MOTEL_GARAGE) > 3.0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:OpenGarage(source, 'motel') then return aiLib.fail('GARAGE_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetGaragedVehicles
+
+A player's vehicles kept by the garage script: in a garage or in the impound.
+
+**Side:** Server · **Waits:** no (answers through `done`) · **Lib:** [`garages.stored(source)`](/docs/developers/api/lib-server/vehicles#garagesstored) returns a Promise
+
+```ts title="Signature"
+GetGaragedVehicles(source: number, done: (vehicles: GaragedVehicle[] | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetGaragedVehicles(source, function(vehicles) end) -- list or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the player.', required: true },
+    done: { type: '(vehicles) => void', description: 'Called once with the answer, after the garage script answered.', required: true, typeDescription: '(vehicles: GaragedVehicle[] | null) => void' },
+  }}
+/>
+
+#### Returns
+
+Nothing. `done` gets one entry per vehicle with `plate`, `model` (or `null`), `garage` (or `null`) and `impounded` ([GaragedVehicle](/docs/developers/api/types#garagedvehicle)), or `null` when the player is not online, no garage script runs, it cannot list vehicles or it failed. Without a function as `done` the call does nothing.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import type { GaragedVehicle } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// The impound desk lists the player's impounded cars.
+onClientCallback("myscript:impoundList", async (source) => {
+  const list = await new Promise<GaragedVehicle[] | null>((resolve) => core.GetGaragedVehicles(source, resolve));
+  if (!list) return fail("GARAGE_UNKNOWN");
+  return { ok: true, plates: list.filter((v) => v.impounded).map((v) => v.plate) };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:impoundList', function(source)
+  local p = promise.new()
+  exports['ai-core']:GetGaragedVehicles(source, function(list) p:resolve(list or false) end)
+  local list = Citizen.Await(p)
+  if not list then return aiLib.fail('GARAGE_UNKNOWN') end
+  local plates = {}
+  for _, v in ipairs(list) do
+    if v.impounded then plates[#plates + 1] = v.plate end
+  end
+  return { ok = true, plates = plates }
+end)
+```
+</Tab>
+</Tabs>

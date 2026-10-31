@@ -1,0 +1,297 @@
+---
+title: Money and banking
+description: "money.transfer between two accounts, the banking script through ai-core, and bills through whatever billing script runs."
+icon: Wallet
+---
+
+```ts title="TypeScript"
+import { money, banking, billing } from "@aicore-fivem/lib/server";
+```
+
+A player's single account changes (add, remove, read a balance) are ai-core's exports (`AddMoney`, `RemoveMoney`, `GetMoney`; see [ai-core server exports](/docs/developers/api/core-server)). The lib adds what needs more than one account change, and the banking and billing layers.
+
+## money
+
+### money.transfer
+
+Moves money from one account to another in one database transaction, with a ledger row on both sides. Use it for anything where money must not appear or vanish half way: paying another player, a job paying a bonus, a fee.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+No Lua twin: call ai-core's export `exports['ai-core']:TransferMoney(from, to, amount, reason, fee)`.
+
+#### Parameters
+
+<TypeTable
+  type={{
+    from: { type: "MoneyRef", typeDescriptionLink: "/docs/developers/api/types#moneyref", description: "The paying account: a player’s `{ source, account }` (`account`: `cash`, `bank`...) or a job’s / gang’s `{ owner: \"job\" | \"gang\", id, account }`.", required: true },
+    to: { type: "MoneyRef", typeDescriptionLink: "/docs/developers/api/types#moneyref", description: "The receiving account, same shape.", required: true },
+    amount: { type: "number", description: "How much `to` receives: a whole number, 1 or more.", required: true },
+    reason: { type: "string", description: "Written to both ledger rows (`rent:apartment_3`).", required: false },
+    fee: { type: "number", description: "Extra whole amount `from` also pays. It leaves the economy (nobody receives it).", default: "0" },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when both rows were written. `false` when an amount is not a whole number, an account is missing, both are the same, or `from` cannot pay `amount` plus `fee`.
+
+#### Example
+
+```ts
+import { onClientCallback, money, nearestPlayerTo, notify } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt } from "@aicore-fivem/lib/shared";
+
+onClientCallback("my-cash:give", { args: oneArg((v) => readInt(v, 1, 100_000)), lock: true }, (source, amount) => {
+  const target = nearestPlayerTo(source, 2);
+  if (target === null) return fail("NOBODY_NEAR");
+  if (!money.transfer({ source, account: "cash" }, { source: target, account: "cash" }, amount, "give:cash"))
+    return fail("NOT_ENOUGH_CASH");
+  notify(target, `You received $${amount}`, "success");
+  return { ok: true };
+});
+```
+
+## banking
+
+`banking` talks to the banking script through ai-core's banking layer. Job money itself always moves through `money` or ai-core's exports.
+
+### banking.open
+
+Opens the banking script's screen for a player.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+banking.open(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.banking.open(source)
+```
+
+**Returns** `true` when opened. `false` when the script cannot be opened from outside or none runs.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onClientCallback("my-atm:open", (source) => (banking.open(source) ? { ok: true } : fail("BANK_UNAVAILABLE")));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-atm:open', function(source)
+    if not aiLib.banking.open(source) then return aiLib.fail('BANK_UNAVAILABLE') end
+    return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### banking.societyBalance
+
+A job's society balance, for display. In ai-core's `core` account mode it is ai-core's job account; in `own` mode the banking script's own.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+banking.societyBalance(job: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.banking.societyBalance(job) -- number or nil
+```
+
+**Returns** the balance, or `null` (Lua `nil`) when none runs or the script keeps none.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const balance = banking.societyBalance("mechanic") ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local balance = aiLib.banking.societyBalance('mechanic') or 0
+```
+</Tab>
+</Tabs>
+
+### banking.provider
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+banking.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.banking.provider()
+```
+
+**Returns** the banking script the layer uses, or `null`.
+
+```ts
+console.log(`banking through ${banking.provider() ?? "nothing"}`);
+```
+
+## billing
+
+`billing` sends bills through whatever billing script runs; without one, ai-core's own bills (the player pays from a list on screen, the money moves when they pay). Texts are already translated.
+
+### billing.send
+
+Sends a bill from a job (fines, service fees) or from a player.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+billing.send(bill: BillRequest): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.send(bill)
+```
+
+#### BillRequest
+
+<TypeTable
+  type={{
+    to: { type: "number", description: "Server id of the player who gets it. Give `to` or `toCitizenid`.", required: false },
+    toCitizenid: { type: "string", description: "The character who gets it, by citizen id, online or offline. An offline character only gets it from ai-core’s own bills; a billing script needs the player online.", required: false },
+    amount: { type: "number", description: "Whole dollars.", required: true },
+    label: { type: "string", description: "What it is for (`Speeding`).", required: true },
+    from: { type: "number", description: "Server id of the issuing player (officer, mechanic). A bill without `job` pays this player.", required: false },
+    job: { type: "string", description: "The job whose account gets the payment. Without it the bill is personal and `from` is required.", required: false },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when sent, `false` when invalid or refused.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { billing, nearestPlayerTo, online } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+function fine(officer: number, amount: number) {
+  if (!online.onDutyIn(officer, ["police"])) return fail("NOT_ON_DUTY");
+  const target = nearestPlayerTo(officer, 3);
+  if (target === null) return fail("NOBODY_NEAR");
+  return billing.send({ to: target, amount, label: "Speeding", from: officer, job: "police" })
+    ? { ok: true }
+    : fail("BILL_FAILED");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function fine(officer, amount)
+    if aiLib.online.dutyJob(officer) ~= 'police' then return aiLib.fail('NOT_ON_DUTY') end
+    local target = aiLib.nearestPlayerTo(officer, 3.0)
+    if not target then return aiLib.fail('NOBODY_NEAR') end
+    if not aiLib.billing.send({ to = target, amount = amount, label = 'Speeding', from = officer, job = 'police' }) then
+        return aiLib.fail('BILL_FAILED')
+    end
+    return { ok = true }
+end
+```
+</Tab>
+</Tabs>
+
+### billing.unpaid
+
+The player's open bills.
+
+**Side:** Server · **Waits:** yes (Promise in TypeScript, yields the thread in Lua)
+
+```ts title="Signature"
+billing.unpaid(source: number): Promise<UnpaidBill[] | null>
+```
+
+```lua title="Lua"
+local bills = aiLib.billing.unpaid(source) -- table[] or nil, call inside a thread
+```
+
+**Returns** [`UnpaidBill[]`](/docs/developers/api/types#unpaidbill) (`id`, `label`, `amount` still owed, `sender`), or `null` when the billing script cannot list them.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const bills = await billing.unpaid(source);
+const owed = bills?.reduce((sum, bill) => sum + bill.amount, 0) ?? 0;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local bills = aiLib.billing.unpaid(source) or {}
+    local owed = 0
+    for _, bill in ipairs(bills) do owed = owed + bill.amount end
+    print(owed)
+end)
+```
+</Tab>
+</Tabs>
+
+### billing.pay
+
+The player pays one of their open bills.
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+billing.pay(source: number, id: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.billing.pay(source, id)
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Server id of the paying player.", required: true },
+    id: { type: "string", description: "The bill `id` from `unpaid`.", required: true },
+  }}
+/>
+
+**Returns** `true` when paid. `false` when refused (not enough money, unknown bill) or the billing script takes payments only in its own screen.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (!billing.pay(source, billId)) return fail("PAY_FAILED");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if not aiLib.billing.pay(source, billId) then return aiLib.fail('PAY_FAILED') end
+```
+</Tab>
+</Tabs>
+
+### billing.provider
+
+**Side:** Server · **Waits:** no
+
+```ts title="Signature"
+billing.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.billing.provider()
+```
+
+**Returns** the billing script bills go to, `"ai-core"` for ai-core's own bills.
+
+```ts
+if (billing.provider() === "ai-core") console.log("using ai-core's own bills");
+```

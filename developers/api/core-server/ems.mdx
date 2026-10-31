@@ -1,0 +1,191 @@
+---
+title: EMS
+description: How many medics are free to take a call, and distress calls of downed players, through whichever EMS script runs or ai-core itself.
+icon: Ambulance
+---
+
+The EMS layer answers two questions for any script: "how many medics can take a call?" and "send the medics a distress call". ai-core asks the **EMS source** the panel's **EMS source** setting picks, or the first EMS script running. What that script cannot answer, ai-core answers itself: free medics from its own on-duty counts, and a distress call as a high-priority alert to the jobs through the [dispatch layer](/docs/developers/api/core-server/dispatch).
+
+### GetEmsSystem
+
+The EMS source in use.
+
+**Side:** Server · **Waits:** no · **Lib:** [`ems.provider()`](/docs/developers/api/lib-server/jobs#emsprovider)
+
+```ts title="Signature"
+GetEmsSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetEmsSystem() -- 'ai-core' or a script name
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`string | null`: the EMS script's resource name, or `"ai-core"` when ai-core's own part answers (no EMS script runs). ai-core's own part is always there, so in practice this is never `null`.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("emssystem", { help: "Shows the EMS source", restricted: true }, () => {
+  console.log(core.GetEmsSystem());
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('emssystem', { help = 'Shows the EMS source', restricted = true }, function()
+  print(exports['ai-core']:GetEmsSystem())
+end)
+```
+</Tab>
+</Tabs>
+
+### GetAvailableMedics
+
+How many medics in the given jobs can take a call now. An EMS script with a dispatch of its own leaves busy medics out; ai-core's own answer is everyone on duty.
+
+**Side:** Server · **Waits:** no · **Lib:** [`ems.available`](/docs/developers/api/lib-server/jobs#emsavailable)
+
+```ts title="Signature"
+GetAvailableMedics(jobs: string[]): number
+```
+
+```lua title="Lua"
+local medics = exports['ai-core']:GetAvailableMedics({ 'ambulance' })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Job names that count as medics (`ambulance`). Only the first 10 texts are used.', required: true },
+  }}
+/>
+
+#### Returns
+
+`number`: free medics. `0` for none, an empty list or a value that is not a list. When the EMS script fails, ai-core's own on-duty count answers.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const EMS_JOBS = ["ambulance"];
+
+// The "respawn at hospital" button only works while no medic can come.
+onClientCallback("myscript:respawn", (source) => {
+  if (!core.IsPlayerDead(source)) return fail("NOT_DOWN");
+  if (core.GetAvailableMedics(EMS_JOBS) > 0) return fail("MEDICS_AVAILABLE");
+  // ... move the player to the hospital and revive
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local EMS_JOBS = { 'ambulance' }
+
+aiLib.onClientCallback('myscript:respawn', function(source)
+  if not exports['ai-core']:IsPlayerDead(source) then return aiLib.fail('NOT_DOWN') end
+  if exports['ai-core']:GetAvailableMedics(EMS_JOBS) > 0 then return aiLib.fail('MEDICS_AVAILABLE') end
+  -- ... move the player to the hospital and revive
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### SendDistress
+
+Sends a downed player's distress call to the medics. With an EMS script that takes calls, the call goes there; otherwise ai-core sends a high-priority alert (code `10-52`, a medical kit icon, the player's position) to the on-duty members of `jobs` through the active alert system.
+
+**Side:** Server · **Waits:** no · **Lib:** [`ems.distress`](/docs/developers/api/lib-server/jobs#emsdistress)
+
+```ts title="Signature"
+SendDistress(source: number, call: DistressCall): boolean
+```
+
+```lua title="Lua"
+local sent = exports['ai-core']:SendDistress(source, { jobs = { 'ambulance' }, message = 'Unconscious' })
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Server id of the downed player.', required: true },
+    call: { type: 'DistressCall', description: 'Who gets it and an optional extra line. Fields below.', required: true },
+  }}
+/>
+
+#### DistressCall
+
+<TypeTable
+  type={{
+    jobs: { type: 'string[]', description: 'Jobs whose on-duty members get it. At least one; only the first 10 are used.', required: true },
+    message: { type: 'string', description: 'One more line, already translated (`Unconscious`). Cut to 160 characters.' },
+  }}
+/>
+
+See [DistressCall](/docs/developers/api/types#distresscall).
+
+#### Returns
+
+`boolean`: `true` when something took the call. `false` when the player is not online, `jobs` is empty, the EMS script refused it, or ai-core's own alert found no alert system running.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, Cooldowns, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const cooldowns = new Cooldowns();
+
+// The "call a medic" button on the death screen, once per minute.
+onClientCallback("myscript:distress", (source) => {
+  if (!core.IsPlayerDead(source)) return fail("NOT_DOWN");
+  if (!cooldowns.take(source, 60_000)) return fail("WAIT");
+  const sent = core.SendDistress(source, { jobs: ["ambulance"], message: Locale("DISTRESS_UNCONSCIOUS") });
+  return sent ? { ok: true } : fail("NO_MEDICS");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local lastCall = {}
+
+aiLib.onClientCallback('myscript:distress', function(source)
+  if not exports['ai-core']:IsPlayerDead(source) then return aiLib.fail('NOT_DOWN') end
+  local now = GetGameTimer()
+  if lastCall[source] and now - lastCall[source] < 60000 then return aiLib.fail('WAIT') end
+  lastCall[source] = now
+  local sent = exports['ai-core']:SendDistress(source, { jobs = { 'ambulance' }, message = Locale('DISTRESS_UNCONSCIOUS') })
+  if not sent then return aiLib.fail('NO_MEDICS') end
+  return { ok = true }
+end)
+
+AddEventHandler('playerDropped', function() lastCall[source] = nil end)
+```
+</Tab>
+</Tabs>

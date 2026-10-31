@@ -1,0 +1,963 @@
+---
+title: Jobs and gangs
+description: Read and change a character's jobs, gangs, grades and duty, count players on duty, prime time, read job and gang definitions.
+icon: Briefcase
+---
+
+A character can hold **several jobs and several gangs** (up to the panel's **Most jobs per character** and **Most gangs per character**). At most **one job is on duty** at a time, and only that job pays a salary. At most **one gang is active**. Jobs and gangs, with their grades, are defined in the admin panel (Jobs and Gangs sections).
+
+A **grade** is a position in the job's grade list, counted from 0: grade 0 is the first row in the panel, grade 1 the second, and so on.
+
+Every change fires a server event (`ai-core:jobsChanged`, `ai-core:dutyChanged`, `ai-core:gangsChanged`, `ai-core:activeGangChanged`) and reaches the player's own game. Resources that need jobs of many players follow these events through the lib's `online` mirror instead of calling the exports below for each player. See [Events and state](/docs/developers/api/events).
+
+### GetJobs
+
+Every job membership of a player's character.
+
+**Side:** Server · **Waits:** no · **Lib:** [`online.jobs(source)`](/docs/developers/api/lib-server/players#onlinejobs) reads the same from the lib's mirror
+
+```ts title="Signature"
+GetJobs(src: number): JobMembership[] | null
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetJobs(source) -- list of { job, grade } or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`JobMembership[] | null`: one `{ job, grade }` per job ([JobMembership](/docs/developers/api/types#jobmembership)). An empty list when the character has no job (the panel's unemployed job is never stored). `null` when the player has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// A job center screen lists the player's jobs with their labels.
+onClientCallback("myscript:myJobs", (source) => {
+  const jobs = core.GetJobs(source);
+  if (!jobs) return fail("NO_CHARACTER");
+  return {
+    ok: true,
+    jobs: jobs.map(({ job, grade }) => ({
+      job,
+      label: core.GetJobDefinition(job)?.label ?? job,
+      grade,
+    })),
+  };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:myJobs', function(source)
+  local jobs = exports['ai-core']:GetJobs(source)
+  if not jobs then return aiLib.fail('NO_CHARACTER') end
+  local rows = {}
+  for _, m in ipairs(jobs) do
+    local def = exports['ai-core']:GetJobDefinition(m.job)
+    rows[#rows + 1] = { job = m.job, label = def and def.label or m.job, grade = m.grade }
+  end
+  return { ok = true, jobs = rows }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetCurrentJob
+
+The one job other scripts should treat as "the" job of the player: the on-duty job, else the last job the player was on duty for, else the first job, else the panel's unemployed job. ESX and QB scripts see this job through the bridge.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+GetCurrentJob(src: number): JobMembership | null
+```
+
+```lua title="Lua"
+local job = exports['ai-core']:GetCurrentJob(source) -- { job, grade } or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`JobMembership | null`: `{ job, grade }`. For a character without any job it is the unemployed job (panel setting, `unemployed` by default) with grade 0. `null` only when the player has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("job", { help: "Shows a player job", params: [{ name: "id", type: "playerId" }], restricted: true }, (_source, args) => {
+  const job = core.GetCurrentJob(args.id);
+  if (job) console.log(`${job.job} grade ${job.grade}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('job', { help = 'Shows a player job', params = { { name = 'id', type = 'playerId' } }, restricted = true }, function(_, args)
+  local job = exports['ai-core']:GetCurrentJob(args.id)
+  if job then print(('%s grade %d'):format(job.job, job.grade)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### GetDutyJob
+
+The job the player is on duty for right now. Use it for every "only on-duty police may do this" check.
+
+**Side:** Server · **Waits:** no · **Lib:** [`online.dutyJob(source)`](/docs/developers/api/lib-server/players#onlinedutyjob) reads the same from the lib's mirror
+
+```ts title="Signature"
+GetDutyJob(src: number): string | null
+```
+
+```lua title="Lua"
+local job = exports['ai-core']:GetDutyJob(source) -- job name or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`string | null`: the job name. `null` when the player is off duty or has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:openArmory", (source) => {
+  if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:openArmory', function(source)
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### SetDuty
+
+Puts a player on duty for one of their jobs (and off duty in any other), or off duty.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+SetDuty(src: number, job: string | null): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetDuty(source, 'police') -- nil = off duty
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+    job: { type: 'string | null', description: 'The job to go on duty for (the player must hold it), or `null` (Lua `nil`) to go off duty.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the player is now on duty for `job` (or off duty for `null`), also when nothing had to change. `false` when the player does not hold `job` or has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const LOCKER_ROOM = { x: 452.3, y: -993.2, z: 30.7 };
+
+// A duty toggle at the station's locker room.
+onClientCallback("myscript:toggleDuty", { guards: [near(LOCKER_ROOM, 3)] }, (source) => {
+  const onDuty = core.GetDutyJob(source) === "police";
+  return core.SetDuty(source, onDuty ? null : "police") ? { ok: true, onDuty: !onDuty } : fail("NOT_POLICE");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local LOCKER_ROOM = vector3(452.3, -993.2, 30.7)
+
+aiLib.onClientCallback('myscript:toggleDuty', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - LOCKER_ROOM) > 3.0 then return aiLib.fail('TOO_FAR') end
+  local onDuty = exports['ai-core']:GetDutyJob(source) == 'police'
+  if not exports['ai-core']:SetDuty(source, (not onDuty) and 'police' or nil) then return aiLib.fail('NOT_POLICE') end
+  return { ok = true, onDuty = not onDuty }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Duty is not saved: a player who joins is off duty, unless the panel's **Keep duty after rejoining** setting is on.
+</Callout>
+
+### SetJob
+
+Gives a player a job, or changes the grade of a job they already hold.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+SetJob(src: number, job: string, grade: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetJob(source, 'mechanic', 0)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+    job: { type: 'string', description: 'Job name from the panel (`police`, `mechanic`).', required: true },
+    grade: { type: 'number', description: 'Grade index, counted from 0. Must exist in the job grade list.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the character now holds `job` at `grade`. `false` when the job does not exist, the grade does not exist (not a whole number, below 0 or past the last grade), the character already holds as many jobs as **Most jobs per character** allows, or the player has no loaded character.
+
+When the panel's **Several jobs per character** setting is off, a new job replaces the character's other job.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// A job center: anyone may take a job the panel lists, at grade 0.
+onClientCallback(
+  "myscript:takeJob",
+  { args: ([job]) => { const name = readText(job, 32); return name ? [name] : null; } },
+  (source, job) => {
+    if (!core.GetJobDefinition(job)?.listed) return fail("JOB_NOT_LISTED");
+    return core.SetJob(source, job, 0) ? { ok: true } : fail("JOB_LIMIT");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:takeJob', function(source, job)
+  if type(job) ~= 'string' then return aiLib.fail('BAD_JOB') end
+  local def = exports['ai-core']:GetJobDefinition(job)
+  if not def or not def.listed then return aiLib.fail('JOB_NOT_LISTED') end
+  if not exports['ai-core']:SetJob(source, job, 0) then return aiLib.fail('JOB_LIMIT') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### RemoveJob
+
+Takes a job away from a player. A player on duty for that job goes off duty first.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+RemoveJob(src: number, job: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RemoveJob(source, 'mechanic')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+    job: { type: 'string', description: 'Job name to remove.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the job was removed. `false` when the character does not hold it or the player has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "myscript:quitJob",
+  { args: ([job]) => { const name = readText(job, 32); return name ? [name] : null; } },
+  (source, job) => (core.RemoveJob(source, job) ? { ok: true } : fail("NOT_MEMBER")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:quitJob', function(source, job)
+  if type(job) ~= 'string' or not exports['ai-core']:RemoveJob(source, job) then return aiLib.fail('NOT_MEMBER') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetOnDutyCount
+
+How many players are on duty for a job right now. Use it for "needs 2 police online" rules.
+
+**Side:** Server · **Waits:** no · **Lib:** none ([`online.countOnDuty(jobs)`](/docs/developers/api/lib-server/players#onlinecountonduty) counts several jobs from the lib's mirror)
+
+```ts title="Signature"
+GetOnDutyCount(job: string): number
+```
+
+```lua title="Lua"
+local officers = exports['ai-core']:GetOnDutyCount('police')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Job name.', required: true },
+  }}
+/>
+
+#### Returns
+
+`number`: players on duty for `job`. `0` for nobody or an unknown job. The same number is in GlobalState `ai:duty:<job>` for client scripts.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const POLICE_NEEDED = 2;
+
+onClientCallback("myscript:startRobbery", { lock: true }, (source) => {
+  if (core.GetOnDutyCount("police") < POLICE_NEEDED) return fail("NOT_ENOUGH_POLICE");
+  // ... start the robbery
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local POLICE_NEEDED = 2
+
+aiLib.onClientCallback('myscript:startRobbery', function(source)
+  if exports['ai-core']:GetOnDutyCount('police') < POLICE_NEEDED then return aiLib.fail('NOT_ENOUGH_POLICE') end
+  -- ... start the robbery
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### IsPrimeTime
+
+Whether it is prime time for a job now. Prime time hours come from the source the panel picks: a script that keeps its own hours (tgiann-policealert) while it runs, else ai-core's own hours (the job's own window or the default one). Use it for rules that change with the busy hours, like a robbery that pays more.
+
+**Side:** Server · **Waits:** no · **Lib:** [`isPrimeTime(job?)`](/docs/developers/api/lib-server/jobs#isprimetime)
+
+```ts title="Signature"
+IsPrimeTime(job?: string): boolean
+```
+
+```lua title="Lua"
+local prime = exports['ai-core']:IsPrimeTime('police')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Job name. Without it (or with an empty text) the default hours are checked.' },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` during prime time. Hours are the server's local time; a window whose start is later than its end runs past midnight, and the same start and end means the whole day. When the panel picks a script as the source and that script is stopped, every hour counts as prime time. It works whether or not the paycheck's prime time cut is on.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** A store robbery pays 50% more outside police prime time. */
+export function robberyReward(base: number): number {
+  return core.IsPrimeTime("police") ? base : Math.round(base * 1.5);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function RobberyReward(base)
+  if exports['ai-core']:IsPrimeTime('police') then return base end
+  return math.floor(base * 1.5 + 0.5)
+end
+```
+</Tab>
+</Tabs>
+
+### GetJobDefinitions
+
+Every job definition from the panel, as one copy. Use it for rare reads such as building a list once; for one job use `GetJobDefinition`.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+GetJobDefinitions(): Record<string, JobDefinition>
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetJobDefinitions() -- table keyed by job name
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`Record<string, JobDefinition>`: every job keyed by name. Each has `label`, `type`, `defaultDuty`, `listed` (shown in job centers) and `grades` (each with `label`, `salary` and `boss`). See [JobDefinition](/docs/developers/api/types#jobdefinition) and [GradeDefinition](/docs/developers/api/types#gradedefinition).
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// The job center lists every job marked "listed" in the panel.
+onClientCallback("myscript:jobCenter", () => ({
+  ok: true,
+  jobs: Object.entries(core.GetJobDefinitions())
+    .filter(([, def]) => def.listed)
+    .map(([name, def]) => ({ name, label: def.label, salary: def.grades[0]?.salary ?? 0 })),
+}));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:jobCenter', function()
+  local list = {}
+  for name, def in pairs(exports['ai-core']:GetJobDefinitions()) do
+    if def.listed then
+      list[#list + 1] = { name = name, label = def.label, salary = def.grades[1] and def.grades[1].salary or 0 }
+    end
+  end
+  return { ok = true, jobs = list }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+In Lua, `def.grades[1]` is grade 0: Lua lists start at 1, grades start at 0.
+</Callout>
+
+### GetJobDefinition
+
+One job's definition: label, type, default duty, whether job centers list it, and its grades.
+
+**Side:** Server · **Waits:** no · **Lib:** [`definitions.job(name)`](/docs/developers/api/lib-server/jobs#definitionsjob) (reads each job once and forgets it when the panel changes it)
+
+```ts title="Signature"
+GetJobDefinition(job: string): JobDefinition | null
+```
+
+```lua title="Lua"
+local def = exports['ai-core']:GetJobDefinition('police') -- table or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Job name.', required: true },
+  }}
+/>
+
+#### Returns
+
+`JobDefinition | null`: the job ([JobDefinition](/docs/developers/api/types#jobdefinition)). `null` for an unknown job or a value that is not a text.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, online, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Only a boss grade may open the boss menu.
+onClientCallback("myscript:bossMenu", (source) => {
+  const job = online.dutyJob(source);
+  const grade = job ? online.jobGrade(source, job) : null;
+  if (!job || grade === null) return fail("NOT_ON_DUTY");
+  if (!core.GetJobDefinition(job)?.grades[grade]?.boss) return fail("NOT_BOSS");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:bossMenu', function(source)
+  local job = exports['ai-core']:GetCurrentJob(source)
+  if not job or exports['ai-core']:GetDutyJob(source) ~= job.job then return aiLib.fail('NOT_ON_DUTY') end
+  local def = exports['ai-core']:GetJobDefinition(job.job)
+  local grade = def and def.grades[job.grade + 1]
+  if not grade or not grade.boss then return aiLib.fail('NOT_BOSS') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetGangs
+
+Every gang membership of a player's character.
+
+**Side:** Server · **Waits:** no · **Lib:** [`online.gangs(source)`](/docs/developers/api/lib-server/players#onlinegangs) reads the same from the lib's mirror
+
+```ts title="Signature"
+GetGangs(src: number): GangMembership[] | null
+```
+
+```lua title="Lua"
+local gangs = exports['ai-core']:GetGangs(source) -- list of { gang, grade } or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`GangMembership[] | null`: one `{ gang, grade }` per gang ([GangMembership](/docs/developers/api/types#gangmembership)). An empty list without gangs. `null` when the player has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Whether a player belongs to any gang (active or not). */
+export function inAnyGang(source: number): boolean {
+  return (core.GetGangs(source)?.length ?? 0) > 0;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function InAnyGang(source)
+  local gangs = exports['ai-core']:GetGangs(source)
+  return gangs ~= nil and #gangs > 0
+end
+```
+</Tab>
+</Tabs>
+
+### GetActiveGang
+
+The gang the player has active right now. Gang territory, gang stashes and gang chats should use the active gang.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+GetActiveGang(src: number): string | null
+```
+
+```lua title="Lua"
+local gang = exports['ai-core']:GetActiveGang(source) -- gang name or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+  }}
+/>
+
+#### Returns
+
+`string | null`: the gang name. `null` when no gang is active or the player has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, inventory, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:gangStash", (source) => {
+  const gang = core.GetActiveGang(source);
+  if (!gang) return fail("NO_GANG");
+  return inventory.openInventory(source, `gang_${gang}`) ? { ok: true } : fail("STASH_FAILED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:gangStash', function(source)
+  local gang = exports['ai-core']:GetActiveGang(source)
+  if not gang then return aiLib.fail('NO_GANG') end
+  if not exports['ai-core']:OpenInventory(source, 'gang_' .. gang) then return aiLib.fail('STASH_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### SetGang
+
+Adds a player to a gang, or changes their grade in a gang they belong to. A character without an active gang gets the new gang as active.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+SetGang(src: number, gang: string, grade: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetGang(source, 'ballas', 0)
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+    gang: { type: 'string', description: 'Gang name from the panel.', required: true },
+    grade: { type: 'number', description: 'Grade index, counted from 0. Must exist in the gang grade list.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the character now belongs to `gang` at `grade`. `false` when the gang or grade does not exist, the character already belongs to as many gangs as **Most gangs per character** allows, or the player has no loaded character. When the panel's **Several gangs per character** setting is off, the new gang replaces the old one.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("setgang", {
+  help: "Adds a player to a gang",
+  params: [{ name: "id", type: "playerId" }, { name: "gang", type: "string" }, { name: "grade", type: "number" }],
+  restricted: true,
+}, (_source, args) => {
+  console.log(core.SetGang(args.id, args.gang, args.grade) ? "done" : "refused");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('setgang', {
+  help = 'Adds a player to a gang',
+  params = { { name = 'id', type = 'playerId' }, { name = 'gang', type = 'string' }, { name = 'grade', type = 'number' } },
+  restricted = true,
+}, function(_, args)
+  print(exports['ai-core']:SetGang(args.id, args.gang, args.grade) and 'done' or 'refused')
+end)
+```
+</Tab>
+</Tabs>
+
+### RemoveGang
+
+Removes a player from a gang. When it was the active gang, the next remaining gang becomes active (or none).
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+RemoveGang(src: number, gang: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RemoveGang(source, 'ballas')
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+    gang: { type: 'string', description: 'Gang name to leave.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when the membership was removed. `false` when the character is not in that gang or the player has no loaded character.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:leaveGang", (source) => {
+  const gang = core.GetActiveGang(source);
+  return gang && core.RemoveGang(source, gang) ? { ok: true } : fail("NO_GANG");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:leaveGang', function(source)
+  local gang = exports['ai-core']:GetActiveGang(source)
+  if not gang or not exports['ai-core']:RemoveGang(source, gang) then return aiLib.fail('NO_GANG') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### SetActiveGang
+
+Picks which of the player's gangs is active, or none.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+SetActiveGang(src: number, gang: string | null): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetActiveGang(source, 'vagos') -- nil = no active gang
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Server id of the player.', required: true },
+    gang: { type: 'string | null', description: 'A gang the character belongs to, or `null` (Lua `nil`) for none.', required: true },
+  }}
+/>
+
+#### Returns
+
+`boolean`: `true` when `gang` is now active (also when it already was). `false` when the character is not in that gang or the player has no loaded character. The active gang is saved.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "myscript:pickGang",
+  { args: ([gang]) => { const name = readText(gang, 32); return name ? [name] : null; } },
+  (source, gang) => (core.SetActiveGang(source, gang) ? { ok: true } : fail("NOT_MEMBER")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:pickGang', function(source, gang)
+  if type(gang) ~= 'string' or not exports['ai-core']:SetActiveGang(source, gang) then return aiLib.fail('NOT_MEMBER') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetGangDefinitions
+
+Every gang definition from the panel, as one copy.
+
+**Side:** Server · **Waits:** no · **Lib:** none
+
+```ts title="Signature"
+GetGangDefinitions(): Record<string, GangDefinition>
+```
+
+```lua title="Lua"
+local gangs = exports['ai-core']:GetGangDefinitions() -- table keyed by gang name
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`Record<string, GangDefinition>`: every gang keyed by name, each with `label` and `grades`. See [GangDefinition](/docs/developers/api/types#gangdefinition).
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:gangList", () => ({
+  ok: true,
+  gangs: Object.entries(core.GetGangDefinitions()).map(([name, def]) => ({ name, label: def.label })),
+}));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:gangList', function()
+  local list = {}
+  for name, def in pairs(exports['ai-core']:GetGangDefinitions()) do
+    list[#list + 1] = { name = name, label = def.label }
+  end
+  return { ok = true, gangs = list }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetGangDefinition
+
+One gang's definition: its label and grades.
+
+**Side:** Server · **Waits:** no · **Lib:** [`definitions.gang(name)`](/docs/developers/api/lib-server/jobs#definitionsgang)
+
+```ts title="Signature"
+GetGangDefinition(gang: string): GangDefinition | null
+```
+
+```lua title="Lua"
+local def = exports['ai-core']:GetGangDefinition('ballas') -- table or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    gang: { type: 'string', description: 'Gang name.', required: true },
+  }}
+/>
+
+#### Returns
+
+`GangDefinition | null`: the gang ([GangDefinition](/docs/developers/api/types#gangdefinition)). `null` for an unknown gang or a value that is not a text.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** "Ballas" for "ballas", the name itself for an unknown gang. */
+export function gangLabel(gang: string): string {
+  return core.GetGangDefinition(gang)?.label ?? gang;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function GangLabel(gang)
+  local def = exports['ai-core']:GetGangDefinition(gang)
+  return def and def.label or gang
+end
+```
+</Tab>
+</Tabs>

@@ -1,0 +1,215 @@
+---
+title: Player
+description: Read the local player's character, money, jobs, duty and gangs, check whether a character is loaded, and read job and gang definitions.
+icon: User
+---
+
+These exports read what ai-core knows about the player sitting at this game: their character, money, jobs and gangs. The server sends this data to the player's own client once when the character loads, then only the values that change. No other player's data ever reaches this client.
+
+<Callout type="info">
+In TypeScript, use the lib's `getPlayerData(key)` and `onPlayerData(key, handler)` instead of calling `GetPlayerData` again and again. In Lua, use `aiLib.playerData.get(key)` and `aiLib.playerData.onChange(key, handler)`. They read the export once, then follow every change ai-core pushes.
+</Callout>
+
+### GetPlayerData
+
+Returns everything ai-core knows about the local player's loaded character in one table: character, money, jobs, duty, the main job, gangs, the active gang and metadata. Use it to read the data once when your resource starts; follow changes with `onPlayerData` (TS) or `aiLib.playerData.onChange` (Lua).
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+GetPlayerData(): AiPlayerData | null
+```
+
+```lua title="Lua"
+local data = exports['ai-core']:GetPlayerData() -- table or nil
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+[`AiPlayerData`](/docs/developers/api/types#aiplayerdata) while a character stands in the world, `null` (`nil` in Lua) on the character screen, before the first character loads, and after the player went back to the character screen.
+
+<TypeTable
+  type={{
+    character: { type: 'CharacterInfo | null', description: 'The character: `id`, `citizenid`, `slot`, `firstname`, `lastname`, `birthdate` (`YYYY-MM-DD`), `sex` (`"male"` or `"female"`), `nationality`.', required: true, typeDescriptionLink: '/docs/developers/api/types#characterinfo' },
+    money: { type: 'Record<string, number>', description: 'Balance of each account by name, for example `{ cash: 500, bank: 12000 }`. Account names come from the admin panel.', required: true },
+    jobs: { type: 'JobMembership[]', description: 'Every job the character holds: `{ job, grade }`. A character may hold several jobs.', required: true, typeDescriptionLink: '/docs/developers/api/types#jobmembership' },
+    duty: { type: 'string | null', description: 'The job the player is on duty in now, `null` when off duty.', required: true },
+    job: { type: 'JobMembership', description: 'The job other scripts treat as "the" job: the on-duty job, else the last job they were on duty in, else the first job, else `{ job: "unemployed", grade: 0 }`.', required: true, typeDescriptionLink: '/docs/developers/api/types#jobmembership' },
+    gangs: { type: 'GangMembership[]', description: 'Every gang the character belongs to: `{ gang, grade }`.', required: true, typeDescriptionLink: '/docs/developers/api/types#gangmembership' },
+    activeGang: { type: 'string | null', description: 'The gang the player acts for now, `null` for none.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Free values stored with the character. Framework bridges keep ESX / QB metadata here (hunger, thirst, stress...).', required: true },
+  }}
+/>
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { getPlayerData, onPlayerData } from "@aicore-fivem/lib/client";
+
+// Shows a police-only blip while the player is on duty as police.
+let blip = 0;
+
+function updateBlip(duty: string | null): void {
+  if (duty === "police" && blip === 0) {
+    blip = AddBlipForCoord(441.8, -982.0, 30.7); // Mission Row police station
+    SetBlipSprite(blip, 60);
+  } else if (duty !== "police" && blip !== 0) {
+    RemoveBlip(blip);
+    blip = 0;
+  }
+}
+
+// Read once (the lib asks ai-core's GetPlayerData for you), then follow every change.
+updateBlip(getPlayerData("duty") ?? null);
+onPlayerData("duty", (duty) => updateBlip(duty));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- fxmanifest.lua: dependency 'ai-lib' and shared_script '@ai-lib/init.lua'
+-- Shows a police-only blip while the player is on duty as police.
+local blip = 0
+
+local function updateBlip(duty)
+  if duty == 'police' and blip == 0 then
+    blip = AddBlipForCoord(441.8, -982.0, 30.7) -- Mission Row police station
+    SetBlipSprite(blip, 60)
+  elseif duty ~= 'police' and blip ~= 0 then
+    RemoveBlip(blip)
+    blip = 0
+  end
+end
+
+-- Read once (aiLib asks ai-core's GetPlayerData for you), then follow every change.
+updateBlip(aiLib.playerData.get('duty'))
+aiLib.playerData.onChange('duty', updateBlip)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+This is the player's own copy, for showing things on screen. Never decide anything the server must trust (a payment, an item, access to a stash) from it: the server checks again with its own exports.
+</Callout>
+
+### IsPlayerLoaded
+
+Tells whether a character stands in the world on this client. Use it before you start anything that needs a character (a HUD, a job loop) when your resource may start after the player already loaded.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+IsPlayerLoaded(): boolean
+```
+
+```lua title="Lua"
+local loaded = exports['ai-core']:IsPlayerLoaded() -- boolean
+```
+
+#### Parameters
+
+None.
+
+#### Returns
+
+`boolean`: `true` once the character was put into the world, `false` on the character screen, while the player picks a spawn point, and after they went back to the character screen.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+function start(): void {
+  console.log("character ready, starting the job loop");
+}
+
+// The player may have loaded before this resource started (a restart): check first, then listen.
+if (core.IsPlayerLoaded()) start();
+on(CORE.clientPlayerLoadedEvent, start);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local function start()
+  print('character ready, starting the job loop')
+end
+
+-- The player may have loaded before this resource started (a restart): check first, then listen.
+if exports['ai-core']:IsPlayerLoaded() then start() end
+AddEventHandler('ai-core:client:playerLoaded', start)
+```
+</Tab>
+</Tabs>
+
+### GetDefinitions
+
+Returns every job or every gang as the admin panel stores them (labels, grades and the other fields the panel edits). Framework bridges use it to build ESX / QB job tables. Read it once, then follow the client event `ai-core:client:definitions`, which fires for each job or gang the panel changes.
+
+**Side:** Client · **Waits:** no
+
+```ts title="Signature"
+GetDefinitions(file: "jobs" | "gangs"): Record<string, unknown> | null
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetDefinitions('jobs') -- table keyed by job name, or nil
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    file: { type: '"jobs" | "gangs"', description: 'Which panel file to read: every job, or every gang.', required: true },
+  }}
+/>
+
+#### Returns
+
+`Record<string, unknown>`: one record per job or gang, keyed by its name (`police`, `ambulance`). The records are the panel's own data and are not checked. `null` when `file` is neither `"jobs"` nor `"gangs"`.
+
+#### Example
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// A local copy of every job, kept current.
+const jobs: Record<string, unknown> = { ...(core.GetDefinitions("jobs") ?? {}) };
+
+on(CORE.clientDefinitionsEvent, (file: string, name: string, definition: unknown) => {
+  if (file !== "jobs") return;
+  if (definition === null) delete jobs[name];
+  else jobs[name] = definition;
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- A local copy of every job, kept current.
+local jobs = exports['ai-core']:GetDefinitions('jobs') or {}
+
+AddEventHandler('ai-core:client:definitions', function(file, name, definition)
+  if file ~= 'jobs' then return end
+  jobs[name] = definition -- nil when the job was deleted
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+For a job's or gang's grade names and labels on the server, use ai-core's server exports or the server lib; the server is the side that checks grades.
+</Callout>

@@ -1,0 +1,128 @@
+---
+title: Database
+description: "createDatabaseTables installs your sql/main.sql at start; WriteQueue runs database writes one after another."
+icon: HardDrive
+---
+
+```ts title="TypeScript"
+import { createDatabaseTables, WriteQueue } from "@aicore-fivem/lib/server";
+import { mysql } from "@aicore-fivem/mysql";
+```
+
+Queries themselves go through `@aicore-fivem/mysql` (`mysql.query`, `single`, `scalar`, `insert`, `update`, `prepare`, `transaction`): see [Database](/docs/developers/database). This page covers the two lib helpers around it.
+
+No Lua twins: Lua resources use ai-mysql's oxmysql API (`MySQL.query.await`, ...) and install their tables themselves.
+
+### createDatabaseTables
+
+Creates the missing tables and adds the missing columns from your resource's SQL file. Call it once at start, before the first query that needs the tables. It waits for the database connection first.
+
+**Side:** Server · **Waits:** yes (Promise)
+
+```ts title="Signature"
+createDatabaseTables(resource: string, file: string): Promise<void>
+```
+
+#### Parameters
+
+<TypeTable
+  type={{
+    resource: { type: "string", description: "Your resource name (`GetCurrentResourceName()`).", required: true },
+    file: { type: "string", description: "Path of the SQL file inside the resource. The template uses `sql/main.sql`.", required: true },
+  }}
+/>
+
+#### What it applies
+
+- Only `CREATE TABLE IF NOT EXISTS` statements; any other statement is skipped with a warning. Statements end with `;` at the end of a line; `--` and `/* */` comments are ignored.
+- A table that does not exist is created with the full statement (columns and keys).
+- A table that exists gets each missing column added with `ALTER TABLE ... ADD COLUMN`.
+- It never drops, renames or changes a column, and never adds keys or indexes to a table that already exists: plan your indexes before the first release.
+
+#### Returns
+
+`Promise<void>`: resolves when every statement was applied. Rejects when the file is missing (`<resource>/<file> not found`) or a query fails.
+
+#### Example
+
+```sql title="sql/main.sql"
+CREATE TABLE IF NOT EXISTS `ai_myshop_purchases` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `char_id` INT UNSIGNED NOT NULL,
+  `item` VARCHAR(64) NOT NULL,
+  `price` INT UNSIGNED NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `char_id` (`char_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+```ts title="resource/server/repo.ts"
+import { createDatabaseTables } from "@aicore-fivem/lib/server";
+import { createLogger } from "@aicore-fivem/lib/shared";
+import { mysql } from "@aicore-fivem/mysql";
+
+const resource = GetCurrentResourceName();
+const log = createLogger(resource);
+
+/** Reads and writes wait for this. */
+export const tablesReady: Promise<void> = createDatabaseTables(resource, "sql/main.sql").catch((error: unknown) =>
+  log.error("database setup failed", error),
+);
+
+export async function addPurchase(charId: number, item: string, price: number) {
+  await tablesReady;
+  await mysql.insert("INSERT INTO ai_myshop_purchases (char_id, item, price) VALUES (?, ?, ?)", [charId, item, price]);
+}
+```
+
+<Callout type="info">
+Prefix your tables with the resource (`ai_<name>_...`) and end every table with `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`, like the template's `sql/main.sql`.
+</Callout>
+
+### WriteQueue
+
+Runs database writes one after another, in the order you push them. The pattern: server memory is the truth, the table follows in order. A failed write is reported to your error handler and does not stop the ones after it.
+
+**Side:** Server · **Waits:** no (`idle()` returns a Promise)
+
+```ts title="Signature"
+new WriteQueue(onError: (label: string, error: unknown) => void)
+push(label: string, task: () => Promise<unknown>): void
+idle(): Promise<void>
+```
+
+<TypeTable
+  type={{
+    onError: { type: "(label: string, error: unknown) => void", description: "Called for every failed task with its label. Log it.", required: true },
+    label: { type: "string", description: "`push`: a short name for the write, passed to `onError` (`save:12`).", required: true },
+    task: { type: "() => Promise<unknown>", description: "`push`: the write. It starts after every task pushed before it settled.", required: true },
+  }}
+/>
+
+**Returns** `push`: `void`. `idle()`: a Promise that resolves when every write queued so far is done (await it before the resource stops or before a read that needs them).
+
+#### Example
+
+```ts
+import { WriteQueue, onCharacter, PlayerMap } from "@aicore-fivem/lib/server";
+import { createLogger } from "@aicore-fivem/lib/shared";
+import { mysql } from "@aicore-fivem/mysql";
+
+const log = createLogger(GetCurrentResourceName());
+const writes = new WriteQueue((label, error) => log.error(`database write failed (${label})`, error));
+
+const xp = new PlayerMap<{ charId: number; points: number }>();
+
+export function addXp(source: number, amount: number) {
+  const entry = xp.get(source);
+  if (!entry) return;
+  entry.points += amount; // memory first
+  const { charId, points } = entry;
+  writes.push(`xp:${charId}`, () => mysql.update("UPDATE ai_myjob_xp SET points = ? WHERE char_id = ?", [points, charId]));
+}
+
+onCharacter({
+  loaded: (source, character) => xp.set(source, { charId: character.id, points: 0 }),
+});
+```
