@@ -1,0 +1,710 @@
+---
+title: Eventos de servidor
+description: Cada evento local de servidor que dispara ai-core - personajes, dinero, trabajos, servicio, bandas, metadatos, definiciones, objetos, muertes - con sus argumentos y listeners en TypeScript y Lua.
+icon: Server
+---
+
+ai-core dispara estos eventos en el servidor con `TriggerEvent` (locales: los oyen los demás recursos de servidor, los clientes nunca). El espejo `online` de la lib y los puentes de ESX / QB / vRP se basan en ellos, así que son la forma más barata de seguir a los jugadores: ni llamadas a exports ni consultas periódicas.
+
+El handler de cada evento se ejecuta **de forma síncrona** mientras ai-core está en mitad del cambio: mantén los handlers cortos y nunca esperes dentro de ellos. Si necesitas esperar (una escritura en la base de datos), iníciala sin bloquear.
+
+### ai-core:playerLoaded
+
+Se cargó el personaje de un jugador y sus datos se enviaron a su cliente. Se dispara una vez por carga de personaje, también tras un cambio de personaje. Con la elección de aparición activada, se dispara antes de que el jugador elija dónde aparecer; `ai-core:playerSpawned` sigue a la elección.
+
+**Lado:** Servidor · **Constante:** `CORE.playerLoadedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    character: { type: 'CharacterInfo', description: 'El personaje: `id`, `citizenid`, `slot`, `firstname`, `lastname`, `birthdate`, `sex`, `nationality`.', required: true, typeDescriptionLink: '/docs/developers/api/types#characterinfo' },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE, type CharacterInfo } from "@aicore-fivem/shared";
+
+on(CORE.playerLoadedEvent, (src: number, character: CharacterInfo) => {
+  console.log(`#${character.id} ${character.firstname} ${character.lastname} loaded (src ${src})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:playerLoaded', function(src, character)
+  print(('#%d %s %s loaded (src %d)'):format(character.id, character.firstname, character.lastname, src))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Los personajes que ya estaban cargados antes de que se iniciara tu recurso nunca te disparan esto. Usa el `onCharacter({ loaded })` de la lib (`aiLib.onCharacter` en Lua), que vuelve a pasártelos.
+</Callout>
+
+### ai-core:playerSpawned
+
+Se puso al personaje cargado en el mundo. Se dispara justo después de `ai-core:playerLoaded`, o después de que el jugador elija un punto de aparición cuando el servidor le deja elegir. Úsalo para cosas que necesitan el ped en el mundo (un mensaje de bienvenida, un teletransporte).
+
+**Lado:** Servidor · **Constante:** `CORE.playerSpawnedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    charId: { type: 'number', description: 'El id del personaje que apareció.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { notify } from "@aicore-fivem/lib/server";
+import { CORE } from "@aicore-fivem/shared";
+import { Locale } from "common";
+
+on(CORE.playerSpawnedEvent, (src: number, _charId: number) => {
+  notify(src, Locale("WELCOME_BACK"), "info");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+local Locale = aiLib.locale()
+
+AddEventHandler('ai-core:playerSpawned', function(src, charId)
+  aiLib.notify(src, Locale('WELCOME_BACK'), 'info')
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:playerUnloaded
+
+Se está soltando a un personaje: el jugador salió del servidor o volvió a la pantalla de personajes. Se dispara **antes** de que ai-core descarte el personaje, así que los exports de ai-core siguen respondiendo por él dentro de tu handler. Limpia aquí todo lo que guardes por jugador.
+
+**Lado:** Servidor · **Constante:** `CORE.playerUnloadedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    charId: { type: 'number', description: 'El id del personaje que se descarga.', required: true },
+    reason: { type: '"dropped" | "switch"', description: '`dropped`: el jugador salió. `switch`: volvió a la pantalla de personajes y sigue conectado.', required: true, typeDescriptionLink: '/docs/developers/api/types#unloadreason' },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+const activeJobs = new Map<number, string>();
+
+on(CORE.playerUnloadedEvent, (src: number, _charId: number, reason: "dropped" | "switch") => {
+  activeJobs.delete(src);
+  console.log(`${src} unloaded (${reason})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+local activeJobs = {}
+
+AddEventHandler('ai-core:playerUnloaded', function(src, charId, reason)
+  activeJobs[src] = nil
+  print(('%d unloaded (%s)'):format(src, reason))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Con `reason = "switch"` el mismo id de servidor puede cargar otro personaje un momento después. Guarda tus datos por personaje con `charId` como clave o bórralos aquí; nunca supongas que un id de servidor conserva un mismo personaje.
+</Callout>
+
+### ai-core:moneyChanged
+
+Cambió el saldo de una cuenta de un personaje cargado. Se dispara después de aplicar el cambio, una vez por cambio, solo cuando el saldo se movió de verdad.
+
+**Lado:** Servidor · **Constante:** `CORE.moneyChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    account: { type: 'string', description: 'El nombre de la cuenta (`"cash"`, `"bank"` u otra cuenta que defina el panel).', required: true },
+    balance: { type: 'number', description: 'El nuevo saldo.', required: true },
+    delta: { type: 'number', description: 'Cuánto cambió: positivo para dinero que entra, negativo para dinero que sale.', required: true },
+    reason: { type: 'string', description: 'El motivo que dio el script que movió el dinero (escrito en el log de dinero).', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+// Marca los pagos grandes en efectivo para el staff.
+on(CORE.moneyChangedEvent, (src: number, account: string, balance: number, delta: number, reason: string) => {
+  if (account === "cash" && delta >= 100_000)
+    console.log(`${src} got $${delta} cash (${reason}), now $${balance}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+-- Marca los pagos grandes en efectivo para el staff.
+AddEventHandler('ai-core:moneyChanged', function(src, account, balance, delta, reason)
+  if account == 'cash' and delta >= 100000 then
+    print(('%d got $%d cash (%s), now $%d'):format(src, delta, reason, balance))
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:jobsChanged
+
+Cambió la lista de trabajos que tiene un personaje cargado: se añadió o quitó un trabajo, o cambió un rango.
+
+**Lado:** Servidor · **Constante:** `CORE.jobsChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    jobs: { type: 'JobMembership[]', description: 'La nueva lista completa: `{ job, grade }` por cada trabajo.', required: true, typeDescriptionLink: '/docs/developers/api/types#jobmembership' },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE, type JobMembership } from "@aicore-fivem/shared";
+
+on(CORE.jobsChangedEvent, (src: number, jobs: JobMembership[]) => {
+  const police = jobs.find((m) => m.job === "police");
+  console.log(police ? `${src} is police grade ${police.grade}` : `${src} is not police`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:jobsChanged', function(src, jobs)
+  for _, m in ipairs(jobs) do
+    if m.job == 'police' then return print(('%d is police grade %d'):format(src, m.grade)) end
+  end
+  print(('%d is not police'):format(src))
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:dutyChanged
+
+Un personaje cargado entró de servicio en un trabajo, o salió de servicio. Un jugador está de servicio en como mucho un trabajo a la vez.
+
+**Lado:** Servidor · **Constante:** `CORE.dutyChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    job: { type: 'string | null', description: 'El trabajo en el que está de servicio ahora, `null` cuando salió de servicio.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.dutyChangedEvent, (src: number, job: string | null) => {
+  console.log(job ? `${src} on duty: ${job}` : `${src} off duty`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:dutyChanged', function(src, job)
+  print(job and ('%d on duty: %s'):format(src, job) or ('%d off duty'):format(src))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Para saber cuántos jugadores están de servicio en un trabajo, lee el GlobalState `ai:duty:<job>` (consulta [State bags](/es/docs/developers/api/events/state-bags)) en lugar de contar tú estos eventos.
+</Callout>
+
+### ai-core:gangsChanged
+
+Cambió la lista de bandas a las que pertenece un personaje cargado: se añadió o quitó una banda, o cambió un rango.
+
+**Lado:** Servidor · **Constante:** `CORE.gangsChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    gangs: { type: 'GangMembership[]', description: 'La nueva lista completa: `{ gang, grade }` por cada banda.', required: true, typeDescriptionLink: '/docs/developers/api/types#gangmembership' },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE, type GangMembership } from "@aicore-fivem/shared";
+
+on(CORE.gangsChangedEvent, (src: number, gangs: GangMembership[]) => {
+  console.log(`${src} is in ${gangs.length} gang(s)`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:gangsChanged', function(src, gangs)
+  print(('%d is in %d gang(s)'):format(src, #gangs))
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:activeGangChanged
+
+Un personaje cargado cambió la banda para la que actúa, o ya no actúa para ninguna.
+
+**Lado:** Servidor · **Constante:** `CORE.activeGangChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    gang: { type: 'string | null', description: 'La banda activa ahora, `null` si ninguna.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.activeGangChangedEvent, (src: number, gang: string | null) => {
+  console.log(`${src} now acts for ${gang ?? "no gang"}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:activeGangChanged', function(src, gang)
+  print(('%d now acts for %s'):format(src, gang or 'no gang'))
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:metaChanged
+
+Cambió un valor de metadatos de un personaje cargado. Los metadatos son una bolsa libre de clave / valor guardada con el personaje; los puentes de ESX / QB guardan ahí los metadatos de framework (hambre, sed, estrés, isdead...).
+
+**Lado:** Servidor · **Constante:** `CORE.metaChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    key: { type: 'string', description: 'La clave de metadatos que cambió.', required: true },
+    value: { type: 'unknown', description: 'El nuevo valor. `null` cuando se quitó la clave.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.metaChangedEvent, (src: number, key: string, value: unknown) => {
+  if (key === "stress" && typeof value === "number" && value >= 90)
+    console.log(`${src} is very stressed`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:metaChanged', function(src, key, value)
+  if key == 'stress' and type(value) == 'number' and value >= 90 then
+    print(('%d is very stressed'):format(src))
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:definitionsChanged
+
+Se añadió, cambió o borró un trabajo o una banda en el panel de administración. Se dispara una vez por cada trabajo o banda que cambió.
+
+**Lado:** Servidor · **Constante:** `CORE.definitionsChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    file: { type: '"jobs" | "gangs"', description: 'Qué lista cambió.', required: true },
+    name: { type: 'string', description: 'El nombre del trabajo o la banda (`"police"`).', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+const labelCache = new Map<string, string>();
+
+// Descarta una etiqueta en caché cuando el panel cambia ese trabajo.
+on(CORE.definitionsChangedEvent, (file: "jobs" | "gangs", name: string) => {
+  if (file === "jobs") labelCache.delete(name);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+local labelCache = {}
+
+-- Descarta una etiqueta en caché cuando el panel cambia ese trabajo.
+AddEventHandler('ai-core:definitionsChanged', function(file, name)
+  if file == 'jobs' then labelCache[name] = nil end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:characterScreen
+
+La pantalla de personajes de un jugador está cargando (tras entrar, o tras volver a ella). ai-core lee por sí mismo los aspectos de las tarjetas; un script de ropa lo escucha para dibujar los retratos de las tarjetas.
+
+**Lado:** Servidor · **Constante:** `CORE.characterScreenEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    charIds: { type: 'number[]', description: 'Los ids de los personajes de sus tarjetas (puede estar vacío).', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.characterScreenEvent, (src: number, charIds: number[]) => {
+  console.log(`${src} sees ${charIds.length} character card(s)`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:characterScreen', function(src, charIds)
+  print(('%d sees %d character card(s)'):format(src, #charIds))
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:inventoryChanged
+
+Cambió el inventario que hay detrás de la capa de inventario de ai-core: el inventario elegido se inició o se detuvo, o el dueño eligió otro en el panel. Descarta todo lo que tuvieras en caché del inventario anterior (etiquetas de objetos, definiciones).
+
+**Lado:** Servidor · **Constante:** `CORE.inventoryChangedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    resource: { type: 'string | null', description: 'El nombre de recurso del inventario que responde ahora, `null` mientras no hay ninguno en marcha.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+let itemLabels: Record<string, string> | null = null;
+
+on(CORE.inventoryChangedEvent, (resource: string | null) => {
+  itemLabels = null; // se vuelve a leer del nuevo inventario en el próximo uso
+  console.log(`inventory is now ${resource ?? "none"}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+local itemLabels = nil
+
+AddEventHandler('ai-core:inventoryChanged', function(resource)
+  itemLabels = nil -- se vuelve a leer del nuevo inventario en el próximo uso
+  print(('inventory is now %s'):format(resource or 'none'))
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:itemUsed
+
+Un jugador usó un objeto. Lleva las necesidades que da el objeto (hambre, sed, estrés), para que un HUD o un script de necesidades las aplique sin conocer el inventario. ai-hud lo escucha.
+
+**Lado:** Servidor · **Constante:** `CORE.itemUsedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador.', required: true },
+    name: { type: 'string', description: 'El nombre del objeto (`"sandwich"`).', required: true },
+    status: { type: 'Record<string, number> | null', description: 'Las necesidades que da el objeto, por nombre (`{ hunger: 25 }`), tal como las pone la definición del objeto. `null` cuando el objeto no da ninguna.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/needs.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.itemUsedEvent, (src: number, name: string, status: Record<string, number> | null) => {
+  if (!status) return;
+  for (const [need, amount] of Object.entries(status))
+    console.log(`${src} used ${name}: ${need} ${amount > 0 ? "+" : ""}${amount}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server/needs.lua"
+AddEventHandler('ai-core:itemUsed', function(src, name, status)
+  if not status then return end
+  for need, amount in pairs(status) do
+    print(('%d used %s: %s %s'):format(src, name, need, amount))
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Hoy solo ai-inventory informa a ai-core de los usos de objetos: con otro inventario este evento no se dispara. Escucha este evento, no el evento de uso propio de un inventario, para que tu script funcione cuando ai-inventory es el inventario y siga funcionando cuando se añadan otros.
+</Callout>
+
+### ai-core:playerDied
+
+Murió un jugador con un personaje cargado. ai-core lo toma del propio aviso de muerte de ped de FXServer (FXServer 38039 o más nuevo), así que no se confía en ningún cliente.
+
+**Lado:** Servidor · **Constante:** `CORE.playerDiedEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'El id de servidor del jugador que murió.', required: true },
+    killer: { type: 'number | null', description: 'El id de servidor del jugador a cuyo ped atribuye el juego la muerte, `null` cuando no fue un jugador cargado (un NPC, una caída, un coche sin jugador). Puede ser el propio `src`.', required: true },
+    weaponHash: { type: 'number', description: 'El hash del arma o de la causa que informa el juego.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/killfeed.ts"
+import { CORE } from "@aicore-fivem/shared";
+
+on(CORE.playerDiedEvent, (src: number, killer: number | null, weaponHash: number) => {
+  if (killer !== null && killer !== src)
+    console.log(`${GetPlayerName(String(killer))} killed ${GetPlayerName(String(src))} (weapon ${weaponHash})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server/killfeed.lua"
+AddEventHandler('ai-core:playerDied', function(src, killer, weaponHash)
+  if killer and killer ~= src then
+    print(('%s killed %s (weapon %d)'):format(GetPlayerName(killer), GetPlayerName(src), weaponHash))
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Esta es la muerte del juego, no el estado de "caído" del script de muerte: un script de muerte puede mantener vivo a un jugador caído para animarlo. Para saber "si este jugador está caído", usa el `medical` de la lib de servidor o los exports médicos de servidor de ai-core.
+</Callout>
+
+### ai-core:vrp:config
+
+El dueño del servidor cambió el mapeo de vRP en el panel de ai-core (pestaña "vRP scripts"). El puente de vRP de ai-core lo escucha; solo lo necesitas si lees tú el mapeo de vRP.
+
+**Lado:** Servidor · **Constante:** `VRP.configEvent`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    config: { type: 'VrpConfig', description: 'El nuevo mapeo completo: `defaults`, `permissions`, `groups`, `items`. La misma forma que el export de servidor de ai-core `GetVrpConfig()`.', required: true, typeDescriptionLink: '/docs/developers/api/types#vrpconfig' },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { VRP, type VrpConfig } from "@aicore-fivem/shared";
+
+on(VRP.configEvent, (config: VrpConfig) => {
+  console.log(`${config.permissions.length} vRP permission rule(s)`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddEventHandler('ai-core:vrp:config', function(config)
+  print(('%d vRP permission rule(s)'):format(#config.permissions))
+end)
+```
+</Tab>
+</Tabs>
+
+## Eventos de otros scripts ai-*
+
+Estos los disparan scripts ai-*, no ai-core, pero muchos recursos los escuchan. Su referencia completa está en la página para desarrolladores de cada script.
+
+### ai-vehicles:owners
+
+Cambiaron los dueños de los vehículos en propiedad que hay en memoria (se cargó un personaje con su garaje, se compró, vendió o borró un vehículo). Se dispara como mucho una vez por tick del servidor con todos los cambios de ese tick. Los scripts de llaves lo usan para mantener un mapa de matrícula a dueño sin preguntar a ai-vehicles cada vez.
+
+**Lado:** Servidor · **Constante:** `VEHICLES_EVENTS.owners`
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    puts: { type: '[plate: string, ownerType: string, ownerId: string][]', description: 'Matrículas añadidas o cambiadas, con el tipo de dueño (`"character"`, `"job"`, `"gang"`, `"resource"`) y el id del dueño.', required: true },
+    removes: { type: 'string[]', description: 'Matrículas que ya no están en memoria.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/owners.ts"
+import { resourceExport } from "@aicore-fivem/lib/server";
+import { VEHICLES_EVENTS } from "@aicore-fivem/shared";
+
+const owners = new Map<string, string>();
+
+// Empieza con la lista completa y después sigue los cambios.
+for (const [plate, type, id] of resourceExport("ai-vehicles").GetPlateOwners()) owners.set(plate, `${type}:${id}`);
+
+on(VEHICLES_EVENTS.owners, (puts: Array<[string, string, string]>, removes: string[]) => {
+  for (const [plate, type, id] of puts) owners.set(plate, `${type}:${id}`);
+  for (const plate of removes) owners.delete(plate);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server/owners.lua"
+local owners = {}
+
+-- Empieza con la lista completa y después sigue los cambios.
+for _, row in ipairs(exports['ai-vehicles']:GetPlateOwners()) do owners[row[1]] = row[2] .. ':' .. row[3] end
+
+AddEventHandler('ai-vehicles:owners', function(puts, removes)
+  for _, row in ipairs(puts) do owners[row[1]] = row[2] .. ':' .. row[3] end
+  for _, plate in ipairs(removes) do owners[plate] = nil end
+end)
+```
+</Tab>
+</Tabs>
+
+### chatMessage
+
+ai-chat dispara el clásico evento `chatMessage` de FiveM antes de entregar el mensaje de un jugador. Llamar a `CancelEvent()` en tu handler descarta el mensaje.
+
+**Lado:** Servidor · **Constante:** ninguna (el propio nombre de FiveM)
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'El id de servidor del jugador que lo escribió.', required: true },
+    author: { type: 'string', description: 'El nombre del autor que se muestra en el chat.', required: true },
+    text: { type: 'string', description: 'El texto del mensaje.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/filter.ts"
+on("chatMessage", (source: number, _author: string, text: string) => {
+  if (text.toLowerCase().includes("discord.gg")) {
+    CancelEvent();
+    console.log(`blocked an invite link from ${source}`);
+  }
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server/filter.lua"
+AddEventHandler('chatMessage', function(source, author, text)
+  if text:lower():find('discord.gg', 1, true) then
+    CancelEvent()
+    print(('blocked an invite link from %d'):format(source))
+  end
+end)
+```
+</Tab>
+</Tabs>

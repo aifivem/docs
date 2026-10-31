@@ -1,0 +1,107 @@
+---
+title: Eventos de red
+description: Los eventos de red que puede escuchar un script de cliente (el canal de datos del jugador de ai-core), y el tráfico de red propio de ai-core que los demás scripts no deben disparar.
+icon: Network
+---
+
+Un evento de red viaja entre el servidor y el cliente de un jugador. ai-core envía muy pocos: los datos propios de un jugador salen una vez cuando carga el personaje, después solo los valores que cambian, y solo a ese jugador. Todo lo demás que necesita tu script es un [evento de cliente](/es/docs/developers/api/events/client) o un [state bag](/es/docs/developers/api/events/state-bags).
+
+<Callout type="info">
+Rara vez necesitas estos eventos directamente. El `onPlayerData(key, handler)` de la lib (TypeScript) y `aiLib.playerData.onChange(key, handler)` (Lua) escuchan ambos por ti, fusionan los parches de dinero y metadatos y leen los valores iniciales de ai-core.
+</Callout>
+
+### ai-core:client:playerData
+
+El servidor envía un valor de los datos propios del jugador: el valor completo de una clave. Se dispara una vez por clave cuando carga el personaje, y después cada vez que cambia ese valor (un trabajo, el servicio, una banda...).
+
+**Lado:** del servidor al propio cliente del jugador
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    key: { type: '"character" | "money" | "jobs" | "duty" | "job" | "gangs" | "activeGang" | "metadata"', description: 'Qué valor de `AiPlayerData` es este.', required: true, typeDescriptionLink: '/docs/developers/api/types#aiplayerdata' },
+    value: { type: 'unknown', description: 'El nuevo valor completo de esa clave (su tipo es el tipo del campo en `AiPlayerData`).', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { onPlayerData } from "@aicore-fivem/lib/client";
+
+// La lib escucha ai-core:client:playerData y playerDataPatch por ti.
+onPlayerData("job", (job) => console.log(`main job: ${job.job} grade ${job.grade}`));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- Solo desde el servidor: aiLib.onServerEvent descarta las falsificaciones locales.
+aiLib.onServerEvent('ai-core:client:playerData', function(key, value)
+  if key == 'job' then print(('main job: %s grade %d'):format(value.job, value.grade)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### ai-core:client:playerDataPatch
+
+El servidor envía solo las entradas cambiadas de un valor de tipo mapa: `money` (el nuevo saldo de una cuenta) o `metadata` (una clave). Fusiona el parche con lo que tienes.
+
+**Lado:** del servidor al propio cliente del jugador
+
+#### Argumentos
+
+<TypeTable
+  type={{
+    key: { type: '"money" | "metadata"', description: 'Qué mapa cambió.', required: true },
+    patch: { type: 'Record<string, unknown>', description: 'Solo las entradas cambiadas, por ejemplo `{ cash: 450 }`. Una entrada de metadatos puesta a `null` se quitó.', required: true },
+  }}
+/>
+
+#### Oyente
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { getPlayerData, onPlayerData } from "@aicore-fivem/lib/client";
+
+// La lib fusiona los parches: el handler recibe el mapa de dinero completo ya fusionado.
+const show = (money: Record<string, number>): void => SendNUIMessage({ action: "cash", data: money.cash ?? 0 });
+show(getPlayerData("money") ?? {});
+onPlayerData("money", show);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- aiLib.playerData fusiona los parches: el handler recibe la tabla de dinero completa ya fusionada.
+local function show(money) SendNUIMessage({ action = 'cash', data = (money and money.cash) or 0 }) end
+show(aiLib.playerData.get('money'))
+aiLib.playerData.onChange('money', show)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+En un cliente, escucha los eventos de red solo mediante el `onServerEvent` de la lib (TypeScript) o `aiLib.onServerEvent` (Lua). Comprueban que el evento vino de verdad del servidor; un handler de `RegisterNetEvent` a secas también se ejecuta cuando otro recurso de cliente dispara el nombre en local.
+</Callout>
+
+## Tráfico propio de ai-core: no lo dispares
+
+Estos eventos de red y callbacks son el tráfico interno de ai-core entre su servidor y su cliente (o la lib). Se listan para que los reconozcas en los logs. Nunca los dispares desde otro script ni construyas sobre ellos: sus argumentos pueden cambiar.
+
+| Nombre | Dirección | Qué |
+| --- | --- | --- |
+| `ai-core:client:spawn` | del servidor al cliente | Pone al personaje cargado en el mundo. |
+| `ai-core:client:chooseSpawn` | del servidor al cliente | Opciones de aparición para que elija el jugador. |
+| `ai-core:client:openCharacters` | del servidor al cliente | Vuelve a mostrar la pantalla de personajes tras un cambio. |
+| `ai-core:client:characterLooks` | del servidor al cliente (latente) | Los aspectos de la pantalla de personajes. |
+| `ai-core:client:bills` | del servidor al cliente | Las facturas abiertas de ai-core del jugador, para la lista de facturas. |
+| `ai-core:client:stress` | del servidor al cliente | Estrés para un HUD que solo lo acepta de su propio cliente. |
+| `ai-core:client:vehicleKeys`, `ai-core:client:garages` | del servidor al cliente | Llamadas para scripts de llaves y garajes que solo tienen API de cliente. |
+| `ai-core:clientError`, `ai-core:fuelReport` | del cliente al servidor | Informes de errores de los bundles de cliente; niveles de combustible de scripts de combustible del lado del cliente. |
+| `ai-core:characters`, `ai-core:createCharacter`, `ai-core:deleteCharacter`, `ai-core:selectCharacter`, `ai-core:spawnChoice`, `ai-core:payBill`, `ai-core:vehicleType` | callbacks | La pantalla de personajes, la elección de aparición, las facturas y la aparición de vehículos. |
+| `ai-core:admin:*`, `<resource>:admin:world` | ambos | El panel de administración y los datos de panel de cada recurso. |
+| `ai-lib:client:notify`, `ai-lib:progressFor`, `ai-lib:minigameFor`, `ai-lib:client:progressForCancel` | del servidor al cliente | Las notificaciones de ai-lib, las barras de progreso y los minijuegos que ejecuta el servidor (usa `notify`, `progressFor`, `minigameFor` de la lib). |

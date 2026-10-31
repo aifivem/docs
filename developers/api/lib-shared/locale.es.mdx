@@ -1,0 +1,204 @@
+---
+title: Idioma
+description: "createLocale, loadLocaleTexts, LOCALE_CONVAR y LangTexts: los textos locales/*.json de tu recurso en el juego y en su página NUI."
+icon: Languages
+---
+
+Cada recurso `ai-*` guarda los textos que ve el jugador en `locales/<language>.json`: `en.json` es la base completa, y los demás idiomas sobrescriben lo que traducen. El servidor elige el idioma con una única convar replicada para todos los recursos (la plantilla de servidor de ai-core la fija en `misc.cfg`):
+
+```ini title="misc.cfg"
+setr ai:locale "tr"
+```
+
+Un texto puede usar `{0}`, `{1}`... para valores (`"You paid ${0}"`) y `${OTHER_KEY}` para incluir otro texto del mismo archivo (se rellena una vez al cargar).
+
+```json title="locales/en.json"
+{
+  "SHOP_NAME": "24/7",
+  "BOUGHT": "You bought {0}x {1} at ${SHOP_NAME}",
+  "NOT_ENOUGH_MONEY": "You do not have enough money"
+}
+```
+
+```ts title="TypeScript"
+import { createLocale, loadLocaleTexts, LOCALE_CONVAR } from "@aicore-fivem/lib/fivem"; // también en /client y /server
+import { LangTexts } from "@aicore-fivem/lib/shared"; // para código NUI
+```
+
+### createLocale
+
+Carga los textos de idioma de tu recurso y devuelve una función de traducción `t(key, ...values)`. Con el argumento de tipo, tu editor comprueba cada clave contra `en.json`. Créala una sola vez (los scripts `ai-*` lo hacen en `resource/common/locale.ts` y la importan como `Locale`).
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+createLocale<T extends Record<string, string>>(): (key: keyof T & string, ...args: Array<string | number>) => string
+```
+
+```lua title="Lua"
+local t, texts = aiLib.locale(resource) -- resource es por defecto el recurso que llama
+```
+
+#### Parámetros
+
+TypeScript no acepta argumentos: siempre lee el recurso en el que se ejecuta el código.
+
+<TypeTable
+  type={{
+    T: { type: 'type argument', description: 'TypeScript: la forma de `en.json` (`typeof import("../../locales/en.json")`). Hace que las claves desconocidas sean un error de tipos.' },
+    resource: { type: 'string', description: 'Solo Lua: de qué recurso se leen los `locales/`.', default: 'GetCurrentResourceName()' },
+  }}
+/>
+
+#### Devuelve
+
+TypeScript: la función de traducción. Lua: dos valores, la función de traducción y la tabla fusionada de textos (para una NUI).
+
+La función de traducción `t(key, ...values)` devuelve el texto con `{0}`, `{1}`... rellenados. Una clave que falta en ambos archivos devuelve la propia clave, así que un texto que falta se ve en el juego en lugar de quedar vacío.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/common/locale.ts"
+import { createLocale } from "@aicore-fivem/lib/fivem";
+
+/** This resource's lang texts: Locale("BOUGHT", 2, "Water"); keys typed from locales/en.json. */
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+export default Locale;
+```
+
+```ts title="resource/server/index.ts"
+import { notify } from "@aicore-fivem/lib/server";
+import Locale from "../common/locale";
+
+export function tellBought(source: number, count: number, label: string): void {
+  notify(source, Locale("BOUGHT", count, label), "success"); // "You bought 2x Water at 24/7"
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+local t = aiLib.locale()
+
+local function tellBought(source, count, label)
+    aiLib.notify(source, t('BOUGHT', count, label), 'success') -- "You bought 2x Water at 24/7"
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Los textos se leen una sola vez, cuando se crea la función de traducción. Cambiar `ai:locale` o un archivo de idioma necesita reiniciar el recurso. Los textos se rellenan en el lado que llama a `t`: traduce en el cliente para la interfaz del cliente, en el servidor para un `notify` del servidor.
+</Callout>
+
+### loadLocaleTexts
+
+La tabla de idioma fusionada de un recurso (`en.json` con el idioma de `ai:locale` por encima y las referencias `${KEY}` rellenadas). Úsala para entregar todos los textos a tu página NUI de una vez; la página rellena ella misma los marcadores `{0}` con `LangTexts`.
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+loadLocaleTexts(resource?: string): Record<string, string>
+```
+
+```lua title="Lua"
+local _, texts = aiLib.locale(resource)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'De qué recurso se leen los `locales/`.', default: 'GetCurrentResourceName()' },
+  }}
+/>
+
+#### Devuelve
+
+`Record<string, string>`: de clave a texto. Los archivos que faltan dan una tabla vacía; los valores que no son strings se omiten.
+
+#### Ejemplo
+
+```ts title="resource/client/index.ts"
+import { loadLocaleTexts } from "@aicore-fivem/lib/client";
+
+const texts = loadLocaleTexts();
+
+RegisterCommand("myshop", () => {
+  SendNUIMessage({ action: "open", texts });
+  SetNuiFocus(true, true);
+}, false);
+```
+
+### LOCALE_CONVAR
+
+El nombre de la convar de idioma: `"ai:locale"`. Está replicada (`setr`), así que los clientes también la leen. Léela cuando tu script necesite el propio código de idioma (un formato de fecha).
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+const LOCALE_CONVAR: "ai:locale"
+```
+
+**Lua:** sin equivalente; lee `GetConvar('ai:locale', 'en')`.
+
+#### Ejemplo
+
+```ts
+import { LOCALE_CONVAR } from "@aicore-fivem/lib/client";
+
+const language = GetConvar(LOCALE_CONVAR, "en"); // "en", "tr", ...
+```
+
+### LangTexts
+
+Los textos de idioma de una página NUI: guarda la tabla que envió el cliente y traduce claves con marcadores `{0}`. Sus `subscribe` y `snapshot` encajan con `useSyncExternalStore` de React, así que los componentes se vuelven a renderizar cuando llegan textos nuevos. Cada método está enlazado, así que puedes pasar `lang.translate` como una función simple.
+
+**Lado:** NUI (funciona en cualquier sitio) · **Espera:** no
+
+```ts title="Firma"
+new LangTexts()
+```
+
+**Lua:** sin equivalente (el código NUI es TypeScript o JavaScript).
+
+#### Métodos
+
+<TypeTable
+  type={{
+    'set(next)': { type: '(next: Record<string, string>) => void', description: 'Reemplaza todos los textos y avisa a los suscriptores.' },
+    'translate(key, ...args)': { type: '(key: string, ...args: Array<string | number>) => string', description: 'El texto de `key` con `{0}`, `{1}`... rellenados. La propia clave cuando falta.' },
+    'subscribe(listener)': { type: '(listener: () => void) => () => void', description: 'Llama a `listener` después de cada `set`. Devuelve la función para cancelar la suscripción.' },
+    'snapshot()': { type: '() => Record<string, string>', description: 'Los textos actuales (un objeto nuevo después de cada `set`).' },
+  }}
+/>
+
+#### Ejemplo
+
+```tsx title="web/src/lang.ts"
+import { useSyncExternalStore } from "react";
+import { LangTexts } from "@aicore-fivem/lib/shared";
+
+export const lang = new LangTexts();
+
+window.addEventListener("message", (event: MessageEvent<{ action?: string; texts?: Record<string, string> }>) => {
+  if (event.data.action === "open" && event.data.texts) lang.set(event.data.texts);
+});
+
+/** Re-renders the component when the texts change. */
+export function useLang() {
+  useSyncExternalStore(lang.subscribe, lang.snapshot);
+  return lang.translate;
+}
+```
+
+```tsx title="web/src/Title.tsx"
+import { useLang } from "./lang";
+
+export function Title({ count }: { count: number }) {
+  const t = useLang();
+  return <h1>{t("BOUGHT", count, "Water")}</h1>;
+}
+```

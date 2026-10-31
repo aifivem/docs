@@ -1,0 +1,169 @@
+---
+title: Puente de vRP
+description: Los exports que usa el puente de vRP integrado en ai-core - el almacén de datos de vRP, su API de base de datos, el mapeo de permisos y la lista de permisos.
+icon: Plug
+---
+
+ai-core ejecuta los scripts de vRP con su puente de vRP integrado (hace `provide` de `vrp`). El lado Lua del puente llega al lado TypeScript de ai-core a través de los exports de esta página. **Existen para ese puente**: un script de vRP usa la propia API de vRP (`vRP.getUData`, `vRP.query`, `vRP.hasPermission`...), a la que responde el puente, y un script ai-* nunca los necesita. El mapeo de vRP del panel (permisos, grupos, objetos) se edita en el panel de administración, no con estos exports.
+
+Se listan para que la referencia esté completa. Cada uno responde al momento o mediante un callback, como todos los exports de ai-core.
+
+### VrpGetData
+
+Lee un valor del almacén clave-valor de vRP (lo que leen `getUData`, `getCData`, `getSData` y `getGData` de vRP). Los valores viajan como texto hexadecimal para que cualquier byte sobreviva al paso entre Lua y TypeScript.
+
+**Lado:** Servidor · **Espera:** no (responde mediante `done`; al momento para una clave en caché) · **Lib:** ninguna (solo el puente)
+
+```ts title="Firma"
+VrpGetData(kind: string, owner: string, key: string, done: (hex: string) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpGetData('u', tostring(userId), 'myscript:data', function(hex) end)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Qué almacén: `u` (datos de usuario / cuenta), `c` (datos de personaje), `s` (datos del servidor) o `g` (datos globales).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'El id del dueño como texto (el id de cuenta para `u`, el id de personaje para `c`). Como mucho 64 caracteres.', required: true },
+    key: { type: 'string', description: 'La clave del dato. De 1 a 100 caracteres.', required: true },
+    done: { type: '(hex: string) => void', description: 'Se llama una vez con el valor como texto hexadecimal.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+Nada. `done` recibe el valor en hexadecimal, o `""` cuando la clave no está puesta o un argumento es erróneo. Los datos de las cuentas y personajes cargados se quedan en caché, así que responde al momento.
+
+#### Ejemplo
+
+Sin ejemplo: los scripts de vRP llaman a `vRP.getUData` y compañía, que el puente convierte en este export.
+
+### VrpSetData
+
+Guarda un valor en el almacén clave-valor de vRP. Se escribe en la base de datos (`ai_core_vrp_data`) en menos de un segundo, y cuando se descarga su personaje.
+
+**Lado:** Servidor · **Espera:** no · **Lib:** ninguna (solo el puente)
+
+```ts title="Firma"
+VrpSetData(kind: string, owner: string, key: string, hex: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:VrpSetData('u', tostring(userId), 'myscript:data', hex)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Qué almacén: `u`, `c`, `s` o `g` (como en `VrpGetData`).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'El id del dueño como texto. Como mucho 64 caracteres.', required: true },
+    key: { type: 'string', description: 'La clave del dato. De 1 a 100 caracteres.', required: true },
+    hex: { type: 'string', description: 'El valor como texto hexadecimal (pares de 0-9 / a-f). Como mucho 16,000,000 caracteres.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`boolean`: `true` cuando se guardó el valor. `false` (con un aviso en la consola) cuando un argumento es erróneo o `hex` no es un texto hexadecimal válido.
+
+#### Ejemplo
+
+Sin ejemplo: los scripts de vRP llaman a `vRP.setUData` y compañía.
+
+### VrpQuery
+
+La API de base de datos de vRP (`vRP.query`, `vRP.execute`, `vRP.scalar` de sentencias preparadas) sobre el pool de base de datos de ai-core. Los marcadores `@name` se rellenan desde la tabla de parámetros; varias sentencias en un mismo texto se ejecutan en orden dentro de una transacción, y responde la última.
+
+**Lado:** Servidor · **Espera:** no (responde mediante `done`) · **Lib:** ninguna (solo el puente)
+
+```ts title="Firma"
+VrpQuery(
+  sql: string,
+  params: unknown,
+  mode: "query" | "execute" | "scalar",
+  done: (error: string | null, ...answer: unknown[]) => void,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpQuery('SELECT 1 AS n', {}, 'scalar', function(err, value) end)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    sql: { type: 'string', description: 'El texto SQL de la sentencia preparada.', required: true },
+    params: { type: 'unknown', description: 'Una tabla de valores con nombre (`@name`), una lista para marcadores `?`, o una tabla vacía si no hay ninguno.', required: true },
+    mode: { type: '"query" | "execute" | "scalar"', description: 'Qué responder. Cualquier otro valor cuenta como `query`.', required: true },
+    done: { type: '(error, ...answer) => void', description: 'Se llama una vez: `error` es `null` si todo va bien.', required: true, typeDescription: '(error: string | null, ...answer: unknown[]) => void' },
+  }}
+/>
+
+#### Devuelve
+
+Nada. `done` recibe, después de la posición del error: para `query` las filas y el número de filas afectadas; para `execute` el número de filas afectadas; para `scalar` la primera columna de la primera fila (o `null`). Si falla, `done` solo recibe el texto del error (`"empty query"` para un `sql` vacío).
+
+#### Ejemplo
+
+Sin ejemplo: los scripts de vRP llaman a `vRP.prepare` y `vRP.query`. Los demás recursos usan `@aicore-fivem/mysql` (scripts ai-*) o la API de oxmysql de `ai-mysql`.
+
+### GetVrpConfig
+
+El mapeo de vRP del panel (`data/vrp.json`): qué trabajos, bandas, rangos y admins de ai-core tienen qué permisos de vRP, qué significan los nombres de grupo de vRP y qué objeto del inventario es cada id de objeto de vRP.
+
+**Lado:** Servidor · **Espera:** no · **Lib:** ninguna (solo el puente)
+
+```ts title="Firma"
+GetVrpConfig(): VrpConfig
+```
+
+```lua title="Lua"
+local config = exports['ai-core']:GetVrpConfig()
+```
+
+#### Parámetros
+
+Ninguno.
+
+#### Devuelve
+
+`VrpConfig`: `defaults` (reglas de prefijo integradas), `permissions` (reglas), `groups` (nombre de grupo de vRP a trabajo / banda / rango / admin) e `items` (id de objeto de vRP a nombre de objeto). Consulta [VrpConfig](/es/docs/developers/api/types#vrpconfig). Tras un cambio en el panel, ai-core dispara el evento de servidor `ai-core:vrp:config` con la misma forma.
+
+#### Ejemplo
+
+Sin ejemplo: el puente lo lee para responder a `vRP.hasPermission` y `vRP.hasGroup`.
+
+### VrpPermissionAsked
+
+Registra una cadena de permiso que pidió un script de vRP, para que el panel pueda listar cada permiso que usan los scripts del servidor y el dueño pueda mapearlos.
+
+**Lado:** Servidor · **Espera:** no · **Lib:** ninguna (solo el puente)
+
+```ts title="Firma"
+VrpPermissionAsked(permission: string): boolean
+```
+
+```lua title="Lua"
+local new = exports['ai-core']:VrpPermissionAsked('police.armory')
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    permission: { type: 'string', description: 'La cadena de permiso (`police.armory`). De 1 a 100 caracteres.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`boolean`: `true` cuando el permiso era nuevo y ahora queda registrado. `false` cuando ya se conocía, no es un texto válido o la lista registrada está llena.
+
+#### Ejemplo
+
+Sin ejemplo: el puente lo llama desde `vRP.hasPermission`.

@@ -1,0 +1,92 @@
+---
+title: ai-police para desarrolladores
+description: El state bag de esposado de ai-police, cómo llegan sus acciones a otros scripts a través de AI Core, y sus eventos privados.
+icon: Code
+---
+
+ai-police **no tiene exports**. Sus multas, registros, condenas de cárcel, alertas, cacheos y depósitos pasan todos por las capas de AI Core, así que otro script nunca llama a ai-police. Lo que otro script puede leer es el estado `cuffed`.
+
+## State bag `cuffed`
+
+`true` en el state bag de un jugador mientras ai-police lo tiene esposado; `false` (o ausente) en otro caso. El servidor lo escribe; cualquier cliente puede leerlo. El nombre de la clave es `PLAYER_BAGS.cuffed` en `@aicore-fivem/shared`.
+
+**Lado:** Servidor y cliente (lectura) · **Espera:** no
+
+```ts title="Firma"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- servidor
+local cuffed = LocalPlayer.state.cuffed == true      -- cliente, el jugador local
+```
+
+#### Devuelve
+
+`true` mientras está esposado. `false` después de quitarle las esposas, `undefined` / `nil` cuando el jugador no ha sido esposado en esta sesión.
+
+#### Ejemplo
+
+Rechazar un objeto mientras el jugador está esposado:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... abrir la radio
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... abrir la radio
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+No fijes tú `cuffed`: ai-police lleva en el servidor su propia lista de jugadores esposados y escoltados y solo la refleja en el state bag. Un valor escrito por otro script no es un esposado real y se sobrescribe en la siguiente acción de esposar.
+</Callout>
+
+## Lo que ai-police envía a través de AI Core
+
+| Acción | Capa que usa | Qué llega allí |
+| --- | --- | --- |
+| Write a fine | `billing.send` de la lib | Una factura del trabajo de servicio del agente, con la etiqueta "Police fine". |
+| Write a fine | `mdt.record` de la lib | Un registro `fine` con la cantidad. |
+| Send to prison | `prison.jail` de la lib | La condena, con el agente como `by`. |
+| Send to prison | `mdt.record` de la lib | Un registro `arrest` con los minutos. |
+| Shots fired | `dispatch.alert` de la lib | Una alerta por zona de 150 m cada 30 s, para los trabajos de policía del panel. |
+| Search | `inventory.openInventory` de la lib | El inventario del objetivo se abre para el agente. |
+| Impound | `garages.impound` de la lib | El script de garajes se lleva el vehículo; si se niega, el vehículo se borra. |
+
+Para reaccionar a cualquiera de estas, escucha en el lado de la capa (tu script de facturación, MDT, prisión o alertas), no en ai-police.
+
+## Eventos y callbacks privados
+
+El contrato cliente-servidor propio del script (`resource/common/police.ts`). El servidor comprueba el servicio, la distancia y el estado de esposado en cada llamada. Pueden cambiar entre versiones: no los dispares ni los escuches desde otros recursos.
+
+| Nombre | Dirección | Qué transporta |
+| --- | --- | --- |
+| `ai-police:act` | callback de cliente | `(action, target, extra?)`: un agente actúa sobre el jugador más cercano (id de servidor) o el vehículo (net id). Responde `{ ok }`. |
+| `ai-police:duty` | callback de cliente | `(stationId)`: cambiar el servicio en una comisaría. Responde `{ ok, onDuty }`. |
+| `ai-police:shot` | cliente -> servidor | `(x, y, z)`: el jugador disparó un arma (con límite de frecuencia, solo cuentan los que no son policía). |
+| `ai-police:client:cuffed` | servidor -> objetivo | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | servidor -> objetivo | `(officerNetId \| null)`: engancharse al agente, o soltarse. |
+| `ai-police:client:seat` | servidor -> objetivo | `(vehicleNetId \| null)`: sentarse detrás en un vehículo, o salir. |

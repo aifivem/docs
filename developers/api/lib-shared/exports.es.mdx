@@ -1,0 +1,263 @@
+---
+title: Exports entre recursos
+description: "registerExport, resourceExport, optionalExport, callExport, provideExport e isResourceStarted: ofrecer y llamar exports desde TypeScript."
+icon: ArrowLeftRight
+---
+
+Un export es una función que un recurso ofrece y otros recursos llaman (`exports["ai-core"].GetMoney(...)`). Estas utilidades registran exports con ambos estilos de nombre, te dan acceso tipado a otros recursos y permiten que tu código sobreviva a un recurso que no está en marcha.
+
+```ts title="TypeScript"
+import { registerExport, resourceExport, optionalExport, callExport, provideExport, isResourceStarted } from "@aicore-fivem/lib/fivem";
+// En un archivo de cliente o de servidor, los mismos nombres también vienen de "@aicore-fivem/lib/client" o "@aicore-fivem/lib/server".
+```
+
+<Callout type="info">
+Reglas para cada export: es síncrono y devuelve valores pequeños. Ninguna promise cruza la frontera de un recurso: cuando un valor necesita tiempo, el export recibe un callback (`done`). En una ruta caliente (cada frame, cada segundo), refleja los datos a partir de eventos en lugar de llamar a un export cada vez.
+</Callout>
+
+### registerExport
+
+Ofrece una función a otros recursos bajo `name`, y también bajo el mismo nombre con la primera letra en la otra caja (`GetPrice` y `getPrice`), para que los scripts escritos en cualquiera de los dos estilos la encuentren. Úsalo en lugar de `exports(name, fn)` de FiveM.
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+registerExport(name: string, handler: (...args: any[]) => unknown): void
+```
+
+**Lua:** sin equivalente; usa el propio `exports('GetPrice', function(...) end)` de FiveM.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Nombre del export (`"GetPrice"`).', required: true },
+    handler: { type: '(...args: any[]) => unknown', description: 'Se ejecuta en tu recurso cuando otro recurso llama al export. Su valor de retorno vuelve a quien llama. Comprueba cada argumento: otro recurso puede pasar cualquier cosa.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts title="resource/server/index.ts"
+import { registerExport } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+const prices = new Map<string, number>([["water", 5], ["bread", 3]]);
+
+// Otros recursos: exports["my-shop"].GetPrice("water") o exports["my-shop"].getPrice("water")
+registerExport("GetPrice", (item: unknown) => {
+  const name = readText(item, 64);
+  return name === null ? null : (prices.get(name) ?? null);
+});
+```
+
+<Callout type="info">
+Un nombre que registras tú mismo siempre gana a un gemelo. Registrar `getPrice` después de `GetPrice` reemplaza el gemelo con tu propio handler `getPrice`.
+</Callout>
+
+### resourceExport
+
+Acceso tipado a los exports de otro recurso. Los tipos vienen de `CitizenExports` en `@aicore-fivem/shared` (ai-core, ai-lib, ai-target, ai-vehicles, ai-inventory y los demás scripts `ai-*` con exports), así que tu editor conoce cada export, sus argumentos y su tipo de retorno.
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+resourceExport<K extends keyof CitizenExports & string>(resource: K): CitizenExports[K]
+```
+
+**Lua:** sin equivalente; usa `exports['ai-core']:GetMoney(source, 'cash')`.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    resource: { type: 'keyof CitizenExports', description: 'Nombre de recurso con exports tipados (`"ai-core"`, `"ai-vehicles"`...). Cualquier otro nombre es un error de tipos: usa `callExport` para esos.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+El objeto de exports del recurso. Llamar a un método llama al export.
+
+#### Ejemplo
+
+```ts title="resource/server/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+// Un handle por archivo, al principio.
+const core = resourceExport("ai-core");
+
+export function payBonus(source: number): boolean {
+  return core.AddMoney(source, "bank", 500, "Bonus");
+}
+```
+
+<Callout type="warn">
+El handle no comprueba que el recurso esté en marcha. Llamar a un export de un recurso detenido lanza un error. Para un recurso que puede faltar, usa `optionalExport`.
+</Callout>
+
+### optionalExport
+
+Los mismos exports tipados que `resourceExport`, pero `null` mientras el recurso no está arrancado. Úsalo para una dependencia opcional: tu script sigue funcionando cuando el servidor no usa ese recurso.
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+optionalExport<K extends keyof CitizenExports & string>(resource: K): CitizenExports[K] | null
+```
+
+**Lua:** sin equivalente; comprueba `GetResourceState('ai-vehicles') == 'started'` antes de llamar.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    resource: { type: 'keyof CitizenExports', description: 'Nombre de recurso con exports tipados.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+El objeto de exports mientras el recurso está arrancado, `null` en caso contrario.
+
+#### Ejemplo
+
+```ts title="resource/server/index.ts"
+import { optionalExport } from "@aicore-fivem/lib/server";
+
+function plateOfVehicleId(vehicleId: number): string | null {
+  // Pregunta cada vez: ai-vehicles puede arrancar o detenerse mientras el servidor funciona.
+  return optionalExport("ai-vehicles")?.GetVehicle(vehicleId)?.plate ?? null;
+}
+```
+
+<Callout type="warn">
+Llama a `optionalExport` en el momento en que lo necesitas, no una vez al principio del archivo: un handle tomado mientras el recurso estaba detenido se queda en `null`.
+</Callout>
+
+### callExport
+
+Llama a un export de un recurso que no tiene tipos en `CitizenExports` (un script de terceros). El resultado es `unknown`: comprueba su forma antes de usarlo.
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+callExport(resource: string, name: string, ...args: unknown[]): unknown
+```
+
+**Lua:** sin equivalente; usa `exports[resource][name](nil, ...)` o `exports[resource]:Name(...)`.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Nombre del recurso.', required: true },
+    name: { type: 'string', description: 'Nombre del export, exactamente como lo registra el recurso.', required: true },
+    '...args': { type: 'unknown[]', description: 'Argumentos que se pasan al export.' },
+  }}
+/>
+
+#### Devuelve
+
+`unknown`: lo que haya devuelto el export.
+
+#### Ejemplo
+
+```ts title="resource/client/index.ts"
+import { callExport, isResourceStarted } from "@aicore-fivem/lib/client";
+
+function otherHudVisible(): boolean {
+  if (!isResourceStarted("some-hud")) return true;
+  const visible = callExport("some-hud", "IsVisible");
+  return typeof visible === "boolean" ? visible : true;
+}
+```
+
+<Callout type="error">
+Lanza `Error("<resource> has no export <name>")` cuando el recurso no tiene ese export (también cuando está detenido). Comprueba antes `isResourceStarted`, o envuelve la llamada en `try` / `catch`.
+</Callout>
+
+### provideExport
+
+Responde a `exports["<resource>"].<name>` para un nombre de recurso al que tu recurso sustituye con `provide` en su `fxmanifest.lua`. El `provide` de FiveM hace que el nombre exista (para que pasen las líneas `dependency`) pero no reenvía sus exports; esta utilidad responde a un export de ese nombre. ai-banking lo usa para responder a las llamadas de `qb-banking` y `Renewed-Banking`.
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+provideExport(resource: string, name: string, fn: (...args: any[]) => unknown): void
+```
+
+**Lua:** sin equivalente.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'El nombre de recurso que tu manifiesto declara con `provide` (`"qb-banking"`).', required: true },
+    name: { type: 'string', description: 'El nombre del export que otros scripts llaman en ese recurso.', required: true },
+    fn: { type: '(...args: any[]) => unknown', description: 'Se ejecuta cuando otro script lo llama. Su valor de retorno vuelve.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```lua title="fxmanifest.lua"
+provide 'old-banking'
+```
+
+```ts title="resource/server/index.ts"
+import { provideExport, resourceExport } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Los scripts escritos para old-banking siguen funcionando: exports["old-banking"].GetAccountBalance("police")
+provideExport("old-banking", "GetAccountBalance", (job: unknown) => {
+  const name = readText(job, 32);
+  return name === null ? 0 : (core.GetSharedMoney("job", name, "bank") ?? 0);
+});
+```
+
+<Callout type="warn">
+Regístralo al arrancar el recurso, no más tarde: un script que llama al export antes de que exista tu handler recibe un error. Usa también `registerExport` si tu propio nombre debe responder a la misma función.
+</Callout>
+
+### isResourceStarted
+
+Si un recurso está en marcha ahora mismo (su estado es `"started"`).
+
+**Lado:** Cliente y servidor · **Espera:** no
+
+```ts title="Firma"
+isResourceStarted(resource: string): boolean
+```
+
+**Lua:** sin equivalente; usa `GetResourceState(resource) == 'started'`.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    resource: { type: 'string', description: 'Nombre del recurso.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`true` mientras el recurso está arrancado. `false` cuando está detenido, arrancando, deteniéndose o no instalado.
+
+#### Ejemplo
+
+```ts title="resource/server/index.ts"
+import { isResourceStarted } from "@aicore-fivem/lib/server";
+
+if (!isResourceStarted("ai-inventory")) console.warn("ai-inventory is not running: shop items will not work.");
+```

@@ -1,0 +1,184 @@
+---
+title: ai-mysql para desarrolladores
+description: Los exports de oxmysql a los que responde ai-mysql, qué devuelve cada uno, las formas con promesa, el wrapper MySQL.lua y los eventos de error.
+icon: Code
+---
+
+<Callout type="info">
+**¿Escribes en TypeScript un recurso al estilo `ai-*`?** No uses ai-mysql. Usa el paquete de base de datos de AI Core `@aicore-fivem/mysql` en tu propio recurso (sin salto por export en cada consulta, tablas tipadas). Mira [Base de datos](/es/docs/developers/database). ai-mysql es para scripts en Lua y JavaScript escritos para oxmysql.
+</Callout>
+
+ai-mysql responde exactamente a la API de oxmysql (firmas, reglas de callback, formas de resultado), así que la propia documentación de oxmysql es válida. Esta página lista a qué responde y los detalles que importan.
+
+## Usarlo desde Lua
+
+Carga el wrapper de oxmysql; la ruta apunta a ai-mysql:
+
+```lua title="fxmanifest.lua"
+server_script '@oxmysql/lib/MySQL.lua'
+```
+
+```lua title="server.lua"
+-- Espera el resultado: llámalo dentro de un thread o de un handler de evento.
+local row = MySQL.single.await('SELECT money FROM my_accounts WHERE owner = ?', { identifier })
+
+-- Forma con callback: no espera.
+MySQL.update('UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?', { 100, identifier, 100 }, function(affected)
+    if affected == 1 then print('paid') end
+end)
+```
+
+## Exports
+
+Cada export es **de servidor** y responde bajo `exports['ai-mysql']` y `exports.oxmysql`. Cada uno recibe `(query, params?, callback?)`:
+
+- `query`: el texto SQL, con marcadores `?` o marcadores con nombre `@name` / `:name`.
+- `params`: un array para `?`, un objeto para los marcadores con nombre. Se puede omitir; entonces el callback puede ser el segundo argumento.
+- `callback`: se llama con el resultado. Sin él, la llamada se ejecuta igualmente.
+
+Cada export tiene también una **forma con promesa** `<name>_async` y `<name>Sync` (`query_async(query, params)` devuelve una Promise que se rechaza si hay un error).
+
+| Export | Responde | Úsalo para |
+| --- | --- | --- |
+| `query` | las filas (array de objetos) para un SELECT, o la cabecera del resultado para otras sentencias | cualquier cosa; `execute` y `fetch` son alias antiguos |
+| `single` | la primera fila, o `null` | una fila por clave |
+| `scalar` | la primera columna de la primera fila, o `null` | un recuento, un valor |
+| `insert` | el id de la fila nueva (`insertId`), o `null` | INSERT |
+| `update` | el número de filas afectadas, o `null` | UPDATE, DELETE |
+| `prepare` | sentencia preparada (protocolo binario); INSERT responde el id, UPDATE / DELETE las filas afectadas, SELECT la primera fila (o su único valor). Varias listas de valores la ejecutan una vez cada una. | la misma consulta muchas veces |
+| `rawExecute` | sentencia preparada con los resultados completos, sin formatear | cuando necesitas el resultado en bruto |
+| `transaction` | `true` si se confirmó, `false` tras un rollback (siempre por el callback) | varias sentencias que deben salir todas bien |
+| `startTransaction` | una Promise de `true` si se confirmó, `false` tras un rollback | una transacción con lógica entre consultas |
+| `store` | devuelve el texto de la consulta al callback | código antiguo que guardaba consultas |
+| `isReady` | `boolean`: el pool está abierto | comprobaciones al iniciar |
+| `awaitConnection` | una Promise de `true` una vez conectado | esperar al iniciar |
+
+### transaction
+
+Ejecuta varias sentencias en una conexión; o salen todas bien o ninguna.
+
+**Lado:** Servidor · **Espera:** no (responde por el callback; `transaction_async` devuelve una Promise)
+
+```ts title="Firma"
+transaction(queries: Array<string | [string, unknown[] | object] | { query: string; values?: unknown[] | object; parameters?: unknown[] | object }>, params?: unknown[] | object, cb?: (committed: boolean) => void): void
+```
+
+```lua title="Lua"
+local ok = MySQL.transaction.await({
+    { query = 'UPDATE my_accounts SET money = money - ? WHERE owner = ?', values = { 100, from } },
+    { query = 'UPDATE my_accounts SET money = money + ? WHERE owner = ?', values = { 100, to } },
+})
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    queries: { type: 'array', description: 'Las sentencias, en orden. Cada una es un string SQL (que usa los `params` compartidos), un par `[sql, values]` o `{ query, values }` (también `parameters`).', required: true },
+    params: { type: 'unknown[] | object', description: 'Valores para las entradas que son strings simples.' },
+    cb: { type: '(committed: boolean) => void', description: '`true` si se confirmó, `false` si se hizo rollback.' },
+  }}
+/>
+
+#### Devuelve
+
+Nada directamente; el callback recibe `true` o `false`. Un rollback imprime el error en la consola y dispara `oxmysql:transaction-error`.
+
+### startTransaction
+
+Abre una transacción y da a tu función un helper `query` ligado a ella. Devuelve `false` desde tu función para hacer rollback. Caduca a los 30 segundos.
+
+**Lado:** Servidor · **Espera:** sí (Promise)
+
+```ts title="Firma"
+startTransaction(work: (query: (sql: string, params?: unknown[] | object) => Promise<unknown>) => Promise<boolean | void>): Promise<boolean>
+```
+
+#### Devuelve
+
+`Promise<boolean>`: `true` si se confirmó. `false` si tu función devolvió `false`, lanzó un error o se acabaron los 30 segundos.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Un recurso JavaScript o TypeScript simple sin @aicore-fivem/mysql.
+const db = exports.oxmysql;
+
+async function pay(from: string, to: string, amount: number): Promise<boolean> {
+  return db.startTransaction(async (query: (sql: string, params?: unknown[]) => Promise<any>) => {
+    const res = await query("UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?", [amount, from, amount]);
+    if (res.affectedRows !== 1) return false; // no hay dinero suficiente: rollback
+    await query("UPDATE my_accounts SET money = money + ? WHERE owner = ?", [amount, to]);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function pay(from, to, amount)
+    return MySQL.startTransaction(function(query)
+        local res = query('UPDATE my_accounts SET money = money - ? WHERE owner = ? AND money >= ?', { amount, from, amount })
+        if res.affectedRows ~= 1 then return false end
+        query('UPDATE my_accounts SET money = money + ? WHERE owner = ?', { amount, to })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+## Nombres de exports antiguos
+
+| Recurso antiguo | Nombres | Igual que |
+| --- | --- | --- |
+| ghmattimysql | `execute`, `scalar`, `transaction`, `store` (and `executeSync`, `scalarSync`, ...) | `query`, `scalar`, `transaction`, `store` |
+| mysql-async | `mysql_execute`, `mysql_insert`, `mysql_fetch_all`, `mysql_fetch_scalar`, `mysql_transaction`, `mysql_store` | `update`, `insert`, `query`, `scalar`, `transaction`, `store` |
+
+## Reglas de callback y errores
+
+Siguen a oxmysql:
+
+- Éxito: el callback recibe el resultado.
+- Fallo con una forma con promesa (o `.await` en Lua): la promesa se rechaza con el texto del error.
+- Fallo con un callback simple: el error se imprime en la consola y el callback **no** se llama.
+
+## Eventos
+
+### oxmysql:error
+
+**Lado:** Servidor (local) · se dispara cuando falla una consulta.
+
+<TypeTable
+  type={{
+    query: { type: 'string | undefined', description: 'El texto SQL.' },
+    parameters: { type: 'unknown', description: 'Los valores pasados, cuando se conocen.' },
+    message: { type: 'string', description: 'El error de la base de datos.' },
+    resource: { type: 'string', description: 'El recurso que envió la consulta.' },
+  }}
+/>
+
+### oxmysql:transaction-error
+
+**Lado:** Servidor (local) · se dispara cuando un `transaction` hace rollback. Payload `{ message: string, resource: string }`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+on("oxmysql:error", (e: { query?: string; message: string; resource: string }) => {
+  console.log(`[db] ${e.resource}: ${e.message} (${e.query ?? "?"})`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('oxmysql:error', function(e)
+    print(('[db] %s: %s (%s)'):format(e.resource, e.message, e.query or '?'))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Pasa siempre los valores como parámetros, nunca uniéndolos al texto SQL. Un valor de un jugador metido directamente en el SQL le permite ejecutar sus propias consultas.
+</Callout>

@@ -1,0 +1,360 @@
+---
+title: Vehículos y entidades
+description: nearestVehicle, drivenVehicle, waitForEntity, entityFromNetId y las utilidades de props de vehículo - encontrar vehículos y entidades en el cliente y leer o aplicar el aspecto de un vehículo.
+icon: Car
+---
+
+Encontrar vehículos cerca del jugador, convertir los network ids del servidor en entidades locales y leer o aplicar el aspecto de un vehículo. Hacer aparecer un vehículo es solo de servidor (`spawnVehicle` en [Vehículos](/es/docs/developers/api/lib-server/vehicles)); un coche local de exposición es [`PreviewVehicle`](/es/docs/developers/api/lib-client/world-objects#new-previewvehicle).
+
+## Encontrar vehículos
+
+### nearestVehicle
+
+El vehículo más cercano al jugador local dentro de una distancia. El vehículo en el que está sentado el jugador gana primero, salvo con `notOwn`. Usa `filter` para omitir los vehículos que no encajan, para que el maletero detrás del que está el jugador gane a un coche más cercano a su lado.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+nearestVehicle(metres: number, options?: { networked?: boolean; notOwn?: boolean; filter?: (vehicle: number) => boolean }): number
+```
+
+```lua title="Lua"
+local vehicle = aiLib.nearestVehicle(metres, options) -- 0 cuando no hay ninguno
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    metres: { type: 'number', description: 'El radio de búsqueda, en metros.', required: true },
+    options: { type: '{ networked?, notOwn?, filter? }', description: 'Campos abajo.', default: '{}' },
+  }}
+/>
+
+#### Opciones
+
+<TypeTable
+  type={{
+    networked: { type: 'boolean', description: 'Omitir los vehículos solo locales (vistas previas de exposición, props). false los incluye.', default: 'true' },
+    notOwn: { type: 'boolean', description: 'Omitir el vehículo en el que está sentado el jugador.', default: 'false' },
+    filter: { type: '(vehicle: number) => boolean', description: 'Omite los vehículos para los que devuelve false. También se aplica al vehículo en el que está sentado el jugador.' },
+  }}
+/>
+
+#### Devuelve
+
+`number`: el handle del vehículo, o `0` cuando no hay ninguno a menos de `metres`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, nearestVehicle, notify } from "@aicore-fivem/lib/client";
+
+export async function impound(): Promise<void> {
+  const vehicle = nearestVehicle(5, { notOwn: true, filter: (v) => GetPedInVehicleSeat(v, -1) === 0 });
+  if (!vehicle) return notify("No empty vehicle near", "error");
+  await callAction("mypolice:impound", [NetworkGetNetworkIdFromEntity(vehicle)], { fallback: "IMPOUND_FAILED" });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function impound()
+    CreateThread(function()
+        local vehicle = aiLib.nearestVehicle(5.0, {
+            notOwn = true,
+            filter = function(v) return GetPedInVehicleSeat(v, -1) == 0 end,
+        })
+        if vehicle == 0 then return aiLib.notify('No empty vehicle near', 'error') end
+        aiLib.callAction('mypolice:impound', { NetworkGetNetworkIdFromEntity(vehicle) }, { fallback = 'IMPOUND_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Recorre todos los vehículos que conoce el cliente, así que llámalo al pulsar una tecla o en una acción, no en cada frame. Envía el vehículo al servidor como network id; el servidor lo convierte de vuelta con `vehicleFromNet` o `vehicleNearPlayer` y comprueba la distancia.
+</Callout>
+
+### drivenVehicle
+
+El vehículo que conduce el jugador local (sentado en el asiento del conductor).
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+drivenVehicle(): number | false
+```
+
+Sin equivalente en Lua: `aiLib.cache.seat == -1 and aiLib.cache.vehicle`.
+
+#### Devuelve
+
+`number | false`: el handle del vehículo cuando el jugador es el conductor, `false` a pie o como pasajero.
+
+#### Ejemplo
+
+```ts
+import { drivenVehicle, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "flip",
+  () => {
+    const vehicle = drivenVehicle();
+    if (vehicle === false) return notify("You must drive a vehicle", "error");
+    SetVehicleOnGroundProperly(vehicle);
+  },
+  false,
+);
+```
+
+## Entidades a partir de network ids
+
+El servidor envía las entidades como network ids. En un cliente puede que la entidad aún no exista (el jugador está lejos, o se acaba de crear).
+
+### waitForEntity
+
+Espera hasta que la entidad de un network id existe en este cliente y la devuelve.
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+waitForEntity(netId: number, timeoutMs?: number): Promise<number>
+```
+
+```lua title="Lua"
+local entity = aiLib.waitForEntity(netId, timeout) -- llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    netId: { type: 'number', description: 'El network id que envió el servidor.', required: true },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar, en milisegundos. En Lua se llama timeout.', default: '5000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<number>`: el handle de la entidad local, o `0` tras el tiempo límite. Nunca se rechaza.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onServerEvent, waitForEntity } from "@aicore-fivem/lib/client";
+import { readId } from "@aicore-fivem/lib/shared";
+
+// El servidor hizo aparecer un vehículo de trabajo y envía su net id.
+onServerEvent(
+  "myjob:vehicle",
+  { args: ([id]) => { const netId = readId(id); return netId === null ? null : [netId]; } },
+  async (netId) => {
+    const vehicle = await waitForEntity(netId);
+    if (vehicle) SetVehicleFuelLevel(vehicle, 100);
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onServerEvent('myjob:vehicle', function(netId)
+    if type(netId) ~= 'number' then return end
+    local vehicle = aiLib.waitForEntity(netId)
+    if vehicle ~= 0 then SetVehicleFuelLevel(vehicle, 100.0) end
+end)
+```
+</Tab>
+</Tabs>
+
+### entityFromNetId
+
+La entidad local de un network id ahora mismo, sin esperar. Opcionalmente comprueba el tipo de entidad.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+entityFromNetId(netId: number, type?: 1 | 2 | 3): number
+```
+
+Sin equivalente en Lua: `NetworkDoesEntityExistWithNetworkId(netId) and NetToEnt(netId) or 0`.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    netId: { type: 'number', description: 'El network id que envió el servidor.', required: true },
+    type: { type: '1 | 2 | 3', description: 'Aceptar solo este tipo de entidad: 1 ped, 2 vehículo, 3 objeto. Cualquier tipo si se omite.' },
+  }}
+/>
+
+#### Devuelve
+
+`number`: el handle de la entidad, o `0` cuando no está en este cliente o no es de `type`.
+
+#### Ejemplo
+
+```ts
+import { entityFromNetId, EntityState, stateBoolean } from "@aicore-fivem/lib/client";
+
+const sirens = new EntityState("sirensMuted", stateBoolean);
+
+sirens.onChange((netId, muted) => {
+  const vehicle = entityFromNetId(netId, 2);
+  if (vehicle) SetVehicleHasMutedSirens(vehicle, muted === true);
+});
+```
+
+## Aspecto del vehículo
+
+### getVehicleProps
+
+Lee todas las propiedades de un vehículo que este cliente puede ver: matrícula, colores, mejoras, extras, neón, daños. Guarda el resultado para volver a poner el mismo aspecto más tarde.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+getVehicleProps(vehicle: number): VehicleProps
+```
+
+Sin equivalente en Lua.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Un handle de vehículo.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+[`VehicleProps`](/es/docs/developers/api/types#vehicleprops): `v` (versión de formato 1), `model`, `plate` (recortada), `plateIndex`, `colors`, `extraColors`, `customPrimary`, `customSecondary` (RGB o `null`), `wheelType`, `windowTint`, `livery`, `mods` (por tipo de mejora 0-49; las mejoras de activar/desactivar 17-22 como 1 o 0), `xenonColor`, `neon` (cuatro booleanos), `neonColor`, `tyreSmoke`, `extras` (por id de extra), `dirt`, `engineHealth`, `bodyHealth`.
+
+#### Ejemplo
+
+```ts
+import { callAction, drivenVehicle, getVehicleProps } from "@aicore-fivem/lib/client";
+
+export async function saveLook(): Promise<void> {
+  const vehicle = drivenVehicle();
+  if (vehicle === false) return;
+  await callAction("mygarage:saveProps", [NetworkGetNetworkIdFromEntity(vehicle), getVehicleProps(vehicle)], { fallback: "SAVE_FAILED" });
+}
+```
+
+<Callout type="warn">
+Las props vienen del cliente del jugador: el servidor debe procesarlas y comprobarlas (`toVehicleProps` de `@aicore-fivem/lib/shared`) antes de guardarlas.
+</Callout>
+
+### setVehicleProps
+
+Aplica propiedades guardadas a un vehículo. Solo funciona en un vehículo que este cliente controla; los demás jugadores reciben el aspecto a través de la red.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+setVehicleProps(vehicle: number, props: VehicleProps): void
+```
+
+Sin equivalente en Lua.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Un vehículo que este cliente controla (el conductor o el creador).', required: true },
+    props: { type: 'VehicleProps', description: 'Propiedades leídas con getVehicleProps y guardadas.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts
+import { onServerEvent, setVehicleProps, waitForEntity } from "@aicore-fivem/lib/client";
+import { readId, toVehicleProps } from "@aicore-fivem/lib/shared";
+
+onServerEvent(
+  "mygarage:look",
+  {
+    args: ([id, raw]) => {
+      const netId = readId(id);
+      const props = toVehicleProps(raw);
+      return netId === null || props === null ? null : [netId, props];
+    },
+  },
+  async (netId, props) => {
+    const vehicle = await waitForEntity(netId);
+    if (vehicle && NetworkHasControlOfEntity(vehicle)) setVehicleProps(vehicle, props);
+  },
+);
+```
+
+<Callout type="info">
+Un vehículo creado con `spawnVehicle({ props })` ya recibe su aspecto aplicado por ai-core en el cliente dueño. Solo necesitas `setVehicleProps` para tus propios flujos.
+</Callout>
+
+### setVehicleSetup
+
+Aplica una configuración de spawn a un vehículo nuevo: rendimiento al máximo, colores, livery, tintado, suciedad, motor encendido. Solo funciona en un vehículo que este cliente controla.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+setVehicleSetup(vehicle: number, setup: VehicleSetup): void
+```
+
+Sin equivalente en Lua.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Un vehículo que este cliente controla.', required: true },
+    setup: { type: 'VehicleSetup', description: 'Campos abajo. Los campos omitidos se quedan como están.', required: true },
+  }}
+/>
+
+#### VehicleSetup
+
+<TypeTable
+  type={{
+    maxed: { type: 'boolean', description: 'Motor, frenos, transmisión, suspensión y blindaje en su nivel máximo, turbo y xenón activados.' },
+    colors: { type: '[number, number]', description: 'Índices de color de GTA: primario, secundario.' },
+    primary: { type: '[number, number, number]', description: 'Color primario personalizado, RGB 0-255.' },
+    secondary: { type: '[number, number, number]', description: 'Color secundario personalizado, RGB 0-255.' },
+    livery: { type: 'number', description: 'Índice de livery.' },
+    windowTint: { type: 'number', description: 'Índice de tintado de lunas.' },
+    dirt: { type: 'number', description: 'Nivel de suciedad: de 0 limpio a 15.' },
+    engineOn: { type: 'boolean', description: 'Arrancar el motor.' },
+  }}
+/>
+
+El tipo es [`VehicleSetup`](/es/docs/developers/api/types#vehiclesetup).
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts
+import { PreviewVehicle, setVehicleSetup } from "@aicore-fivem/lib/client";
+
+const preview = new PreviewVehicle();
+
+export function showMaxed(model: string): Promise<number> {
+  return preview.show(model, { x: -44.4, y: -1097.1, z: 26.4, heading: 120 }, (vehicle) =>
+    setVehicleSetup(vehicle, { maxed: true, primary: [20, 200, 120], windowTint: 1 }),
+  );
+}
+```

@@ -1,0 +1,737 @@
+---
+title: Sondeos y carga
+description: raycast, groundZ, locationName, vehicleLabel, waypoint, pedHeadshot, onShot y los cargadores request - preguntar al juego sobre el mundo y cargar recursos del juego.
+icon: Radar
+---
+
+Preguntas al juego sobre el mundo (qué hay delante del jugador, a qué altura está el suelo, cómo se llama esta calle) y los cargadores que necesita cada modelo, animación y efecto antes de usarse.
+
+## Sondeos
+
+### raycast
+
+Un sondeo de línea respondido en el mismo frame: qué toca primero la línea de `from` a `to`. Úsalo para "qué está mirando el jugador", colocar objetos en el suelo o la línea de visión.
+
+**Lado:** Cliente · **Espera:** no (bloquea el frame hasta que termina la prueba)
+
+```ts title="Firma"
+raycast(from: Vec3, to: Vec3, options?: RaycastOptions): RayHit | null
+```
+
+```lua title="Lua"
+local hit = aiLib.raycast(from, to, options) -- table o nil; from / to son vector3
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    from: { type: 'Vec3', description: 'Inicio de la línea. Lua: un vector3.', required: true },
+    to: { type: 'Vec3', description: 'Final de la línea. Lua: un vector3.', required: true },
+    options: { type: 'RaycastOptions', description: 'Campos abajo.', default: '{}' },
+  }}
+/>
+
+#### RaycastOptions
+
+<TypeTable
+  type={{
+    flags: { type: 'number', description: 'Lo que prueba el sondeo, sumado: 1 mapa, 2 vehículos, 4 peds, 8 ragdolls, 16 objetos.', default: '1 | 2 | 16 (19)' },
+    ignore: { type: 'number', description: 'Una entidad que el sondeo atraviesa.', default: 'el ped local' },
+    options: { type: 'number', description: 'Bits de opciones del sondeo: 1 ignora el cristal, 2 ignora lo transparente, 4 ignora lo que no tiene colisión.', default: '7' },
+  }}
+/>
+
+#### Devuelve
+
+`RayHit | null`: `{ coords, normal, entity }` del primer impacto, o `null` (`nil`) cuando la línea no toca nada.
+
+<TypeTable
+  type={{
+    coords: { type: 'Vec3', description: 'El punto de impacto. Lua: un vector3.' },
+    normal: { type: 'Vec3', description: 'La normal de la superficie en el punto de impacto (hacia dónde mira la superficie). Lua: un vector3.' },
+    entity: { type: 'number', description: 'La entidad tocada, 0 para el mapa.' },
+  }}
+/>
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { raycast } from "@aicore-fivem/lib/client";
+
+/** What the camera looks at within 10 m. */
+export function lookedAt(): number {
+  const [cx = 0, cy = 0, cz = 0] = GetGameplayCamCoord();
+  const [rx = 0, , rz = 0] = GetGameplayCamRot(2);
+  const pitch = (rx * Math.PI) / 180;
+  const yaw = (rz * Math.PI) / 180;
+  const dir = { x: -Math.sin(yaw) * Math.cos(pitch), y: Math.cos(yaw) * Math.cos(pitch), z: Math.sin(pitch) };
+  const hit = raycast(
+    { x: cx, y: cy, z: cz },
+    { x: cx + dir.x * 10, y: cy + dir.y * 10, z: cz + dir.z * 10 },
+    { flags: 2 | 4 | 16 },
+  );
+  return hit?.entity ?? 0;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function lookedAt()
+    local cam = GetGameplayCamCoord()
+    local rot = GetGameplayCamRot(2)
+    local pitch, yaw = math.rad(rot.x), math.rad(rot.z)
+    local dir = vector3(-math.sin(yaw) * math.cos(pitch), math.cos(yaw) * math.cos(pitch), math.sin(pitch))
+    local hit = aiLib.raycast(cam, cam + dir * 10.0, { flags = 2 | 4 | 16 })
+    return hit and hit.entity or 0
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Es un sondeo síncrono: limítalo a uno o dos por frame.
+</Callout>
+
+### groundZ
+
+La altura del suelo bajo un punto, sondeando hacia abajo desde `z`.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+groundZ(x: number, y: number, z?: number): number | null
+```
+
+```lua title="Lua"
+local ground = aiLib.groundZ(x, y, z) -- number o nil
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    x: { type: 'number', description: 'x en el mundo.', required: true },
+    y: { type: 'number', description: 'y en el mundo.', required: true },
+    z: { type: 'number', description: 'Altura desde la que empieza el sondeo, hacia abajo.', default: '1000' },
+  }}
+/>
+
+#### Devuelve
+
+`number | null`: la altura del suelo, o `null` (`nil`) mientras la colisión de ahí no está cargada (el área está lejos del jugador).
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { groundZ, player } from "@aicore-fivem/lib/client";
+
+const { x, y, z } = player.coords();
+const ground = groundZ(x, y, z + 2);
+if (ground !== null) console.log(`ground is ${(z - ground).toFixed(2)} m below`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local c = aiLib.player.coords()
+local ground = aiLib.groundZ(c.x, c.y, c.z + 2.0)
+if ground then print(('ground is %.2f m below'):format(c.z - ground)) end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Para mover al jugador a un suelo desconocido, usa `player.teleport` sin `z`: espera a la colisión en cada altura.
+</Callout>
+
+### locationName
+
+Los nombres de la calle, la calle que se cruza y el área en un punto. Úsalo en alertas de dispatch, mensajes de teléfono y HUD.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+locationName(coords?: Vec3): LocationName
+```
+
+```lua title="Lua"
+local where = aiLib.locationName(coords) -- coords es un vector3, opcional
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    coords: { type: 'Vec3', description: 'El punto. Lua: un vector3.', default: 'el ped local' },
+  }}
+/>
+
+#### Devuelve
+
+`LocationName`:
+
+<TypeTable
+  type={{
+    street: { type: 'string', description: 'El nombre de la calle, "" donde no hay ninguna.' },
+    crossing: { type: 'string | undefined', description: 'La calle que se cruza, omitida (nil) cuando no hay ninguna.' },
+    zone: { type: 'string', description: 'La etiqueta del área (Vinewood Hills), "" donde el juego no tiene ninguna.' },
+  }}
+/>
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { locationName } from "@aicore-fivem/lib/client";
+
+const { street, crossing, zone } = locationName();
+const text = crossing ? `${street} / ${crossing}, ${zone}` : `${street}, ${zone}`;
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local where = aiLib.locationName()
+local text = where.crossing and ('%s / %s, %s'):format(where.street, where.crossing, where.zone)
+    or ('%s, %s'):format(where.street, where.zone)
+```
+</Tab>
+</Tabs>
+
+### vehicleLabel
+
+El nombre visible de un vehículo (Sultan RS) a partir de un nombre de modelo, un hash de modelo o una entidad de vehículo.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+vehicleLabel(vehicle: string | number): string
+```
+
+```lua title="Lua"
+local name = aiLib.vehicleLabel(vehicle)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    vehicle: { type: 'string | number', description: 'Un nombre de modelo (sultanrs), un hash de modelo o un handle de entidad de vehículo.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`string`: la etiqueta del juego para el modelo; el nombre visible del modelo cuando el juego no tiene texto para él (vehículos add-on sin entrada de texto); el nombre o el hash del modelo como texto cuando incluso eso falta.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, notify, onCache, vehicleLabel } from "@aicore-fivem/lib/client";
+
+onCache("vehicle", (vehicle) => {
+  if (vehicle !== false && cache.seat === -1) notify(vehicleLabel(vehicle), "info", 2000);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.cache.onChange('vehicle', function(vehicle)
+    if vehicle and aiLib.cache.seat == -1 then aiLib.notify(aiLib.vehicleLabel(vehicle), 'info', 2000) end
+end)
+```
+</Tab>
+</Tabs>
+
+### waypoint
+
+El waypoint que el jugador marcó en el mapa.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+waypoint(): { x: number; y: number } | null
+```
+
+```lua title="Lua"
+local target = aiLib.waypoint() -- { x, y } o nil
+```
+
+#### Devuelve
+
+`{ x: number; y: number } | null`: la posición del waypoint (sin altura: los waypoints del mapa no tienen), o `null` (`nil`) cuando no hay ningún waypoint marcado.
+
+#### Ejemplo
+
+Consulta [`player.teleport`](/es/docs/developers/api/lib-client/player#playerteleport): teletransportarse al waypoint.
+
+### pedHeadshot
+
+Saca una foto de la cara de un ped y espera hasta que el juego la renderizó. Usa el nombre de la textura en una página NUI como `https://nui-img/<txd>/<txd>`.
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+pedHeadshot(ped: number, transparent?: boolean, timeoutMs?: number): Promise<{ handle: number; txd: string } | null>
+```
+
+```lua title="Lua"
+local handle, txd = aiLib.pedHeadshot(ped, transparent, timeout) -- llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'El ped que se fotografía.', required: true },
+    transparent: { type: 'boolean', description: 'Un fondo transparente en lugar del fondo por defecto.', default: 'false' },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar al renderizado, en milisegundos. En Lua se llama timeout.', default: '5000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<{ handle: number; txd: string } | null>`: el handle de la foto y el nombre de su textura; `null` cuando el ped no existe o el renderizado tardó más que el tiempo límite. Lua devuelve `handle, txd`, o `nil`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, pedHeadshot } from "@aicore-fivem/lib/client";
+
+export async function sendMugshot(): Promise<void> {
+  const shot = await pedHeadshot(cache.ped, true);
+  if (!shot) return;
+  SendNUIMessage({ action: "photo", data: `https://nui-img/${shot.txd}/${shot.txd}` });
+  setTimeout(() => UnregisterPedheadshot(shot.handle), 10_000);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local handle, txd = aiLib.pedHeadshot(aiLib.cache.ped, true)
+    if not handle then return end
+    SendNUIMessage({ action = 'photo', data = ('https://nui-img/%s/%s'):format(txd, txd) })
+    Wait(10000)
+    UnregisterPedheadshot(handle)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Llama a `UnregisterPedheadshot(handle)` en cuanto la foto deje de mostrarse.
+</Callout>
+
+### onShot
+
+Ejecuta un handler en el frame en que el ped local dispara (estrés, alertas de disparos, casquillos). Una comprobación por frame para tu recurso, activa solo mientras hay un arma en la mano.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+onShot(handler: (weapon: number) => void): () => void
+```
+
+```lua title="Lua"
+aiLib.onShot(function(weapon) end) -- no devuelve nada
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    handler: { type: '(weapon: number) => void', description: 'Recibe el hash del arma que disparó. Se ejecuta dentro del frame: mantenlo ligero.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+TypeScript: `() => void`, una función que quita el handler. Lua no devuelve nada (el handler se queda).
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onShot } from "@aicore-fivem/lib/client";
+
+let lastAlert = 0;
+onShot(() => {
+  if (GetGameTimer() - lastAlert < 30_000) return; // una alerta cada 30 s
+  lastAlert = GetGameTimer();
+  emitNet("mypolice:shots");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local lastAlert = 0
+aiLib.onShot(function()
+    if GetGameTimer() - lastAlert < 30000 then return end
+    lastAlert = GetGameTimer()
+    TriggerServerEvent('mypolice:shots')
+end)
+```
+</Tab>
+</Tabs>
+
+## Cargar recursos del juego
+
+Los modelos, animaciones, efectos y texturas deben cargarse antes de usarse. Cada cargador solicita el recurso y espera hasta que está listo. Libéralo cuando termines, como indica cada entrada.
+
+### requestModel
+
+Carga un modelo (ped, vehículo, objeto) y da su hash.
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+requestModel(model: string | number, timeoutMs?: number): Promise<number>
+```
+
+```lua title="Lua"
+local hash = aiLib.requestModel(model, timeout) -- integer o nil, llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    model: { type: 'string | number', description: 'Nombre o hash del modelo.', required: true },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar, en milisegundos. En Lua se llama timeout.', default: '10000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<number>`: el hash del modelo una vez cargado. **Se rechaza** cuando el modelo no existe en los archivos del juego o no carga a tiempo. Lua devuelve el hash, o `nil` en ambos casos.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { requestModel } from "@aicore-fivem/lib/client";
+
+export async function placeCone(x: number, y: number, z: number): Promise<number> {
+  const hash = await requestModel("prop_roadcone02a");
+  const cone = CreateObject(hash, x, y, z, false, false, false);
+  SetModelAsNoLongerNeeded(hash);
+  PlaceObjectOnGroundProperly(cone);
+  return cone;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function placeCone(x, y, z)
+    local hash = aiLib.requestModel('prop_roadcone02a')
+    if not hash then return 0 end
+    local cone = CreateObject(hash, x, y, z, false, false, false)
+    SetModelAsNoLongerNeeded(hash)
+    PlaceObjectOnGroundProperly(cone)
+    return cone
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Llama a `SetModelAsNoLongerNeeded(hash)` en cuanto la entidad esté creada.
+</Callout>
+
+### requestAnimDict
+
+Carga un diccionario de animaciones.
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+requestAnimDict(dict: string, timeoutMs?: number): Promise<string>
+```
+
+```lua title="Lua"
+local dict = aiLib.requestAnimDict(dict, timeout) -- string o nil, llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    dict: { type: 'string', description: 'El nombre del diccionario de animaciones.', required: true },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar, en milisegundos. En Lua se llama timeout.', default: '10000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<string>`: el nombre del diccionario una vez cargado. **Se rechaza** cuando el diccionario no existe o no carga a tiempo. Lua devuelve el nombre, o `nil`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, requestAnimDict } from "@aicore-fivem/lib/client";
+
+export async function dance(): Promise<void> {
+  const dict = await requestAnimDict("anim@amb@nightclub@dancers@crowddance_facedj@");
+  TaskPlayAnim(cache.ped, dict, "hi_dance_facedj_09_v2_male^1", 8, -8, -1, 1, 0, false, false, false);
+  RemoveAnimDict(dict);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local dict = aiLib.requestAnimDict('anim@amb@nightclub@dancers@crowddance_facedj@')
+    if not dict then return end
+    TaskPlayAnim(aiLib.cache.ped, dict, 'hi_dance_facedj_09_v2_male^1', 8.0, -8.0, -1, 1, 0, false, false, false)
+    RemoveAnimDict(dict)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Llama a `RemoveAnimDict(dict)` cuando la animación ya no se reproduzca. `player.playAnim` carga y libera el diccionario por ti.
+</Callout>
+
+### requestAnimSet
+
+Carga un clipset de movimiento (andar agachado, andar herido).
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+requestAnimSet(set: string, timeoutMs?: number): Promise<string>
+```
+
+```lua title="Lua"
+local set = aiLib.requestAnimSet(set, timeout) -- string o nil, llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    set: { type: 'string', description: 'El nombre del clipset.', required: true },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar, en milisegundos. En Lua se llama timeout.', default: '10000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<string>`: el nombre del clipset una vez cargado. **Se rechaza** cuando no carga a tiempo. Lua devuelve el nombre, o `nil`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, requestAnimSet } from "@aicore-fivem/lib/client";
+
+export async function limp(): Promise<void> {
+  const set = await requestAnimSet("move_m@injured");
+  SetPedMovementClipset(cache.ped, set, 0.2);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local set = aiLib.requestAnimSet('move_m@injured')
+    if set then SetPedMovementClipset(aiLib.cache.ped, set, 0.2) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Llama a `RemoveAnimSet(set)` cuando ya no se use.
+</Callout>
+
+### requestPtfxAsset
+
+Carga un recurso de efectos de partículas.
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+requestPtfxAsset(asset: string, timeoutMs?: number): Promise<string>
+```
+
+```lua title="Lua"
+local asset = aiLib.requestPtfxAsset(asset, timeout) -- string o nil, llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    asset: { type: 'string', description: 'El nombre del recurso de partículas.', required: true },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar, en milisegundos. En Lua se llama timeout.', default: '10000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<string>`: el nombre del recurso una vez cargado. **Se rechaza** cuando no carga a tiempo. Lua devuelve el nombre, o `nil`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player, requestPtfxAsset } from "@aicore-fivem/lib/client";
+
+export async function sparks(): Promise<void> {
+  const asset = await requestPtfxAsset("core");
+  const { x, y, z } = player.coords();
+  UseParticleFxAsset(asset);
+  StartParticleFxNonLoopedAtCoord("ent_sht_electrical_box", x, y, z, 0, 0, 0, 1, false, false, false);
+  RemoveNamedPtfxAsset(asset);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local asset = aiLib.requestPtfxAsset('core')
+    if not asset then return end
+    local c = aiLib.player.coords()
+    UseParticleFxAsset(asset)
+    StartParticleFxNonLoopedAtCoord('ent_sht_electrical_box', c.x, c.y, c.z, 0.0, 0.0, 0.0, 1.0, false, false, false)
+    RemoveNamedPtfxAsset(asset)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Llama a `RemoveNamedPtfxAsset(asset)` cuando termines.
+</Callout>
+
+### requestTextureDict
+
+Carga un diccionario de texturas en streaming (para `DrawSprite` y similares).
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+requestTextureDict(dict: string, timeoutMs?: number): Promise<string>
+```
+
+```lua title="Lua"
+local dict = aiLib.requestTextureDict(dict, timeout) -- string o nil, llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    dict: { type: 'string', description: 'El nombre del diccionario de texturas.', required: true },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar, en milisegundos. En Lua se llama timeout.', default: '10000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<string>`: el nombre del diccionario una vez cargado. **Se rechaza** cuando no carga a tiempo. Lua devuelve el nombre, o `nil`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { every, requestTextureDict } from "@aicore-fivem/lib/client";
+
+export async function showCrosshair(): Promise<void> {
+  const dict = await requestTextureDict("shared");
+  every(0, () => DrawSprite(dict, "emptydot_32", 0.5, 0.5, 0.01, 0.018, 0, 255, 255, 255, 200));
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local dict = aiLib.requestTextureDict('shared')
+    if not dict then return end
+    aiLib.every(0, function() DrawSprite(dict, 'emptydot_32', 0.5, 0.5, 0.01, 0.018, 0.0, 255, 255, 255, 200) end)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Llama a `SetStreamedTextureDictAsNoLongerNeeded(dict)` cuando termines.
+</Callout>
+
+### requestWeaponAsset
+
+Carga el modelo y los recursos de un arma y da su hash.
+
+**Lado:** Cliente · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+requestWeaponAsset(weapon: string | number, timeoutMs?: number): Promise<number>
+```
+
+```lua title="Lua"
+local hash = aiLib.requestWeaponAsset(weapon, timeout) -- integer o nil, llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    weapon: { type: 'string | number', description: 'Nombre del arma (WEAPON_PISTOL) o hash.', required: true },
+    timeoutMs: { type: 'number', description: 'Cuánto esperar, en milisegundos. En Lua se llama timeout.', default: '10000' },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<number>`: el hash del arma una vez cargada. **Se rechaza** cuando no carga a tiempo. Lua devuelve el hash, o `nil`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { player, requestWeaponAsset } from "@aicore-fivem/lib/client";
+
+export async function showcasePistol(): Promise<number> {
+  const hash = await requestWeaponAsset("WEAPON_PISTOL");
+  const { x, y, z } = player.coords();
+  const object = CreateWeaponObject(hash, 0, x, y, z + 1, true, 1, 0);
+  RemoveWeaponAsset(hash);
+  return object;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local hash = aiLib.requestWeaponAsset('WEAPON_PISTOL')
+    if not hash then return end
+    local c = aiLib.player.coords()
+    CreateWeaponObject(hash, 0, c.x, c.y, c.z + 1.0, true, 1.0, 0)
+    RemoveWeaponAsset(hash)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Llama a `RemoveWeaponAsset(hash)` cuando termines.
+</Callout>

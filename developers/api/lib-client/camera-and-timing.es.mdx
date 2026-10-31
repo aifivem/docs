@@ -1,0 +1,508 @@
+---
+title: Cámara y temporización
+description: ScriptCamera, TickLoop, AreaFollower y ServerClock - cámaras con script, tareas por frame que solo se ejecutan cuando hacen falta, informar al servidor del área del jugador y el reloj del servidor en el cliente.
+icon: Camera
+---
+
+Una cámara con script para exposiciones y escenas, una tarea por frame que activas solo mientras hace falta, la mitad de cliente del streaming por áreas del servidor y el reloj del servidor para cuentas atrás. El trabajo periódico en general es `every(ms, fn)` (consulta [Lib: compartido y fivem](/es/docs/developers/api/lib-shared)); nunca `setInterval` ni un `setTick` a secas.
+
+## ScriptCamera
+
+### new ScriptCamera
+
+Una cámara con script: la vista de exposición de una tienda, un editor, una escena, unos prismáticos. `start` la crea y la muestra, los demás métodos la mueven y la cambian, `stop` vuelve suavemente a la cámara del juego y la destruye. Una cámara que sigue en marcha cuando tu recurso se detiene se devuelve al momento, así que el jugador nunca se queda atrapado en ella.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+new ScriptCamera(type?: string)
+```
+
+Sin equivalente en Lua: los recursos Lua usan `CreateCam`, `RenderScriptCams` y `DestroyCam`.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    type: { type: 'string', description: 'El nombre de cámara del juego. DEFAULT_SCRIPTED_FLY_CAMERA para una vista en mano.', default: '"DEFAULT_SCRIPTED_CAMERA"' },
+  }}
+/>
+
+#### CameraView
+
+Hacia dónde mira una cámara, usado por `start`, `move` y `glideTo`:
+
+<TypeTable
+  type={{
+    pointAt: { type: 'Vec3', description: 'Un punto al que la cámara sigue mirando.' },
+    rotation: { type: 'Vec3', description: 'Una rotación fija en grados, cuando no hay pointAt.' },
+    fov: { type: 'number', description: 'Campo de visión en grados.' },
+  }}
+/>
+
+#### Miembros
+
+<TypeTable
+  type={{
+    active: { type: 'boolean', description: 'Propiedad de solo lectura: si la cámara existe (iniciada y no detenida).' },
+    cam: { type: 'number', description: 'Propiedad de solo lectura: el handle de cámara del juego (0 mientras está detenida), para natives que la clase no envuelve.' },
+  }}
+/>
+
+#### Ejemplo
+
+```ts
+import { ScriptCamera } from "@aicore-fivem/lib/client";
+
+const camera = new ScriptCamera();
+const CAR = { x: -44.4, y: -1097.1, z: 26.4 };
+
+export function openShowroom(): void {
+  camera.start({ x: -40.2, y: -1100.5, z: 27.6 }, { pointAt: CAR, fov: 50 }, 800);
+}
+
+export function frontView(): void {
+  camera.glideTo({ x: -47.5, y: -1093.8, z: 27.2 }, { pointAt: CAR, fov: 45 }, 1200);
+}
+
+export function closeShowroom(): void {
+  camera.stop(800);
+}
+```
+
+### camera.start
+
+Crea la cámara (cuando aún no existe), la coloca en un punto y la convierte en la vista, con una transición suave desde la cámara del juego.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.start(at: Vec3, view?: CameraView, easeMs?: number): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    at: { type: 'Vec3', description: 'Posición de la cámara.', required: true },
+    view: { type: 'CameraView', description: 'Hacia dónde mira y el campo de visión.', default: '{}' },
+    easeMs: { type: 'number', description: 'Milisegundos de transición desde la cámara del juego. 0 corta al momento.', default: '0' },
+  }}
+/>
+
+#### Devuelve
+
+`void`. Consulta el ejemplo de la clase.
+
+### camera.move
+
+Mueve la cámara, al momento o deslizándose hasta allí (el juego interpola). No hace nada mientras está detenida.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.move(at: Vec3, view?: CameraView, ms?: number): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    at: { type: 'Vec3', description: 'La nueva posición.', required: true },
+    view: { type: 'CameraView', description: 'La nueva mirada. La rotación y el fov se conservan si se omiten.', default: '{}' },
+    ms: { type: 'number', description: 'Milisegundos para deslizarse hasta allí. 0 salta al momento.', default: '0' },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts
+camera.move({ x: -42.0, y: -1099.0, z: 28.5 }, { pointAt: CAR }, 600);
+```
+
+### camera.glideTo
+
+Hace una transición a un nuevo plano: una segunda cámara en el nuevo lugar toma el relevo de esta, y la antigua se destruye después de la transición. La vibración y el desenfoque se mantienen. Inicia la cámara cuando está detenida (o cuando `ms` es 0).
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.glideTo(at: Vec3, view: CameraView, ms: number): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    at: { type: 'Vec3', description: 'La nueva posición.', required: true },
+    view: { type: 'CameraView', description: 'La nueva mirada.', required: true },
+    ms: { type: 'number', description: 'Duración de la transición en milisegundos.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`. Consulta el ejemplo de la clase.
+
+### camera.attach
+
+Hace que la cámara siga a una entidad con un desplazamiento en el espacio propio de la entidad.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.attach(entity: number, offset: Vec3, relative?: boolean): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    entity: { type: 'number', description: 'La entidad que se sigue.', required: true },
+    offset: { type: 'Vec3', description: 'Desplazamiento respecto a la entidad, en metros, en el espacio propio de la entidad.', required: true },
+    relative: { type: 'boolean', description: 'Girar con la entidad.', default: 'true' },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts
+import { cache, ScriptCamera } from "@aicore-fivem/lib/client";
+
+const chase = new ScriptCamera();
+if (cache.vehicle !== false) {
+  chase.start({ x: 0, y: 0, z: 0 });
+  chase.attach(cache.vehicle, { x: 0, y: -6, z: 2 });
+}
+```
+
+### camera.pointAt
+
+Hace que la cámara siga mirando un punto.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.pointAt(target: Vec3): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    target: { type: 'Vec3', description: 'El punto al que mirar.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+### camera.setFov
+
+Cambia el campo de visión (zoom).
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.setFov(fov: number): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    fov: { type: 'number', description: 'Campo de visión en grados. Un valor menor acerca.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts
+// Prismáticos: zoom con la rueda del ratón.
+let fov = 40;
+export function zoom(step: number): void {
+  fov = Math.min(70, Math.max(5, fov + step));
+  camera.setFov(fov);
+}
+```
+
+### camera.shake
+
+Añade la vibración de cámara del juego. Una amplitud de 0 la detiene.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.shake(type: string, amplitude: number): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    type: { type: 'string', description: 'El nombre de vibración del juego: HAND_SHAKE, ROAD_VIBRATION_SHAKE...', required: true },
+    amplitude: { type: 'number', description: 'Intensidad. 0 detiene la vibración.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts
+camera.shake("HAND_SHAKE", 0.3);
+```
+
+### camera.blur
+
+Profundidad de campo: nítido entre dos distancias, desenfocado fuera. Pasa `null` para ninguna. Necesita un native por frame, que solo se ejecuta mientras hay un desenfoque fijado.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.blur(dof: CameraBlur | null): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    dof: { type: 'CameraBlur | null', description: '{ near: number; far: number; strength: number }: nítido de near a far metros, strength 0-1. null quita el desenfoque.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+```ts
+camera.blur({ near: 2, far: 8, strength: 0.8 });
+```
+
+### camera.stop
+
+Devuelve la vista a la cámara del juego (con una transición de `easeMs`) y destruye la cámara. La vibración y el desenfoque también terminan. No hace nada mientras está detenida.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+camera.stop(easeMs?: number): void
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    easeMs: { type: 'number', description: 'Milisegundos de transición de vuelta. 0 corta al momento.', default: '0' },
+  }}
+/>
+
+#### Devuelve
+
+`void`. Consulta el ejemplo de la clase.
+
+## TickLoop
+
+### new TickLoop
+
+Una tarea por frame (`every(0, fn)` en el único planificador de tu recurso) que está apagada hasta que la enciendes. Úsala para todo lo que deba ejecutarse en cada frame solo a veces: dibujar un marcador mientras estás cerca, una vista previa de colocación, desactivar el disparo mientras apuntas a un amigo.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+new TickLoop(onFrame: () => void, name?: string)
+```
+
+Sin equivalente en Lua: `aiLib.every(0, fn, { active = false, name = name })` y `job:set(active)`.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    onFrame: { type: '() => void', description: 'Se ejecuta en cada frame mientras el bucle está encendido. Un error lanzado se registra en el log (como máximo una vez cada 10 s) y el bucle sigue en marcha.', required: true },
+    name: { type: 'string', description: 'Un nombre que se muestra en los logs de errores.' },
+  }}
+/>
+
+#### Miembros
+
+<TypeTable
+  type={{
+    running: { type: 'boolean', description: 'Propiedad de solo lectura: si el bucle está encendido.' },
+    'set(active)': { type: '(active: boolean) => void', description: 'Enciende (true) o apaga (false) el bucle.' },
+  }}
+/>
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { TickLoop, Zones } from "@aicore-fivem/lib/client";
+
+const SPOT = { x: 215.8, y: -810.1, z: 30.7 };
+const light = new TickLoop(() => {
+  DrawLightWithRange(SPOT.x, SPOT.y, SPOT.z + 2, 61, 247, 158, 8, 4);
+}, "garageLight");
+
+const zones = new Zones();
+zones.add("garage", {
+  shape: { type: "sphere", center: SPOT, radius: 25 },
+  onEnter: () => light.set(true),
+  onExit: () => light.set(false),
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local SPOT = vector3(215.8, -810.1, 30.7)
+local light = aiLib.every(0, function()
+    DrawLightWithRange(SPOT.x, SPOT.y, SPOT.z + 2.0, 61, 247, 158, 8.0, 4.0)
+end, { active = false, name = 'garageLight' })
+
+local zones = aiLib.Zones.new()
+zones:add('garage', {
+    shape = { type = 'sphere', center = SPOT, radius = 25.0 },
+    onEnter = function() light:set(true) end,
+    onExit = function() light:set(false) end,
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Cada tarea de tu recurso se ejecuta desde un único `setTick` que solo existe mientras hay una tarea encendida. Crea el bucle una vez al principio del archivo y conmútalo, en lugar de crear uno nuevo en cada inicio.
+</Callout>
+
+## AreaFollower
+
+### new AreaFollower
+
+La mitad de cliente de un `AreaStream` de servidor ([Streaming por áreas](/es/docs/developers/api/lib-server/area-stream)): indica al servidor en qué celda de la cuadrícula está el jugador cada vez que cambia (se comprueba cada 2 segundos mientras está iniciado), para que el servidor envíe solo los objetos del mundo (objetos tirados, plantas, props colocados) alrededor del jugador. Crea uno al principio del archivo.
+
+**Lado:** Cliente · **Espera:** no
+
+```ts title="Firma"
+new AreaFollower(event: string, cellSize?: number)
+```
+
+Sin equivalente en Lua.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    event: { type: 'string', description: 'El evento de red que escucha el servidor; recibe (cx, cy), las coordenadas de la celda.', required: true },
+    cellSize: { type: 'number', description: 'Tamaño de celda en metros. Debe coincidir con el cellSize del stream del servidor.', default: '64' },
+  }}
+/>
+
+#### Miembros
+
+<TypeTable
+  type={{
+    'start()': { type: '() => void', description: 'Envía la celda actual ahora y en cada cambio.' },
+    'stop()': { type: '() => void', description: 'Deja de informar.' },
+  }}
+/>
+
+#### Ejemplo
+
+```ts title="resource/client/index.ts"
+import { AreaFollower, onServerEvent } from "@aicore-fivem/lib/client";
+
+const follower = new AreaFollower("myplants:cell");
+follower.start();
+
+const plants = new Map<number, unknown>();
+
+// El stream envía (reset, puts, removes): un snapshot con reset en true y después solo cambios.
+onServerEvent(
+  "myplants:area",
+  {
+    args: ([reset, puts, removes]) =>
+      typeof reset === "boolean" && Array.isArray(puts) && Array.isArray(removes)
+        ? ([reset, puts, removes] as const)
+        : null,
+  },
+  (reset, puts, removes) => {
+    if (reset) plants.clear();
+    for (const plant of puts as Array<{ id?: unknown } | null>)
+      if (typeof plant?.id === "number") plants.set(plant.id, plant);
+    for (const id of removes) if (typeof id === "number") plants.delete(id);
+  },
+);
+```
+
+<Callout type="warn">
+El servidor comprueba una celda informada contra la posición real del jugador (`followReported` solo acepta celdas a una celda como máximo del ped), así que un tramposo no puede pedir un área lejana.
+</Callout>
+
+## ServerClock
+
+### new ServerClock
+
+El reloj del servidor en un cliente. Los relojes del cliente y del servidor pueden diferir, así que una cuenta atrás hacia una hora del servidor (el cooldown de un robo, el final de una subasta) debe convertirse primero a hora local. Llama a `sync` con el `Date.now()` del servidor cada vez que llegue un snapshot o un mensaje de inicio.
+
+**Lado:** Cliente (desde `@aicore-fivem/lib/shared`) · **Espera:** no
+
+```ts title="Firma"
+new ServerClock()
+```
+
+Sin equivalente en Lua.
+
+#### Miembros
+
+<TypeTable
+  type={{
+    'sync(serverNow)': { type: '(serverNow: number) => void', description: 'Toma el desfase a partir del Date.now() del servidor recién recibido.' },
+    'now()': { type: '() => number', description: 'El Date.now() del servidor ahora mismo.' },
+    'toLocal(serverTime)': { type: '(serverTime: number) => number', description: 'Una hora del servidor como hora Date.now() local, para cuentas atrás con el reloj local.' },
+  }}
+/>
+
+#### Ejemplo
+
+```ts title="resource/client/index.ts"
+import { every, onServerEvent } from "@aicore-fivem/lib/client";
+import { ServerClock } from "@aicore-fivem/lib/shared";
+
+const clock = new ServerClock();
+let endsAt = 0; // hora local
+
+onServerEvent(
+  "myauction:state",
+  { args: ([now, ends]) => (typeof now === "number" && typeof ends === "number" ? [now, ends] : null) },
+  (now, ends) => {
+    clock.sync(now);
+    endsAt = clock.toLocal(ends);
+  },
+);
+
+every(1000, () => {
+  const left = Math.max(0, Math.round((endsAt - Date.now()) / 1000));
+  SendNUIMessage({ action: "countdown", data: left });
+});
+```
+
+<Callout type="info">
+El servidor envía la hora de fin una vez; el cliente cuenta hacia atrás con su propio reloj. Nunca envíes el tiempo restante cada segundo.
+</Callout>

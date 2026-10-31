@@ -1,0 +1,298 @@
+---
+title: Panel de administración
+description: "AdminPanel y DataFile: pon los ajustes de tu script en el panel de administración de ai-core, léelos, reacciona a las ediciones y guarda el contenido del panel en data/*.json."
+icon: SlidersHorizontal
+---
+
+```ts title="TypeScript"
+import { AdminPanel, DataFile } from "@aicore-fivem/lib/server";
+```
+
+Cada script `ai-*` guarda los ajustes que ajusta el dueño del servidor en el panel de administración de ai-core, no en un archivo de configuración. Describes los datos y el formulario en `resource/server/schema.ts` ([`PanelSchema`](/es/docs/developers/api/types#panelschema): archivos, pestañas, tarjetas, widgets; consulta [Crear un script](/es/docs/developers/creating-a-script)), creas un `AdminPanel` a partir de él y lees los valores a través de él. El lado del dueño (abrir el panel, editar, permisos) está en [Panel de administración](/es/docs/admin-panel).
+
+Sin equivalente en Lua: el panel de administración es solo para TypeScript.
+
+### AdminPanel
+
+El contenido del panel de tu recurso. Carga cada `data/<file>.json` una vez al arrancar, lo mantiene en memoria, comprueba cada edición del panel contra el esquema, guarda el archivo (de forma atómica, una ráfaga de ediciones se escribe una sola vez) y avisa a tu código, a los paneles abiertos y, para los archivos `sync: "all"`, a cada cliente. También escribe `data/schemas/<file>.schema.json` para que un editor pueda comprobar una edición a mano.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+new AdminPanel(schema: PanelSchema)
+```
+
+<TypeTable
+  type={{
+    schema: { type: "PanelSchema", typeDescriptionLink: "/es/docs/developers/api/types#panelschema", description: "El export de tu `schema.ts`: `title`, `icon`, `files` (una entrada por `data/<file>.json`, `settings` o `records`) y `tabs`.", required: true },
+  }}
+/>
+
+Crea exactamente uno, a nivel de módulo, normalmente en `resource/server/content.ts`: `export const panel = new AdminPanel(schema);`. Los archivos de ajustes reciben al cargar las secciones que faltan desde `defaults`. ai-core muestra el panel un tick después de crearlo.
+
+#### AdminPanel.get
+
+El contenido actual de un archivo.
+
+```ts title="Firma"
+get<T = Record<string, unknown>>(file: string): T
+```
+
+**Devuelve** el objeto de ajustes (un archivo `settings`) o `{ key: record }` (un archivo `records`); `{}` para un archivo desconocido. Solo lectura: nunca cambies el objeto devuelto, usa `commit`.
+
+```ts
+const settings = panel.get<{ prices: { repair: number } }>("settings");
+```
+
+#### AdminPanel.view
+
+Un archivo de ajustes procesado por tu lector y mantenido al día en cada cambio (se procesa antes de que se ejecuten los handlers de `onChange`).
+
+```ts title="Firma"
+view<T>(file: string, read: (raw: unknown) => T): { readonly value: T }
+```
+
+**Devuelve** un objeto cuyo `value` es siempre el último contenido procesado. Lee `.value` cada vez; no lo copies una sola vez.
+
+```ts
+import { int, record } from "@aicore-fivem/lib/shared";
+
+const settings = panel.view("settings", (raw) => ({
+  repairPrice: int(record(record(raw).prices).repair, 250),
+}));
+// más tarde: settings.value.repairPrice
+```
+
+#### AdminPanel.records
+
+Un archivo de registros procesado registro a registro. Un cambio vuelve a leer solo el registro cambiado.
+
+```ts title="Firma"
+records<T>(file: string, readOne: (key: string, raw: Record<string, unknown>) => T | null): ReadonlyMap<string, T>
+```
+
+**Devuelve** un mapa vivo de la clave del registro a tu valor procesado. Si `readOne` devuelve `null`, el registro queda fuera.
+
+```ts
+const shops = panel.records("shops", (key, raw) =>
+  typeof raw.label === "string" ? { key, label: raw.label } : null,
+);
+for (const shop of shops.values()) console.log(shop.label);
+```
+
+#### AdminPanel.onChange
+
+Ejecuta tu handler después de que un archivo cambió, por una edición del panel o por tu propio `commit`.
+
+```ts title="Firma"
+onChange(file: string, handler: (key: string | undefined, value: unknown) => void): void
+```
+
+<TypeTable
+  type={{
+    file: { type: "string", description: "El nombre del archivo en el esquema.", required: true },
+    handler: { type: "(key: string | undefined, value: unknown) => void", description: "`key` es el registro cambiado (`undefined` para un archivo de ajustes). `value` es el nuevo registro u objeto de ajustes, o `null` cuando se eliminó un registro.", required: true },
+  }}
+/>
+
+```ts
+panel.onChange("shops", (key, value) => {
+  if (value === null) console.log(`shop ${key} deleted`);
+});
+```
+
+#### AdminPanel.rule
+
+Una comprobación entre campos que se ejecuta antes de guardar una edición. El esquema comprueba valores sueltos; una regla comprueba cómo encajan los valores entre sí.
+
+```ts title="Firma"
+rule(file: string, rule: (key: string | undefined, next: Record<string, unknown>) => string | null): void
+```
+
+**Devuelve** (desde tu regla) `null` para aceptar, o una clave de idioma para rechazar (se muestra al admin). Una regla por archivo; una segunda llamada la reemplaza.
+
+```ts
+panel.rule("settings", (_key, next) => {
+  const prices = next.prices as { min: number; max: number };
+  return prices.min > prices.max ? "ERR_MIN_ABOVE_MAX" : null;
+});
+```
+
+#### AdminPanel.onAction
+
+Se ejecuta cuando un admin pulsa un widget `action` (un botón: enviar, restablecer, expulsar). No se guarda nada para el botón.
+
+```ts title="Firma"
+onAction(id: string, handler: (admin: number, record: Record<string, unknown>, key: string | undefined) => string | null): void
+```
+
+<TypeTable
+  type={{
+    id: { type: "string", description: "El `path` del widget.", required: true },
+    handler: { type: "(admin: number, record: Record<string, unknown>, key: string | undefined) => string | null", description: "Recibe el id de servidor del admin, una copia del registro (o del objeto de ajustes) y la clave del registro. Devuelve `null` si todo fue bien o una clave de idioma que se muestra bajo el botón. Un error lanzado se registra en el log y se rechaza.", required: true },
+  }}
+/>
+
+```ts
+import { notify } from "@aicore-fivem/lib/server";
+
+panel.onAction("testAlert", (admin) => {
+  notify(admin, "Test alert sent", "success");
+  return null;
+});
+```
+
+#### AdminPanel.commit
+
+Guarda un cambio que hizo tu propio script (estado del juego que muestra el panel), sin validación. Un archivo `memory` solo lo guarda en memoria.
+
+```ts title="Firma"
+commit(file: string, key: string | undefined, value: unknown): void
+```
+
+<TypeTable
+  type={{
+    file: { type: "string", description: "El nombre del archivo.", required: true },
+    key: { type: "string | undefined", description: "La clave del registro, o `undefined` para reemplazar un objeto de ajustes.", required: true },
+    value: { type: "unknown", description: "El nuevo registro u objeto de ajustes; `null` elimina el registro.", required: true },
+  }}
+/>
+
+```ts
+panel.commit("vaults", "bank_1", { ...panel.get<Record<string, object>>("vaults").bank_1, robbedAt: Date.now() });
+```
+
+#### AdminPanel.commitAfter
+
+`commit` después de que el cambio actual llegó al panel. Úsalo para un formulario que se restablece solo después de que un admin lo envió.
+
+```ts title="Firma"
+commitAfter(file: string, key: string | undefined, value: unknown): void
+```
+
+```ts
+panel.onAction("sendBroadcast", (admin, form) => {
+  if (typeof form.message !== "string" || form.message === "") return "ERR_EMPTY_MESSAGE";
+  for (const player of getPlayers()) notify(Number(player), form.message, "info", 10_000);
+  panel.commitAfter("broadcast", undefined, { message: "" }); // vaciar el formulario
+  return null;
+});
+```
+
+<Callout type="warn">
+Nunca llames a `commit` ni a `commitAfter` para el mismo archivo desde dentro de su propio handler de `onChange`: el commit dispara `onChange` otra vez, para siempre.
+</Callout>
+
+#### AdminPanel.editor
+
+```ts title="Firma"
+editor: number
+```
+
+El id de servidor del admin cuya edición o acción se está aplicando, legible dentro de los handlers de `rule`, `onChange` y `onAction`; `0` para tu propio `commit`. Solo lo fija la lib.
+
+```ts
+panel.onChange("settings", () => {
+  if (panel.editor) console.log(`settings changed by ${panel.editor}`);
+});
+```
+
+#### Lo usa ai-core
+
+`snapshot()`, `dataSnapshot()`, `summary()` y `apply(admin, patch)` son lo que ai-core llama mediante los exports que registra el panel (`AdminPanelSnapshot`, `AdminPanelData`, `AdminPanelSummary`, `AdminPanelApply`). Tu script no los llama.
+
+#### Ejemplo
+
+```ts title="resource/server/content.ts"
+import { AdminPanel, aiLog } from "@aicore-fivem/lib/server";
+import { int, record } from "@aicore-fivem/lib/shared";
+import { schema } from "./schema";
+
+export const panel = new AdminPanel(schema);
+
+export const settings = panel.view("settings", (raw) => ({
+  repairPrice: int(record(record(raw).prices).repair, 250),
+}));
+
+panel.onChange("settings", () => {
+  aiLog("admin", `repair price is now ${settings.value.repairPrice}`, { source: panel.editor || undefined });
+});
+```
+
+<Callout type="warn">
+Nunca leas `data/*.json` tú mismo ni escribas en él: el panel es su dueño. Los datos que el mundo necesita en los clientes (lugares, blips, precios que ven los jugadores) son un archivo `sync: "all"` que se lee en el cliente con `AdminWorld`; todo lo demás se queda en el servidor.
+</Callout>
+
+### DataFile
+
+Un archivo `data/<name>.json` de tu recurso con escrituras seguras. `AdminPanel` lo usa para cada archivo; úsalo directamente solo para contenido fuera del panel. El servidor es el único que lee y escribe: lee una vez al arrancar y mantiene la verdad en memoria. Una escritura va a un archivo temporal que luego reemplaza al real (un crash nunca deja medio archivo), el archivo anterior se guarda como `.bak`, y un archivo dañado recurre al `.bak` al arrancar.
+
+**Lado:** Servidor · **Espera:** no
+
+Sin equivalente en Lua.
+
+```ts title="Firma"
+new DataFile(resource: string, name: string, log: Logger)
+```
+
+<TypeTable
+  type={{
+    resource: { type: "string", description: "El nombre de tu recurso (`GetCurrentResourceName()`).", required: true },
+    name: { type: "string", description: "Nombre del archivo sin carpeta ni extensión: `routes` es `data/routes.json`.", required: true },
+    log: { type: "Logger", description: "Adónde van los errores: `createLogger(resource)` de `@aicore-fivem/lib/shared`.", required: true },
+  }}
+/>
+
+#### DataFile.read
+
+```ts title="Firma"
+read(): unknown
+```
+
+**Devuelve** el archivo procesado sin su clave `$schema`, el `.bak` cuando el archivo está dañado, o `null` cuando no existe ninguno de los dos. Procesa el resultado antes de usarlo.
+
+#### DataFile.write
+
+```ts title="Firma"
+write(value: unknown): void
+```
+
+Guarda `value`; gana la última llamada. Se escribe en disco 250 ms después de la primera llamada de una ráfaga, en orden con las escrituras anteriores. Una escritura fallida se registra en el log.
+
+#### DataFile.schemaRef
+
+```ts title="Firma"
+schemaRef: string | null
+```
+
+Cuando se fija (`./schemas/<name>.schema.json`), se escribe como primera clave del archivo `"$schema"`, nunca como parte de los datos.
+
+#### DataFile.hasSchemaRef
+
+```ts title="Firma"
+hasSchemaRef(): boolean
+```
+
+**Devuelve** si el archivo en disco indica su esquema.
+
+#### Ejemplo
+
+```ts
+import { DataFile } from "@aicore-fivem/lib/server";
+import { createLogger, isRecord } from "@aicore-fivem/lib/shared";
+
+const resource = GetCurrentResourceName();
+const file = new DataFile(resource, "routes", createLogger(resource));
+
+const raw = file.read();
+const routes: Record<string, unknown> = isRecord(raw) ? raw : {};
+
+function saveRoute(id: string, route: unknown) {
+  routes[id] = route;
+  file.write(routes);
+}
+```
+
+<Callout type="info">
+Los datos de los jugadores nunca van a un archivo de datos: pertenecen a la base de datos ([Base de datos](/es/docs/developers/api/lib-server/database)). Los secretos (webhooks, claves de API) van en `data/secrets.json`, que git ignora.
+</Callout>

@@ -1,0 +1,135 @@
+---
+title: ai-policealert para desarrolladores
+description: Cómo enviar una alerta policial que llegue a ai-policealert (o a cualquier otro script de alertas), los campos de DispatchAlert y el export propio de ai-policealert.
+icon: Code
+---
+
+<Callout type="info">
+Para enviar una alerta policial desde tu script, llama a `dispatch.alert(alert)` de la lib (TypeScript) o a `aiLib.dispatch.alert(alert)` (Lua). Pasa por la capa de dispatch de AI Core y llega al sistema de alertas que use el servidor: ai-policealert, o un script de alertas de terceros soportado. Nunca llames directamente al export de ai-policealert.
+</Callout>
+
+## dispatch.alert
+
+Envía una alerta de policía (o de otro trabajo) a través de AI Core. La reciben los miembros de servicio de `jobs`; sin `jobs`, los trabajos de policía propios del sistema de alertas (para ai-policealert: los **Alert jobs** del panel).
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+dispatch.alert(alert: DispatchAlert): boolean
+```
+
+```lua title="Lua"
+local sent = aiLib.dispatch.alert(alert) -- boolean
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    alert: { type: 'DispatchAlert', description: 'Lo que dice la alerta, adónde apunta y quién la recibe. Campos abajo.', required: true },
+  }}
+/>
+
+#### DispatchAlert
+
+<TypeTable
+  type={{
+    title: { type: 'string', description: 'El titular ("Shots fired"). Pasa un texto traducido. Se corta a 80 caracteres.', required: true },
+    code: { type: 'string', description: 'Código de radio mostrado antes del título ("10-71"). Se corta a 12 caracteres.' },
+    message: { type: 'string', description: 'Una línea más (el nombre de la tienda).' },
+    coords: { type: '{ x: number; y: number; z: number }', description: 'Dónde ocurrió. Sin esto, la posición del jugador `source`; sin ninguno de los dos, la alerta no tiene punto en el mapa.' },
+    jobs: { type: 'string[]', description: 'Trabajos cuyos miembros de servicio la reciben (hasta 10). Por defecto: los trabajos de policía del sistema de alertas.' },
+    source: { type: 'number', description: 'Id de servidor del jugador del que trata la alerta (el que dispara, el ladrón). Los sistemas de alertas que describen al sospechoso (vehículo, sexo) leen este jugador.' },
+    blip: { type: '{ sprite: number; color?: number; scale?: number }', description: 'Sprite, color y tamaño del blip de GTA. Por defecto: los del sistema de alertas (ai-policealert: el Alert blip del panel).' },
+    duration: { type: 'number', description: 'Segundos que se queda la alerta (tarjeta, blip, tecla de ruta). Por defecto: el propio del sistema de alertas (ai-policealert: Alert time).' },
+    icon: { type: 'string', description: 'Nombre de icono Font Awesome solid sin `fa-` ("gun").', default: '"triangle-exclamation" (ai-policealert)' },
+    priority: { type: '"normal" | "high"', description: '`high` hace que la tarjeta destaque (parpadea, blip intermitente).', default: '"normal"' },
+  }}
+/>
+
+#### Devuelve
+
+`true` cuando un sistema de alertas aceptó la alerta. `false` cuando no hay ningún sistema de alertas en marcha o la alerta no es válida (sin `title`).
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { dispatch, onClientCallback } from "@aicore-fivem/lib/server";
+import { Locale } from "./locale"; // los textos traducidos de tu recurso
+
+// Un cliente dice que ha empezado a forzar un cajero; el servidor alerta a la policía en la posición del jugador.
+onClientCallback("myscript:breakAtm", (source) => {
+  const sent = dispatch.alert({
+    code: "10-90",
+    title: Locale("ALERT_ATM_TITLE"),
+    message: Locale("ALERT_ATM_MESSAGE"),
+    source, // las coordenadas salen de este jugador
+    icon: "money-bill",
+    priority: "high",
+  });
+  if (!sent) console.log("no alert system is running");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+RegisterNetEvent('myscript:breakAtm', function()
+  local source = source
+  local sent = aiLib.dispatch.alert({
+    code = '10-90',
+    title = 'ATM break-in',
+    message = 'Someone is breaking into an ATM',
+    source = source,
+    icon = 'money-bill',
+    priority = 'high',
+  })
+  if not sent then print('no alert system is running') end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Los textos se muestran tal como los envías: tradúcelos antes de la llamada. Los campos que no aparecen arriba se descartan. No envíes una alerta por cada acción repetida: ai-police, por ejemplo, mantiene una alerta por disparos cada 150 m cada 30 s.
+</Callout>
+
+## Export de servidor
+
+### DispatchAlert
+
+El punto de entrada propio de ai-policealert. Solo lo llama la capa de dispatch de AI Core mientras ai-policealert es el sistema de alertas activo; los scripts usan `dispatch.alert` de arriba. Tipado como `AiPoliceAlertServerExports` en `@aicore-fivem/shared`.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+DispatchAlert(alert: DispatchAlert): void
+```
+
+```lua title="Lua"
+exports['ai-policealert']:DispatchAlert(alert)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    alert: { type: 'DispatchAlert', description: 'Los mismos campos que arriba. Se vuelven a comprobar: una alerta sin título se descarta.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+Nada. Llamarlo directamente se salta la elección del sistema de alertas de AI Core, y `coords` no se rellena a partir de `source` (AI Core lo hace antes de llamar al export).
+
+## Eventos privados
+
+El contrato servidor-cliente propio del script (`resource/common/alerts.ts`). Pueden cambiar entre versiones: no los dispares ni los escuches desde otros recursos.
+
+| Nombre | Dirección | Qué transporta |
+| --- | --- | --- |
+| `ai-policealert:client:alerts` | servidor -> agente | Las alertas activas del trabajo de servicio del agente (una lista completa; una lista vacía borra las tarjetas). |
+| `ai-policealert:client:alert` | servidor -> agente | Una alerta nueva. |

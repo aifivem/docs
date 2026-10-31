@@ -1,0 +1,762 @@
+---
+title: Entrada del cliente
+description: "Responde a los clientes de forma segura: onClientCallback, onClientEvent, guardas, triggerClientCallback, barras de progreso y minijuegos comprobados por el servidor, PendingActions."
+icon: ShieldCheck
+---
+
+Todo lo que envía un cliente puede falsificarlo un tramposo. Cada servidor `ai-*` escucha a los clientes solo a través de la **puerta**: `onClientCallback` y `onClientEvent`. Antes de que se ejecute tu handler, la puerta comprueba, en este orden:
+
+1. Que lo envió un jugador real y conectado (no otro recurso que emite el mismo nombre).
+2. El límite de frecuencia (callbacks: 20 llamadas por segundo por jugador; eventos: 10, salvo que fijes `rate`).
+3. Tus guardas (`hasCharacter()`, `near(...)`, `isAdmin()` o las tuyas).
+4. Tu parser `args`, que convierte los valores en bruto en valores comprobados o rechaza la llamada.
+5. Opcionalmente un bloqueo: una llamada a la vez por jugador.
+
+Un rechazo con motivo se escribe en la consola del servidor con el nombre del jugador y el nombre de la entrada, como máximo una línea por jugador y entrada cada 10 segundos (las líneas intermedias se cuentan en la siguiente).
+
+```ts title="TypeScript"
+import { onClientCallback, onClientEvent, hasCharacter, near, isAdmin } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId, readInt, readText } from "@aicore-fivem/lib/shared";
+```
+
+Los lectores de entrada (`readInt`, `readId`, `readText`, `oneArg`, `asArgs`) y `fail` se documentan en [Lib: compartido y fivem](/es/docs/developers/api/lib-shared). Una acción responde un [`ActionResult`](/es/docs/developers/api/types#actionresult): `{ ok: true, ... }` o `fail("LANG_KEY")`.
+
+## Puerta
+
+### onClientCallback
+
+Responde a un `triggerServerCallback(name, ...)` (o `callAction`) de un cliente y le devuelve el valor de retorno del handler. Úsalo para cada petición en la que el cliente espera una respuesta: comprar, usar, abrir una pantalla. Tiene dos formas: sin argumentos `(name, handler, options?)`, y con argumentos `(name, { args, ... }, handler)`, donde las opciones van primero para que tu handler solo vea valores comprobados.
+
+**Lado:** Servidor · **Espera:** no (el handler puede ser `async`; su promise se espera antes de enviar la respuesta)
+
+```ts title="Firma"
+onClientCallback(name: string, handler: (source: number) => unknown, options?: ClientInputOptions): void
+onClientCallback<A>(name: string, options: ParsedInputOptions<A>, handler: (source: number, ...args: A) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onClientCallback(name, handler, options) -- handler(source, ...): any
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Nombre del callback. El cliente llama al mismo nombre. Ponle el prefijo de tu recurso (`my-shop:buy`).", required: true },
+    handler: { type: "(source: number, ...args: A) => unknown", description: "Se ejecuta cuando la llamada pasó la puerta. `source` es el id de servidor del jugador. Su valor de retorno (o la promise resuelta) es la respuesta; `undefined` se envía como `null`. Un error lanzado se registra en el log y el cliente recibe un fallo.", required: true },
+    options: { type: "ClientInputOptions | ParsedInputOptions<A>", description: "Frecuencia, guardas, bloqueo y `args` para la forma con argumentos. Campos abajo.", required: false },
+  }}
+/>
+
+#### ClientInputOptions
+
+<TypeTable
+  type={{
+    guards: { type: "Guard[]", description: "Comprobaciones que se ejecutan en orden. La primera que no pasa rechaza la llamada. Consulta Guard más abajo.", default: "[]" },
+    rate: { type: "{ count: number; windowMs: number }", description: "Como máximo `count` llamadas por jugador dentro de `windowMs` milisegundos. Las llamadas extra se rechazan y se registran en el log.", default: "20 por 1000 ms (callbacks), 10 por 1000 ms (eventos)" },
+    lock: { type: "boolean", description: "Una llamada a la vez por jugador. Una segunda llamada mientras la primera sigue en marcha se rechaza (callbacks) o se descarta (eventos). Úsalo para cada handler que espera y luego escribe (objetos, dinero).", default: "false" },
+  }}
+/>
+
+#### ParsedInputOptions
+
+Todos los campos de `ClientInputOptions`, más:
+
+<TypeTable
+  type={{
+    args: { type: "(raw: unknown[]) => A | null", description: "Recibe los valores en bruto del cliente como un array y devuelve los argumentos comprobados como una tupla, o `null` para rechazar la llamada (se registra en el log con una vista previa de los valores). `oneArg(readId)` es el parser para un único id.", required: true },
+  }}
+/>
+
+#### Devuelve
+
+`void`. La respuesta que recibe el cliente:
+
+- el valor de retorno del handler cuando se ejecutó;
+- un fallo cuando la puerta rechazó la llamada, el bloqueo estaba ocupado o el handler lanzó un error. En TypeScript, la promise de `triggerServerCallback` del cliente se rechaza al momento (`callAction` muestra su texto `fallback`); en Lua, `aiLib.triggerServerCallback` devuelve `nil, 'failed'`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, hasCharacter, near, inventory } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readInt } from "@aicore-fivem/lib/shared";
+
+const CRATE = { x: 120.5, y: -1050.2, z: 29.2 };
+
+// Cliente: callAction("my-crates:take", [2], { fallback: "TAKE_FAILED" })
+onClientCallback(
+  "my-crates:take",
+  {
+    args: oneArg((v) => readInt(v, 1, 5)),
+    guards: [hasCharacter(), near(CRATE, 3)],
+    lock: true,
+  },
+  (source, count) => {
+    if (!inventory.canCarryItem(source, "water", count)) return fail("CANNOT_CARRY");
+    inventory.addItem(source, "water", count);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local CRATE = vector3(120.5, -1050.2, 29.2)
+
+-- Cliente: aiLib.triggerServerCallback('my-crates:take', { 2 })
+aiLib.onClientCallback('my-crates:take', function(source, count)
+    if math.type(count) ~= 'integer' or count < 1 or count > 5 then return aiLib.fail('BAD_COUNT') end
+    if not aiLib.online.character(source) then return aiLib.fail('NO_CHARACTER') end
+    if #(GetEntityCoords(GetPlayerPed(source)) - CRATE) > 3.0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.canCarryItem(source, 'water', count) then return aiLib.fail('CANNOT_CARRY') end
+    aiLib.inventory.addItem(source, 'water', count)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+La versión Lua no tiene `guards` ni `args`: acepta `options = { rate?, lock?, ace? }` (`ace`: el jugador necesita este permiso ACE, `ai.admin` para los admins de ai-core) y el handler recibe los valores en bruto. Comprueba tú mismo cada argumento (tipo, rango, propiedad, distancia) antes de usarlo. En TypeScript, nunca leas valores del cliente fuera de `args`.
+</Callout>
+
+### onClientEvent
+
+Escucha un evento de red que envía un cliente, a través de la misma puerta. Úsalo para mensajes de un solo sentido en los que el cliente no espera respuesta (cerrar una pantalla, una celda informada). Nunca uses un `onNet` a secas para la entrada del cliente. Las mismas dos formas que `onClientCallback`.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+onClientEvent(name: string, handler: (source: number) => unknown, options?: ClientInputOptions): void
+onClientEvent<A>(name: string, options: ParsedInputOptions<A>, handler: (source: number, ...args: A) => unknown): void
+```
+
+```lua title="Lua"
+aiLib.onClientEvent(name, handler, options) -- handler(source, ...), options { rate?, ace? }
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Nombre del evento de red. El cliente lo envía con `emitNet(name, ...)` (`TriggerServerEvent` en Lua).", required: true },
+    handler: { type: "(source: number, ...args: A) => unknown", description: "Se ejecuta cuando el evento pasó la puerta. Un error lanzado o una promise rechazada se registra en el log; no se devuelve nada.", required: true },
+    options: { type: "ClientInputOptions | ParsedInputOptions<A>", description: "Los mismos campos que para `onClientCallback`. Frecuencia por defecto: 10 eventos por segundo por jugador. Con `lock`, un evento que llega mientras el anterior sigue en marcha se descarta.", required: false },
+  }}
+/>
+
+#### Devuelve
+
+`void`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientEvent, PlayerMap } from "@aicore-fivem/lib/server";
+
+const openShops = new PlayerMap<string>();
+
+// Cliente: emitNet("my-shop:close")
+onClientEvent("my-shop:close", (source) => {
+  openShops.delete(source);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local openShops = {}
+
+AddEventHandler('playerDropped', function() openShops[source] = nil end)
+
+-- Cliente: TriggerServerEvent('my-shop:close')
+aiLib.onClientEvent('my-shop:close', function(source)
+    openShops[source] = nil
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+La versión Lua acepta `options = { rate?, ace? }` (sin `lock`, sin `guards`, sin `args`). Un `TriggerEvent` local desde otro recurso no lleva jugador y se ignora en ambos lados.
+</Callout>
+
+## Guardas
+
+Una guarda es una función que recibe el id de servidor del jugador y responde `true` (pasa), `false` (rechaza en silencio) o un string (rechaza y registra el string como motivo).
+
+```ts title="Tipo"
+type Guard = (source: number) => boolean | string;
+```
+
+Escribe tu propia guarda cuando una comprobación se repite en varias entradas:
+
+```ts
+import type { Guard } from "@aicore-fivem/lib/server";
+import { online } from "@aicore-fivem/lib/server";
+
+const onDutyPolice: Guard = (source) => online.onDutyIn(source, ["police"]) || "not on duty";
+```
+
+### isAdmin
+
+Una guarda que pasa cuando el jugador tiene un permiso ACE: el permiso de admin de ai-core `ai.admin`, o el que indiques.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+isAdmin(ace?: string): Guard
+```
+
+```lua title="Lua"
+local allowed = aiLib.isAdmin(source, ace) -- boolean, una comprobación directa (no una guarda)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    ace: { type: "string", description: "El permiso ACE que se comprueba.", default: '"ai.admin"' },
+  }}
+/>
+
+#### Devuelve
+
+`Guard`: rechaza con el motivo `not allowed (<ace>)`. El equivalente en Lua devuelve `true` o `false` directamente, y `false` para source 0 o menor.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, isAdmin, medical } from "@aicore-fivem/lib/server";
+
+onClientCallback("my-admin:reviveSelf", (source) => ({ ok: medical.revive(source) }), {
+  guards: [isAdmin()],
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('my-admin:reviveSelf', function(source)
+    if not aiLib.isAdmin(source) then return aiLib.fail('NOT_ALLOWED') end
+    return { ok = true }
+end)
+
+-- o deja que lo compruebe la puerta:
+aiLib.onClientCallback('my-admin:ping', function(source) return { ok = true } end, { ace = 'ai.admin' })
+```
+</Tab>
+</Tabs>
+
+### hasCharacter
+
+Una guarda que pasa cuando el jugador tiene un personaje en el mundo (no en la pantalla de personajes).
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+hasCharacter(): Guard
+```
+
+Sin equivalente en Lua: comprueba `aiLib.online.character(source) ~= nil`.
+
+#### Devuelve
+
+`Guard`: rechaza con el motivo `no character loaded`.
+
+#### Ejemplo
+
+```ts
+import { onClientCallback, hasCharacter, online } from "@aicore-fivem/lib/server";
+
+onClientCallback("my-id:name", (source) => ({ ok: true, name: online.name(source) }), {
+  guards: [hasCharacter()],
+});
+```
+
+### near
+
+Una guarda que pasa cuando el ped del jugador está a menos de `metres` de un punto, medido en el servidor (el cliente no puede mentir al respecto).
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+near(point: Vec3 | ((source: number) => Vec3 | null), metres: number): Guard
+```
+
+Sin equivalente en Lua: compara tú mismo `#(GetEntityCoords(GetPlayerPed(source)) - point)`.
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    point: { type: "Vec3 | ((source: number) => Vec3 | null)", typeDescriptionLink: "/es/docs/developers/api/types#vec3", description: "Un punto fijo, o una función que devuelve el punto para este jugador (la tienda que tiene abierta). Una función que devuelve `null` rechaza con `no target point`.", required: true },
+    metres: { type: "number", description: "Distancia máxima permitida en metros (3D).", required: true },
+  }}
+/>
+
+#### Devuelve
+
+`Guard`: rechaza con el motivo `too far (<metres> m)`.
+
+#### Ejemplo
+
+```ts
+import { onClientCallback, near, PlayerMap } from "@aicore-fivem/lib/server";
+import type { Vec3 } from "@aicore-fivem/lib/shared";
+
+const openAt = new PlayerMap<Vec3>();
+
+onClientCallback("my-shop:list", (source) => ({ ok: true, items: [] }), {
+  guards: [near((source) => openAt.get(source) ?? null, 4)],
+});
+```
+
+### eventSource
+
+El id de servidor del jugador que envió el evento de red que se está gestionando. Dentro de `onClientCallback` y `onClientEvent` recibes `source` como primer argumento, así que solo lo necesitas en un handler `onNet` u `on` de FiveM a secas.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+eventSource(): number
+```
+
+Sin equivalente en Lua: Lua lee la variable global `source`.
+
+#### Devuelve
+
+`number`: el id de servidor del jugador (la variable global `source` de FiveM).
+
+#### Ejemplo
+
+```ts
+import { eventSource } from "@aicore-fivem/lib/server";
+
+on("my-script:serverOnly", () => {
+  const source = eventSource(); // léelo primero
+  console.log(`event from ${source}`);
+});
+```
+
+<Callout type="warn">
+Léelo antes del primer `await`. FiveM reinicia la variable global después de que el handler cede, así que una lectura posterior da el jugador equivocado.
+</Callout>
+
+## Preguntar al cliente
+
+### triggerClientCallback
+
+Hace una pregunta al cliente de un jugador y espera la respuesta. El cliente responde con `onServerCallback(name, handler)` ([Lib: cliente](/es/docs/developers/api/lib-client)). Solo puede responder el jugador al que preguntaste.
+
+**Lado:** Servidor · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+triggerClientCallback(name: string, source: number, args?: unknown[], timeoutMs?: number): Promise<unknown>
+```
+
+```lua title="Lua"
+local result, err = aiLib.triggerClientCallback(name, source, args, timeout) -- llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Nombre del callback que el cliente registró con `onServerCallback`.", required: true },
+    source: { type: "number", description: "Id de servidor del jugador al que se pregunta.", required: true },
+    args: { type: "unknown[]", description: "Valores enviados al handler del cliente, en orden.", default: "[]" },
+    timeoutMs: { type: "number", description: "Cuánto esperar la respuesta, en milisegundos.", default: "30000" },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<unknown>`: se resuelve con la respuesta del cliente. Se rechaza con un `Error` cuando la respuesta no llegó a tiempo o el handler del cliente falló. La respuesta viene de un cliente: procésala antes de usarla.
+
+Lua devuelve la respuesta, o `nil` y `'timeout'` / `'failed'`.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, triggerClientCallback, notify } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+// Cliente: onServerCallback("my-admin:street", () => locationName().street)
+addCommand(
+  "street",
+  { help: "Shows the street a player stands on", restricted: true, params: [{ name: "id", type: "playerId" }] },
+  async (source, { id }) => {
+    const answer = await triggerClientCallback("my-admin:street", id, [], 5000).catch(() => null);
+    const street = readText(answer, 100);
+    if (source > 0) notify(source, street ?? "No answer", street ? "info" : "error");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Cliente: aiLib.onServerCallback('my-admin:street', function() return aiLib.locationName().street end)
+aiLib.addCommand('street', {
+    help = 'Shows the street a player stands on',
+    restricted = true,
+    params = { { name = 'id', type = 'playerId' } },
+}, function(source, args)
+    CreateThread(function()
+        local street, err = aiLib.triggerClientCallback('my-admin:street', args.id, {}, 5000)
+        if source > 0 then
+            if type(street) == 'string' then aiLib.notify(source, street) else aiLib.notify(source, err, 'error') end
+        end
+    end)
+end)
+```
+</Tab>
+</Tabs>
+
+## Acciones temporizadas en las que confía el servidor
+
+### progressFor
+
+Ejecuta la barra de progreso de ai-lib en la pantalla del jugador y espera hasta que termine. Úsalo para cualquier acción temporizada en la que deba confiar el servidor (usar un objeto, reparar, robar): solo responde `true` cuando la barra terminó en el cliente **y** pasó suficiente tiempo en el servidor, así que un tramposo no puede saltársela. No escribes nada de código de cliente: ai-lib responde por cada recurso.
+
+**Lado:** Servidor · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+progressFor(source: number, options: ProgressForOptions): Promise<boolean>
+```
+
+```lua title="Lua"
+local finished = aiLib.progressFor(source, options) -- boolean, llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor del jugador que ve la barra.", required: true },
+    options: { type: "ProgressForOptions", description: "Qué muestra la barra y qué puede hacer el jugador mientras tanto. Campos abajo.", required: true },
+  }}
+/>
+
+#### ProgressForOptions
+
+<TypeTable
+  type={{
+    label: { type: "string", description: "Texto de la barra, ya traducido (`Locale(\"REPAIRING\")`). Se corta a 80 caracteres.", required: true },
+    duration: { type: "number", description: "Cuánto dura la barra, en milisegundos (de 0 a 600000). Un valor mayor hace que el cliente la rechace, lo que responde `false`.", required: true },
+    anim: { type: "{ dict: string; clip: string; flag?: number }", description: "Animación que se reproduce mientras corre la barra. `flag` vale por defecto 49 (parte superior del cuerpo, en bucle, el jugador aún puede moverse).", required: false },
+    scenario: { type: "string", description: "Un escenario que se reproduce en el sitio (`WORLD_HUMAN_HAMMERING`) cuando no hay `anim`.", required: false },
+    face: { type: "{ x: number; y: number; z: number }", description: "El jugador se gira hacia este punto antes de que empiece la barra (un surtidor, un mostrador, un vehículo). Lua también acepta un `vector3`.", required: false },
+    allowVehicle: { type: "boolean", description: "Cuando es false, subirse a un vehículo cancela la barra.", default: "false" },
+    canCancel: { type: "boolean", description: "Permite al jugador cancelar con la tecla de cancelar de ai-lib.", default: "false" },
+    freeze: { type: "boolean", description: "Mantiene al jugador en el sitio mientras corre la barra.", default: "false" },
+    disable: { type: "{ move?: boolean; car?: boolean; mouse?: boolean; combat?: boolean }", description: "Controles bloqueados mientras corre la barra: caminar, conducir, mirar alrededor, pelear.", required: false },
+    minRatio: { type: "number", description: "Parte de `duration` (de 0 a 1) que debe pasar en el servidor. Una respuesta más rápida cuenta como cancelada.", default: "0.8" },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<boolean>`: `true` cuando la barra terminó. `false` cuando el jugador canceló, murió, se subió a un vehículo (sin `allowVehicle`), se fue, cambió de personaje, respondió demasiado rápido, o no llegó ninguna respuesta dentro de `duration` más 15 segundos.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, progressFor, inventory, vehicleNearPlayer, createLocale } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+
+const Locale = createLocale();
+
+onClientCallback(
+  "my-mechanic:repair",
+  { args: oneArg(readId), lock: true },
+  async (source, netId) => {
+    if (!vehicleNearPlayer(source, netId, { metres: 4 })) return fail("TOO_FAR");
+    if (!inventory.hasItem(source, "repairkit")) return fail("NO_KIT");
+    const done = await progressFor(source, {
+      label: Locale("REPAIRING"),
+      duration: 8000,
+      anim: { dict: "mini@repair", clip: "fixing_a_player" },
+      canCancel: true,
+    });
+    if (!done) return fail("CANCELLED");
+    // El mundo puede haber cambiado mientras corría la barra: comprueba otra vez.
+    const vehicle = vehicleNearPlayer(source, netId, { metres: 4 });
+    if (!vehicle) return fail("TOO_FAR");
+    if (!inventory.removeItem(source, "repairkit")) return fail("NO_KIT");
+    // La salud del vehículo se fija en el cliente dueño de la entidad.
+    emitNet("my-mechanic:applyRepair", NetworkGetEntityOwner(vehicle), netId);
+    return { ok: true };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('my-mechanic:repair', function(source, netId)
+    if aiLib.vehicleNearPlayer(source, netId, { metres = 4 }) == 0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.hasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+    local done = aiLib.progressFor(source, {
+        label = Locale('REPAIRING'),
+        duration = 8000,
+        anim = { dict = 'mini@repair', clip = 'fixing_a_player' },
+        canCancel = true,
+    })
+    if not done then return aiLib.fail('CANCELLED') end
+    local vehicle = aiLib.vehicleNearPlayer(source, netId, { metres = 4 })
+    if vehicle == 0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.removeItem(source, 'repairkit', 1) then return aiLib.fail('NO_KIT') end
+    -- La salud del vehículo se fija en el cliente dueño de la entidad.
+    TriggerClientEvent('my-mechanic:applyRepair', NetworkGetEntityOwner(vehicle), netId)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Un segundo `progressFor` para el mismo jugador termina el primero con `false`. Comprueba de nuevo la distancia y el stock después del await: el mundo puede haber cambiado mientras corría la barra. En Lua, una desconexión o un cambio de personaje no se detecta antes: la llamada responde `false` cuando se agota el tiempo límite (`duration` + 15 s).
+</Callout>
+
+### minigameFor
+
+Juega uno de los minijuegos de ai-lib (una prueba de habilidad o una ganzúa) en la pantalla del jugador para un flujo del servidor y espera el resultado. Úsalo para forzar una puerta, abrir una caja fuerte o hacer un puente a un coche. El resultado es la palabra del cliente, así que el servidor sigue decidiendo qué da una victoria (una tirada de probabilidad, un `progressFor`, sus propias comprobaciones).
+
+**Lado:** Servidor · **Espera:** sí (Promise en TypeScript, cede el hilo en Lua)
+
+```ts title="Firma"
+minigameFor(source: number, options: MinigameForOptions): Promise<MinigameOutcome>
+```
+
+```lua title="Lua"
+local outcome = aiLib.minigameFor(source, options) -- 'won' | 'lost' | 'broken', llamar dentro de un hilo
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor del jugador que juega.", required: true },
+    options: { type: "MinigameForOptions", description: "Qué juego y qué dificultad. Campos abajo.", required: true },
+  }}
+/>
+
+#### MinigameForOptions
+
+<TypeTable
+  type={{
+    game: { type: '"skillCheck" | "lockpick"', description: "La prueba de habilidad (pulsa la tecla cuando la aguja está en el arco verde) o la ganzúa.", required: true },
+    difficulty: { type: '"easy" | "medium" | "hard"', description: "Tamaño y velocidad del objetivo. Prueba de habilidad: arco verde 50 / 40 / 25, velocidad 0.6 / 0.85 / 1. Ganzúa: punto justo 18 / 11 / 6.", default: '"medium"' },
+    rounds: { type: "number", description: "Solo prueba de habilidad: cuántos anillos debe acertar el jugador (de 1 a 10).", default: "2" },
+    keys: { type: "string[]", description: "Solo prueba de habilidad: las teclas que pulsa el jugador.", default: '["e"]' },
+    pins: { type: "number", description: "Solo ganzúa: número de pines (de 1 a 6).", default: "1" },
+    picks: { type: "number", description: "Solo ganzúa: ganzúas que el jugador puede romper antes de perder el juego (de 1 a 10).", default: "1" },
+    minMs: { type: "number", description: "Una victoria respondida antes de estos milisegundos desde la petición cuenta como perdida (el cliente se saltó el juego). Fíjalo en la partida real más rápida de tu juego para todo lo que pague.", default: "0" },
+  }}
+/>
+
+#### Devuelve
+
+`Promise<MinigameOutcome>` donde `MinigameOutcome = "won" | "lost" | "broken"`:
+
+- `"won"`: el jugador ganó (y no más rápido que `minMs`).
+- `"lost"`: el jugador falló, se rindió, ganó demasiado rápido o no respondió en 120 segundos.
+- `"broken"`: solo ganzúa, se rompió la última ganzúa. Quita el objeto de ganzúa.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, minigameFor, inventory, hasCharacter, near, isNear } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const SAFE = { x: 28.2, y: -1339.2, z: 29.5 };
+
+onClientCallback(
+  "my-heist:pickSafe",
+  async (source) => {
+    if (!inventory.hasItem(source, "lockpick")) return fail("NO_LOCKPICK");
+    const outcome = await minigameFor(source, { game: "lockpick", difficulty: "hard", pins: 3, picks: 2, minMs: 1500 });
+    if (outcome === "broken") inventory.removeItem(source, "lockpick");
+    if (outcome !== "won") return fail("LOCKPICK_FAILED");
+    if (!isNear(source, SAFE, 2)) return fail("TOO_FAR");
+    inventory.addItem(source, "money_bag");
+    return { ok: true };
+  },
+  { guards: [hasCharacter(), near(SAFE, 2)], lock: true },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local SAFE = vector3(28.2, -1339.2, 29.5)
+
+aiLib.onClientCallback('my-heist:pickSafe', function(source)
+    if #(GetEntityCoords(GetPlayerPed(source)) - SAFE) > 2.0 then return aiLib.fail('TOO_FAR') end
+    if not aiLib.inventory.hasItem(source, 'lockpick') then return aiLib.fail('NO_LOCKPICK') end
+    local outcome = aiLib.minigameFor(source, { game = 'lockpick', difficulty = 'hard', pins = 3, picks = 2, minMs = 1500 })
+    if outcome == 'broken' then aiLib.inventory.removeItem(source, 'lockpick', 1) end
+    if outcome ~= 'won' then return aiLib.fail('LOCKPICK_FAILED') end
+    if #(GetEntityCoords(GetPlayerPed(source)) - SAFE) > 2.0 then return aiLib.fail('TOO_FAR') end
+    aiLib.inventory.addItem(source, 'money_bag', 1)
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Nunca escribas tu propio callback de minijuego en el cliente para un flujo del servidor: usa `minigameFor`. Sin `minMs`, un cliente modificado puede responder "won" al instante. El `1500` de arriba es un ejemplo: mide la partida honesta más rápida con tus ajustes.
+</Callout>
+
+### PendingActions
+
+Guarda una acción en espera por jugador para los flujos en los que el cliente abre un diálogo y más tarde envía el resultado (escribir una nota, elegir una opción) sin una barra temporizada. `start` entrega un token que el cliente devuelve; `take` termina la acción solo cuando ese token coincide. Las entradas se liberan cuando el jugador se desconecta o suelta el personaje (un cambio nunca paga la acción del personaje antiguo al nuevo). Crea uno a nivel de módulo.
+
+**Lado:** Servidor · **Espera:** no
+
+Sin equivalente en Lua: guarda una tabla Lua de tokens por jugador.
+
+```ts title="Firma"
+new PendingActions<T>(options?: { minRatio?: number })
+```
+
+#### Parámetros del constructor
+
+<TypeTable
+  type={{
+    "options.minRatio": { type: "number", description: "`take` rechaza una respuesta que llega antes de esta parte (de 0 a 1) de la duración de la acción. Usa `0` para diálogos sin tiempo mínimo.", default: "0.8" },
+  }}
+/>
+
+#### PendingActions.start
+
+Inicia la acción del jugador, reemplazando una que siga en marcha, y devuelve su token.
+
+```ts title="Firma"
+start(source: number, data: T, durationMs: number): number
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor del jugador.", required: true },
+    data: { type: "T", description: "Lo que necesitas de vuelta cuando termina la acción (el objeto, el objetivo).", required: true },
+    durationMs: { type: "number", description: "Duración esperada en milisegundos; `take` necesita que haya pasado `durationMs * minRatio`. No es una caducidad: la acción espera hasta `take`, `cancel`, una desconexión o un cambio de personaje.", required: true },
+  }}
+/>
+
+**Devuelve** `number`: el token, un número entero de 1 a 2147483647. Envíalo al cliente; léelo de vuelta con `readId`.
+
+#### PendingActions.take
+
+Termina la acción y devuelve sus datos cuando `token` es el que está en marcha y pasó suficiente tiempo.
+
+```ts title="Firma"
+take(source: number, token: number): T | null
+```
+
+**Devuelve** `T | null`: los datos, o `null` cuando no hay ninguna acción en marcha, el token no coincide o la respuesta llegó demasiado pronto. Un token incorrecto deja en paz la acción en marcha (un token viejo o falsificado nunca la cancela); uno que coincide la termina aunque haya llegado demasiado pronto.
+
+#### PendingActions.peek
+
+```ts title="Firma"
+peek(source: number): T | null
+```
+
+**Devuelve** los datos de la acción en marcha sin terminarla, o `null`.
+
+#### PendingActions.cancel
+
+```ts title="Firma"
+cancel(source: number): void
+```
+
+Termina la acción del jugador sin resultado.
+
+#### PendingActions.size
+
+```ts title="Firma"
+readonly size: number
+```
+
+Cuántas acciones hay en marcha ahora.
+
+#### Ejemplo
+
+```ts
+import { onClientCallback, PendingActions, inventory, hasCharacter } from "@aicore-fivem/lib/server";
+import { fail, readId, readText } from "@aicore-fivem/lib/shared";
+
+const notes = new PendingActions<{ item: string }>({ minRatio: 0 });
+
+// Paso 1: el cliente pide escribir; el servidor responde un token.
+onClientCallback(
+  "my-notes:start",
+  (source) => {
+    if (!inventory.hasItem(source, "paper")) return fail("NO_PAPER");
+    const token = notes.start(source, { item: "paper" }, 60_000);
+    return { ok: true, token };
+  },
+  { guards: [hasCharacter()] },
+);
+
+// Paso 2: el cliente envía el token y el texto.
+onClientCallback(
+  "my-notes:finish",
+  {
+    args: ([token, text]) => {
+      const id = readId(token);
+      const body = readText(text, 200);
+      return id !== null && body !== null ? [id, body] : null;
+    },
+    lock: true,
+  },
+  (source, token, text) => {
+    const action = notes.take(source, token);
+    if (!action) return fail("NOTE_EXPIRED");
+    if (!inventory.removeItem(source, action.item)) return fail("NO_PAPER");
+    inventory.addItem(source, "note", 1, { text });
+    return { ok: true };
+  },
+);
+```
+
+## Avanzado
+
+### ClientGate
+
+La clase detrás de `onClientCallback` y `onClientEvent`. Solo la necesitas cuando construyes tu propio tipo de entrada sobre un evento en bruto; los scripts usan las dos funciones de arriba.
+
+**Lado:** Servidor · **Espera:** no
+
+Sin equivalente en Lua.
+
+```ts title="Firma"
+new ClientGate<A>(name: string, options: ClientInputOptions & { args?: (raw: unknown[]) => A | null }, defaultRate: number)
+check(source: number, raw: unknown[]): A | null
+run<T, B>(source: number, busy: B, task: () => Promise<T> | T): Promise<T | B>
+release(source: number): void
+```
+
+<TypeTable
+  type={{
+    name: { type: "string", description: "Nombre usado en las líneas de log de rechazo.", required: true },
+    options: { type: "ClientInputOptions & { args? }", description: "Guardas, frecuencia, bloqueo y un parser opcional, como para `onClientCallback`.", required: true },
+    defaultRate: { type: "number", description: "Llamadas por segundo por jugador cuando no se fija `options.rate`.", required: true },
+  }}
+/>
+
+- `check` devuelve los argumentos comprobados (un array vacío sin `args`) o `null` cuando la llamada no debe ejecutarse (no es un jugador real, frecuencia, guarda, parser).
+- `run` ejecuta `task` bajo el bloqueo por jugador cuando `lock` está activado, y devuelve `busy` en su lugar cuando otra llamada de ese jugador sigue en marcha.
+- `release` libera las entradas de frecuencia y de bloqueo del jugador. Cada puerta se libera sola en `playerDropped`.

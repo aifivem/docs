@@ -1,0 +1,353 @@
+---
+title: ai-voice para desarrolladores
+description: Los exports de servidor y de cliente de ai-voice (el contrato de pma-voice más los suyos propios), state bags y eventos.
+icon: Code
+---
+
+ai-voice responde a pma-voice 7.x: cada export de abajo que tiene pma-voice también responde bajo `exports['pma-voice']`. El servidor es dueño de todo el estado de voz (alcance, frecuencias, llamadas, altavoces, silencios) y escribe los state bags del jugador; los clientes solo piden. Ninguno de los exports espera. No están tipados en `@aicore-fivem/shared`: desde TypeScript usa `callExport("ai-voice", name, ...args)` de la lib.
+
+## Exports de servidor
+
+### setPlayerRadio
+
+Pone a un jugador en una frecuencia de radio y la hace su frecuencia activa (en la que habla). Nombre de pma-voice.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+setPlayerRadio(source: number, channel: number | string): void
+```
+
+```lua title="Lua"
+exports['pma-voice']:setPlayerRadio(source, 5)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    channel: { type: 'number | string', description: 'La frecuencia, de 0.01 a 1,000,000 (también sirve un string numérico). `0` abandona todas las frecuencias.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+Nada. Lanza un error cuando `channel` no es un número. No hace nada cuando la radio está desactivada en el panel. Una frecuencia a la que el jugador no puede unirse (una frecuencia de trabajo, o un `addChannelCheck` que dice que no) se rechaza con una notificación "You cannot join this frequency". Unirse a una frecuencia nueva abandona la activa anterior; las frecuencias que el jugador solo escucha se quedan.
+
+### setPlayerCall
+
+Mete a un jugador en una llamada telefónica, o lo saca. Nombre de pma-voice.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+setPlayerCall(source: number, callId: number | string): void
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    callId: { type: 'number | string', description: 'El id de la llamada (cualquier número que elija tu script de teléfono, los dos jugadores reciben el mismo). `0` cuelga.', required: true },
+  }}
+/>
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+let nextCall = 1000;
+
+/** Connects two players; returns the call id to end it later. */
+export function connect(caller: number, target: number): number {
+  const id = nextCall++;
+  callExport("ai-voice", "setPlayerCall", caller, id);
+  callExport("ai-voice", "setPlayerCall", target, id);
+  return id;
+}
+
+export function hangUp(...players: number[]): void {
+  for (const p of players) callExport("ai-voice", "setPlayerCall", p, 0);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local nextCall = 1000
+
+local function connect(caller, target)
+    nextCall = nextCall + 1
+    exports['pma-voice']:setPlayerCall(caller, nextCall)
+    exports['pma-voice']:setPlayerCall(target, nextCall)
+    return nextCall
+end
+
+local function hangUp(a, b)
+    exports['pma-voice']:setPlayerCall(a, 0)
+    exports['pma-voice']:setPlayerCall(b, 0)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+El propio juego de un jugador no puede unirse a una llamada por sí solo (`setCallChannel` de cliente) salvo que un script de teléfono lo haya permitido con `addCallCheck` o el dueño haya activado **Let players' games join calls**. Mete a los jugadores en las llamadas desde el servidor.
+</Callout>
+
+### getPlayersInRadioChannel
+
+Los miembros de una frecuencia. También responde como `GetPlayersInRadioChannel`. Nombre de pma-voice.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+getPlayersInRadioChannel(channel: number | string): Record<string, boolean>
+```
+
+#### Devuelve
+
+Una tabla con el id de servidor (como string) como clave y `true` mientras ese miembro habla, si no `false`. `{}` para una frecuencia vacía o un valor incorrecto.
+
+### addChannelCheck
+
+Añade tu propia regla para una frecuencia: tu función decide quién puede unirse. Se quita cuando tu recurso se detiene. Nombre de pma-voice.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+addChannelCheck(channel: number, check: (source: number) => boolean): void
+```
+
+```lua title="Lua"
+exports['pma-voice']:addChannelCheck(911, function(source)
+    return exports['ai-core']:GetDutyJob(source) == 'ambulance'
+end)
+```
+
+Primero se comprueban las reglas de frecuencias del panel; después tu función debe responder un valor verdadero. Lanza un error cuando `check` no es una función.
+
+### overrideRadioNameGetter
+
+Reemplaza el nombre que ven entre sí los miembros de la radio (cuando **Send names to radio members** está activado). Nombre de pma-voice.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+overrideRadioNameGetter(channel: unknown, getter: (source: number) => string): void
+```
+
+El primer argumento se ignora (compatibilidad con pma-voice); el getter se usa para todas las frecuencias.
+
+### isValidPlayer
+
+```ts title="Firma"
+isValidPlayer(source: number): boolean
+```
+
+`true` cuando ai-voice conoce al jugador (se ha unido y está configurado).
+
+### setPlayerProximityMode
+
+Cambia a un jugador a uno de los alcances del panel.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+setPlayerProximityMode(source: number, index: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    index: { type: 'number', description: 'Posición en la lista **Ranges** del panel, empezando en 1.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`boolean`: `true` cuando se cambió. `false` cuando el jugador es desconocido, `index` está fuera de la lista o un `addProximityCheck` lo rechazó.
+
+### setPlayerRange
+
+Da a un jugador un alcance propio (un megáfono, un micrófono en un escenario), o le devuelve el alcance que eligió.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+setPlayerRange(source: number, metres: number | null): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    metres: { type: 'number | null', description: 'El alcance, de 0.5 a 100 m. `null` vuelve al alcance que eligió el jugador.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`boolean`: `true` cuando se fijó. `false` cuando el jugador es desconocido, `metres` está fuera de 0.5-100 o un `addProximityCheck` lo rechazó.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport, onClientEvent } from "@aicore-fivem/lib/server";
+
+// Un objeto megáfono: 30 m mientras se sostiene.
+onClientEvent("myscript:megaphone", { args: ([on]) => (typeof on === "boolean" ? [on] : null) }, (source, on) => {
+  callExport("ai-voice", "setPlayerRange", source, on ? 30 : null);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:megaphone', function(on)
+    local src = source
+    exports['ai-voice']:setPlayerRange(src, on == true and 30.0 or nil)
+end)
+```
+</Tab>
+</Tabs>
+
+### getPlayerProximity
+
+```ts title="Firma"
+getPlayerProximity(source: number): { index: number; distance: number; mode: string } | null
+```
+
+El alcance actual del jugador: `index` (posición en la lista), `distance` en metros, `mode` (el nombre del alcance). `null` para un jugador desconocido.
+
+### toggleMute
+
+Silencia a un jugador, o quita el silencio a uno silenciado. Lo mismo que `/muteply`.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+toggleMute(source: number, seconds?: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    seconds: { type: 'number', description: 'Cuánto dura el silencio (como mucho un año). Se ignora al quitar el silencio.', default: '900' },
+  }}
+/>
+
+#### Devuelve
+
+`boolean`: `true` cuando se cambió el silencio, `false` para un jugador desconocido. El jugador recibe una notificación; se dispara el evento de servidor `pma-voice:playerMuted`. Los silencios se guardan por licencia, así que se mantienen al reconectarse.
+
+### addProximityCheck
+
+Añade una regla para los cambios de alcance. Tu función recibe `(source, index, distance)`; responder `false` rechaza el cambio (tanto la tecla del jugador como los exports). Se quita cuando tu recurso se detiene.
+
+```ts title="Firma"
+addProximityCheck(check: (source: number, index: number, distance: number) => boolean | void): void
+```
+
+### Varias frecuencias
+
+| Export | Devuelve | Qué hace |
+| --- | --- | --- |
+| `addPlayerRadioListen(source, channel)` | `boolean` | Permite al jugador oír una frecuencia más sin hablar en ella. `false` al llegar al límite **Frequencies at once** del panel, cuando no está permitido o con la radio desactivada. Pasa a ser la activa cuando el jugador no tenía ninguna. |
+| `removePlayerRadioListen(source, channel)` | `boolean` | Abandona una frecuencia. `false` cuando el jugador no estaba en ella. |
+| `setPlayerRadioActive(source, channel)` | `boolean` | Hace que una de las frecuencias del jugador sea en la que habla. `false` cuando no está en ella. |
+| `getPlayerRadioChannels(source)` | `{ active: number, channels: number[] } \| null` | La frecuencia activa (0 = ninguna) y todas las frecuencias que oye el jugador. |
+
+### Extras de teléfono
+
+| Export | Devuelve | Qué hace |
+| --- | --- | --- |
+| `addCallCheck(check: (source, callId) => boolean)` | nada | Permite a un script de teléfono aceptar entradas desde el juego del jugador: responder `true` deja a ese jugador entrar en esa llamada. Se quita cuando tu recurso se detiene. |
+| `setPlayerCallSpeaker(source, on)` | `boolean` | Activa o desactiva el altavoz de la llamada del jugador. |
+| `getPlayerCallSpeaker(source)` | `boolean` | Si está activado. |
+
+### Otros
+
+| Export | Devuelve | Qué hace |
+| --- | --- | --- |
+| `setPlayerSubmix(source, name \| null)` | nada | Un efecto duradero en la voz de un jugador: el nombre de un submix que registraron los clientes (el bag `submix` de pma-voice). `null` lo quita. |
+| `getBackend()` | `"mumble" \| "enhanced"` | El sistema de voz en uso. |
+
+## Exports de cliente
+
+Los exports de cliente de pma-voice (todos también bajo `exports['pma-voice']`):
+
+| Export | Qué hace |
+| --- | --- |
+| `setRadioChannel(channel)`, `SetRadioChannel`, `addPlayerToRadio` | Pide al servidor la frecuencia activa (0 abandona todas las frecuencias). Las frecuencias de trabajo se comprueban en el servidor. |
+| `removePlayerFromRadio()` | Abandona todas las frecuencias. |
+| `setCallChannel(callId)`, `SetCallChannel`, `addPlayerToCall` | Pide unirse a una llamada. Se rechaza salvo que el `addCallCheck` de un script de teléfono lo permita o **Let players' games join calls** esté activado. |
+| `removePlayerFromCall()` | Cuelga (siempre permitido). |
+| `setRadioVolume(percent)` / `getRadioVolume()`, `setCallVolume(percent)` / `getCallVolume()` | Los volúmenes propios del jugador, guardados en su PC. |
+| `setVoiceProperty(name, value)`, `SetMumbleProperty`, `SetTokoProperty` | `radioEnabled`, `micClicks`. |
+| `overrideProximityRange(metres, disableCycle)` / `clearProximityOverride()` | Un alcance desde el cliente. Se rechaza en Enhanced. |
+| `setAllowProximityCycleState(blocked)` | Bloquea o permite la tecla de alcance. |
+| `overrideProximityCheck(fn)` / `resetProximityCheck()`, `setVoiceState(mode, channel)` | Solo Legacy (Mumble). |
+| `toggleMutePlayer(serverId)` | Silencia a otro jugador solo para este jugador. |
+| `toggleRadioAnim()` / `getRadioAnimState()` | El interruptor de animación de radio del jugador. |
+| `addRadioDisableBit(bit)` / `removeRadioDisableBit(bit)` | Bloquea hablar por la radio mientras haya algún bit fijado (un script que desactiva la radio durante un tiempo). |
+| `registerCustomSubmix(...)`, `setEffectSubmix(...)` | Los submixes personalizados de pma-voice, dentro del registro de submixes de ai-voice. |
+
+Los exports de cliente propios de ai-voice:
+
+| Export | Qué hace |
+| --- | --- |
+| `addRadioChannel(channel)` / `removeRadioChannel(channel)` / `setActiveRadioChannel(channel)` | Varias frecuencias desde el lado del cliente (comprobado en el servidor). |
+| `getRadioChannels()` | La frecuencia activa y la lista. |
+| `setCallSpeaker(on)` / `getCallSpeaker()` | El altavoz de la llamada del jugador. |
+| `setRadioAnimDisabled(disabled)` | Desactiva la animación de radio para este jugador. |
+| `createSubmix(name, spec)` / `getSubmix(name)` / `editSubmix(name, spec)` / `listSubmixes()` | Efectos de voz. Un nombre se crea una vez por sesión de juego y se reutiliza; el juego solo tiene 40 ranuras compartidas con su propio audio. |
+| `cycleProximity()` | Pasa al siguiente alcance, como la tecla. |
+| `getBackend()` | `"mumble"` o `"enhanced"`. |
+| `isRadioTalking()` | Si se mantiene la tecla de radio. |
+
+## State bags
+
+Los escribe el servidor en cada jugador (`Player(source).state`, en el cliente `LocalPlayer.state`). Léelos; nunca los escribas.
+
+| Bag | Valor |
+| --- | --- |
+| `proximity` | `{ index: number, distance: number, mode: string }`: el alcance actual. |
+| `radioChannel` | `number`: la frecuencia activa, 0 si ninguna. |
+| `callChannel` | `number`: el id de la llamada, 0 si ninguna. |
+| `callSpeaker` | `boolean`: el altavoz de la llamada está activado. |
+| `muted` | `boolean`: silenciado por un administrador. |
+| `submix` | `string`: un efecto de voz duradero fijado por `setPlayerSubmix`. |
+
+GlobalState: `ai-voice:backend` (`"mumble"` o `"enhanced"`), `ai-voice:takeover` (scripts que traen su propio efecto de radio o teléfono). ai-voice lee el bag `dead` de AI Core y el bag `isDead` de pma-voice.
+
+## Eventos
+
+| Evento | Lado | Argumentos | Cuándo se dispara |
+| --- | --- | --- | --- |
+| `pma-voice:setTalkingMode` | Cliente (local) | `index: number` | Ha cambiado el alcance del jugador. |
+| `pma-voice:radioActive` | Cliente (local) | `talking: boolean` | El jugador empezó o dejó de hablar por la radio. |
+| `pma-voice:toggleRadioAnim` | Cliente (local) | | Ha cambiado el interruptor de animación de radio. |
+| `pma-voice:playerMuted` | Servidor (local) | `target: number, by: number, muted: boolean, seconds: number` | Se silenció o se quitó el silencio a un jugador (`by` es 0 para un export). |
+
+Los eventos de red de pma-voice (`pma-voice:syncRadioData`, `addPlayerToRadio`, `removePlayerFromRadio`, `setTalkingOnRadio`, `clSetPlayerRadio`, `syncCallData`, `addPlayerToCall`, `removePlayerFromCall`, `clSetPlayerCall`) conservan sus nombres y payloads para las interfaces de radio que los escuchan. Los eventos de radio llevan la frecuencia como último argumento extra; las tablas de miembros tienen claves string.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+// Cliente: mostrar un icono "en el aire" mientras el jugador habla por la radio.
+on("pma-voice:radioActive", (talking: boolean) => {
+  SendNUIMessage({ action: "radio", data: talking });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+AddEventHandler('pma-voice:radioActive', function(talking)
+    SendNUIMessage({ action = 'radio', data = talking })
+end)
+```
+</Tab>
+</Tabs>

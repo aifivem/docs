@@ -1,0 +1,183 @@
+---
+title: Comprobaciones de conexión
+description: Añade comprobaciones que cada jugador que se conecta debe superar (whitelists, baneos) y declara que tu script sustituye a otro.
+icon: ShieldCheck
+---
+
+Cada jugador que se conecta pasa por una única puerta en ai-core. Primero van las comprobaciones propias de ai-core: el jugador necesita una cuenta de FiveM, y ningún script innecesario puede ejecutarse junto al script que lo sustituye (cuando está activado **Refuse players while both run** (rechazar jugadores mientras ambos se ejecutan) en el panel). Después vienen las comprobaciones que otros recursos añaden con `AddConnectionCheck`, en el orden en que se añadieron. Gana el primer rechazo.
+
+### AddConnectionCheck
+
+Añade una comprobación que cada jugador que se conecta debe superar. Úsala para una whitelist, una lista de baneos o un modo de mantenimiento.
+
+**Lado:** Servidor · **Espera:** no (la propia comprobación debe responder al momento) · **Lib:** ninguna
+
+```ts title="Firma"
+AddConnectionCheck(
+  id: string,
+  check: (source: number, identifiers: Record<string, string>) => string | null | undefined,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(source, identifiers) end)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Un nombre único para esta comprobación (`myscript:whitelist`). Añadir de nuevo el mismo id reemplaza la comprobación y conserva su lugar en el orden.', required: true },
+    check: { type: '(source, identifiers) => string | null | undefined', description: 'Se ejecuta para cada jugador que se conecta. Devuelve un texto para rechazar al jugador con ese texto, o `null` / nada para dejarlo pasar.', required: true, typeDescription: '(source: number, identifiers: Record<string, string>) => string | null | undefined' },
+  }}
+/>
+
+`identifiers` contiene cada tipo de identificador con su valor **sin el prefijo**: `identifiers.license` es `abc123...`, no `license:abc123...`. Los tipos que el jugador no tiene no aparecen.
+
+#### Devuelve
+
+Nada. Sin un `id` de texto o una función la llamada no hace nada. La comprobación se quita cuando tu recurso se detiene.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const allowed = new Set<string>(); // se rellena desde tu base de datos al iniciar
+
+core.AddConnectionCheck("myscript:whitelist", (_source, identifiers) => {
+  const fivem = identifiers.fivem;
+  return fivem && allowed.has(fivem) ? null : Locale("CONNECT_NOT_WHITELISTED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local allowed = {} -- id de fivem -> true, se rellena desde tu base de datos al iniciar
+
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(_, identifiers)
+  if identifiers.fivem and allowed[identifiers.fivem] then return nil end
+  return Locale('CONNECT_NOT_WHITELISTED')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+La comprobación se ejecuta mientras el jugador se conecta y debe responder al momento: nada de consultas a la base de datos, ni `await`, ni `Wait`. Ten en memoria lo que compruebas (cárgalo al iniciar, actualízalo cuando cambie). Una comprobación que lanza un error queda en el log y se salta, así que nunca deja fuera a todo el mundo.
+</Callout>
+
+### RegisterReplacement
+
+Declara que un script hace innecesarios a otros (tu script hace el mismo trabajo que ellos). Mientras ambos estén instalados, ai-core avisa en la consola y nombra la carpeta que hay que borrar; mientras ambos estén iniciados y **Refuse players while both run** esté activado en el panel, nadie puede entrar.
+
+**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+
+```ts title="Firma"
+RegisterReplacement(remove: string | string[], keep?: string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    remove: { type: 'string | string[]', description: 'Nombre(s) de los recursos que pasan a ser innecesarios. Los nombres vacíos se saltan.', required: true },
+    keep: { type: 'string', description: 'El recurso que los sustituye.', default: 'el recurso que llama' },
+  }}
+/>
+
+#### Devuelve
+
+Nada. La regla se quita cuando el recurso que llama se detiene. ai-core vuelve a buscar choques un segundo después de que cualquier recurso se inicie o se detenga.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Nuestro script de banca hace lo que hacen estos; ejecutar ambos duplicaría las pantallas del banco.
+core.RegisterReplacement(["qb-banking", "okokBanking"]);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Un recurso que no puedes cambiar (un script con escrow) puede declarar lo mismo con una línea en su `fxmanifest.lua`: `ai_replaces 'qb-banking'`.
+</Callout>
+
+### GetConflicts
+
+Cada choque encontrado ahora: un script instalado junto a un script que lo sustituye.
+
+**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+
+```ts title="Firma"
+GetConflicts(): { keep: string; remove: string; running: boolean; from: string }[]
+```
+
+```lua title="Lua"
+local conflicts = exports['ai-core']:GetConflicts() -- lista de tablas
+```
+
+#### Parámetros
+
+Ninguno.
+
+#### Devuelve
+
+Una lista, una entrada por choque:
+
+<TypeTable
+  type={{
+    keep: { type: 'string', description: 'El script que se queda.' },
+    remove: { type: 'string', description: 'El script innecesario que hay que borrar.' },
+    running: { type: 'boolean', description: '`true` cuando ambos están iniciados (se rechaza a los jugadores mientras el interruptor del panel esté activado); `false` cuando el innecesario solo está instalado.' },
+    from: { type: 'string', description: 'De dónde viene la regla: `ai-core`, `<resource> fxmanifest`, o el recurso que llamó a `RegisterReplacement`.' },
+  }}
+/>
+
+Una lista vacía cuando no hay ningún choque.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("conflicts", { help: "Lists scripts to remove", restricted: true }, () => {
+  for (const c of core.GetConflicts())
+    console.log(`${c.keep} replaces ${c.remove}${c.running ? " (both started!)" : ""} [${c.from}]`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('conflicts', { help = 'Lists scripts to remove', restricted = true }, function()
+  for _, c in ipairs(exports['ai-core']:GetConflicts()) do
+    print(('%s replaces %s%s [%s]'):format(c.keep, c.remove, c.running and ' (both started!)' or '', c.from))
+  end
+end)
+```
+</Tab>
+</Tabs>

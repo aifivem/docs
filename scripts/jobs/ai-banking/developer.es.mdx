@@ -1,0 +1,226 @@
+---
+title: ai-banking para desarrolladores
+description: Los exports de dinero de sociedad de trabajos de ai-banking (también bajo los nombres de qb-banking y Renewed-Banking), y las llamadas de la lib que usar en su lugar en código nuevo.
+icon: Code
+---
+
+<Callout type="info">
+ai-banking no guarda dinero propio. En código nuevo, mueve el dinero de trabajos y bandas con los exports de dinero compartido de ai-core (`GetSharedMoney`, `AddSharedMoney`, `RemoveSharedMoney`) o con `money.transfer` de la lib, y abre la pantalla de banco con `banking.open(source)` de la lib. Funcionan con cualquier script de banca. Los exports de abajo existen para que los scripts de QBCore escritos para qb-banking o Renewed-Banking sigan funcionando.
+</Callout>
+
+## Funciones de la lib (recomendado)
+
+### banking.open
+
+Abre la pantalla del script de banca activo para un jugador.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+banking.open(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.banking.open(source)
+```
+
+#### Devuelve
+
+`true` cuando se abrió la pantalla. `false` cuando el script de banca no se puede abrir desde fuera, o no hay ninguno en marcha.
+
+<Callout type="warn">
+No todos los scripts de banca se pueden abrir desde otro recurso. Comprueba lo que responde `banking.open` antes de decirle nada al jugador.
+</Callout>
+
+### money.transfer
+
+Mueve dinero entre dos cuentas en una sola transacción de base de datos, escribiendo las dos filas de registro. ai-banking lo usa para cada ingreso, retirada y transferencia.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:TransferMoney(from, to, amount, reason, fee)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    from: { type: 'MoneyRef', description: 'La cuenta de la que sale el dinero: la `{ source, account }` de un jugador o la `{ owner, id, account }` de un trabajo o banda.', required: true },
+    to: { type: 'MoneyRef', description: 'La cuenta a la que va el dinero, con la misma forma.', required: true },
+    amount: { type: 'number', description: 'Cantidad en $.', required: true },
+    reason: { type: 'string', description: 'Motivo de registro mostrado en el historial.' },
+    fee: { type: 'number', description: 'Cantidad extra que `from` paga además (no se suma a `to`).' },
+  }}
+/>
+
+#### MoneyRef
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Forma de jugador: el id de servidor del jugador.' },
+    owner: { type: '"job" | "gang"', description: 'Forma compartida: de quién es la cuenta.' },
+    id: { type: 'string', description: 'Forma compartida: el nombre del trabajo o banda.' },
+    account: { type: 'string', description: 'El nombre de la cuenta (`cash`, `bank`...).', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`true` cuando se movió el dinero. `false` cuando falta una cuenta, las dos son la misma o `from` no puede pagar.
+
+#### Ejemplo
+
+Un jefe paga una prima desde la cuenta del trabajo al banco de un miembro:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, notify } from "@aicore-fivem/lib/server";
+
+function payBonus(boss: number, member: number, amount: number): void {
+  const ok = money.transfer(
+    { owner: "job", id: "police", account: "bank" },
+    { source: member, account: "bank" },
+    amount,
+    "bonus",
+  );
+  notify(boss, ok ? "Bonus paid" : "The job account cannot pay", ok ? "success" : "error");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function payBonus(boss, member, amount)
+  local ok = exports['ai-core']:TransferMoney(
+    { owner = 'job', id = 'police', account = 'bank' },
+    { source = member, account = 'bank' },
+    amount, 'bonus')
+  aiLib.notify(boss, ok and 'Bonus paid' or 'The job account cannot pay', ok and 'success' or 'error')
+end
+```
+</Tab>
+</Tabs>
+
+## Exports de servidor
+
+Los tres actúan sobre la cuenta `bank` de ai-core de un **trabajo** (el nombre de la cuenta es el nombre del trabajo). También responden como `exports['qb-banking']:<mismo nombre>`, y como `getAccountMoney`, `addAccountMoney` y `removeAccountMoney` de Renewed-Banking. No están tipados en `@aicore-fivem/shared`: en TypeScript usa `callExport("ai-banking", name, ...args)`. Cada export también responde bajo su gemelo en minúsculas (`getAccountBalance`).
+
+### GetAccountBalance
+
+El saldo de sociedad de un trabajo.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+GetAccountBalance(job: string): number
+```
+
+```lua title="Lua"
+local balance = exports['ai-banking']:GetAccountBalance('police')
+-- lo mismo: exports['qb-banking']:GetAccountBalance('police')
+-- lo mismo: exports['Renewed-Banking']:getAccountMoney('police')
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'El nombre del trabajo (`police`).', required: true },
+  }}
+/>
+
+#### Devuelve
+
+El saldo en $. `0` cuando el trabajo no tiene cuenta o `job` no es texto.
+
+### AddMoney
+
+Añade dinero a la cuenta de sociedad de un trabajo. Todos los jefes con la pantalla de banco abierta ven el nuevo saldo.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+AddMoney(job: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-banking']:AddMoney('police', 500, 'fine')
+-- lo mismo: exports['Renewed-Banking']:addAccountMoney('police', 500, 'fine')
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'El nombre del trabajo.', required: true },
+    amount: { type: 'number', description: 'Cantidad en $, mayor que 0.', required: true },
+    reason: { type: 'string', description: 'Motivo de registro mostrado en el historial.', default: '"script"' },
+  }}
+/>
+
+#### Devuelve
+
+`true` cuando se añadió el dinero. `false` cuando `job` no es texto, `amount` no es mayor que 0 o ai-core lo rechazó (no existe esa cuenta de trabajo).
+
+### RemoveMoney
+
+Quita dinero de la cuenta de sociedad de un trabajo.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+RemoveMoney(job: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-banking']:RemoveMoney('mechanic', 1200, 'parts')
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'El nombre del trabajo.', required: true },
+    amount: { type: 'number', description: 'Cantidad en $, mayor que 0.', required: true },
+    reason: { type: 'string', description: 'Motivo de registro mostrado en el historial.', default: '"script"' },
+  }}
+/>
+
+#### Devuelve
+
+`true` cuando se quitó el dinero. `false` cuando la cuenta no puede pagar, no existe o los argumentos son incorrectos.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport } from "@aicore-fivem/lib/server";
+
+// Un script de mecánico compra piezas con la cuenta del trabajo.
+function buyParts(cost: number): boolean {
+  return callExport("ai-banking", "RemoveMoney", "mechanic", cost, "parts") === true;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function buyParts(cost)
+  return exports['ai-banking']:RemoveMoney('mechanic', cost, 'parts') == true
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Estos exports solo llegan a cuentas de **trabajo**. Para una cuenta de banda usa `AddSharedMoney('gang', name, 'bank', amount, reason)` de ai-core y similares. El dinero cambiado directamente con los exports de ai-core es el mismo dinero, pero las pantallas de banco abiertas solo se actualizan al momento con los cambios hechos a través de ai-banking.
+</Callout>
+
+## Callbacks privados
+
+Las llamadas de la pantalla de banco (`resource/common/bank.ts`): abrir, páginas de historial, ingresar, retirar, transferir y cerrar. El servidor comprueba la posición de la sucursal o del cajero en cada llamada. Pueden cambiar entre versiones: no las llames desde otros recursos.

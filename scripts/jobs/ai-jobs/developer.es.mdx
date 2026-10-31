@@ -1,0 +1,80 @@
+---
+title: ai-jobs para desarrolladores
+description: "Lo que ai-jobs comparte con otros scripts (no tiene exports): la reputación de perritos calientes, las matrículas y llaves de los vehículos de trabajo, los motivos de registro y sus eventos privados."
+icon: Code
+---
+
+ai-jobs **no tiene exports**. Otros scripts nunca necesitan llamarlo: las rutas y paradas son datos del panel, y todo lo que hace un turno pasa por AI Core (dinero, llaves, inventario). Lo que otro script puede leer está abajo.
+
+## Reputación de perritos calientes
+
+La reputación del vendedor de perritos calientes es metadata de personaje de ai-core bajo la clave `rep`, campo `hotdog` (el mismo sitio donde QBCore guarda `PlayerData.metadata.rep`). Es un número entero de 0 al **Highest reputation** del panel. ai-jobs la lee al alquilar un puesto y la escribe después de cada perrito cocinado, conservando los demás campos de `rep` tal como están.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+GetMeta(src: number, key: "rep"): { hotdog?: number; [other: string]: unknown } | null
+```
+
+```lua title="Lua"
+local rep = exports['ai-core']:GetMeta(source, 'rep') -- table o nil
+```
+
+#### Devuelve
+
+La tabla `rep` del personaje, o `null` / `nil` cuando el jugador no tiene personaje cargado o nunca ha ganado reputación. `hotdog` falta hasta que se hace el primer perrito.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, notify, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// /hotdogrep muestra al jugador su reputación de perritos calientes.
+addCommand("hotdogrep", { help: "Show your hot dog reputation" }, (source) => {
+  if (source === 0) return;
+  const rep = core.GetMeta(source, "rep") as { hotdog?: number } | null;
+  notify(source, `Hot dog reputation: ${rep?.hotdog ?? 0}`, "info");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- fxmanifest.lua: shared_script '@ai-lib/init.lua'
+aiLib.addCommand('hotdogrep', { help = 'Show your hot dog reputation' }, function(source)
+  if source == 0 then return end
+  local rep = exports['ai-core']:GetMeta(source, 'rep') or {}
+  aiLib.notify(source, ('Hot dog reputation: %d'):format(rep.hotdog or 0), 'info')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Escribe la reputación solo con `SetMeta(source, "rep", { ...old, hotdog = value })`, conservando los demás campos. Un puesto alquilado conserva el valor que leyó al alquilarlo y escribe su propio valor tras el siguiente perrito, así que un cambio hecho mientras hay un puesto alquilado se sobrescribe.
+</Callout>
+
+## Vehículos de trabajo
+
+- Se sacan con `spawnVehicle` de la lib, matrícula `WORK<source>` (el id de servidor del trabajador), y se borran cuando termina el turno.
+- El trabajador recibe las llaves a través de la capa de llaves de AI Core (`vehicleKeys.give` de la lib) con el propósito `job`, así que las ve el script de llaves que esté en uso.
+- El coche averiado de una ruta de grúa aparece cerrado, sin llaves, y se borra en el depósito o cuando termina el turno.
+
+## Dinero
+
+El pago de las rutas va a la **Pay account** de la ruta con el motivo de registro `work:<routeId>` (por ejemplo `work:taxi`). Las ventas de perritos van a **Sales paid into**. Ambos se muestran en el historial de transacciones de ai-core.
+
+## Eventos y callbacks privados
+
+Este es el contrato cliente-servidor propio del script (`resource/common/routes.ts` y `resource/common/hotdog.ts`). El servidor comprueba cada llamada (distancia, tiempos, la parada actual). Pueden cambiar entre versiones: no los dispares ni los escuches desde otros recursos.
+
+| Nombre | Dirección | Qué transporta |
+| --- | --- | --- |
+| `ai-jobs:start` | callback de cliente | `(routeId)`: empezar un turno en el depósito, responde `{ ok }`. |
+| `ai-jobs:stop` | callback de cliente | `()`: terminar el turno. |
+| `ai-jobs:arrive` | callback de cliente | `(stopId, underwater)`: el trabajo de la parada; el servidor lleva la barra de progreso y después paga. |
+| `ai-jobs:client:shift` | servidor -> trabajador | `(shift \| null)`: la parada actual, o `null` cuando terminó el turno. |
+| `ai-jobs:client:attach` | servidor -> dueño del coche remolcado | `(carNetId, flatbedNetId)`: enganchar el coche remolcado a la plataforma. |
