@@ -1,0 +1,169 @@
+---
+title: Most vRP
+description: Eksporty, których używa wbudowany most vRP ai-core - magazyn danych vRP, jego API bazy danych, mapowanie uprawnień i lista uprawnień.
+icon: Plug
+---
+
+ai-core uruchamia skrypty vRP przez swój wbudowany most vRP (robi `provide` dla `vrp`). Strona Lua mostu dociera do strony TypeScript ai-core przez eksporty z tej strony. **Istnieją dla tego mostu**: skrypt vRP używa własnego API vRP (`vRP.getUData`, `vRP.query`, `vRP.hasPermission`...), na które odpowiada most, a skrypt ai-* nigdy ich nie potrzebuje. Mapowanie vRP w panelu (uprawnienia, grupy, przedmioty) edytuje się w panelu administratora, nie przez te eksporty.
+
+Są wymienione, aby dokumentacja była kompletna. Każdy odpowiada od razu albo przez callback, jak każdy eksport ai-core.
+
+### VrpGetData
+
+Czyta jedną wartość z magazynu klucz-wartość vRP (to, co czytają `getUData`, `getCData`, `getSData` i `getGData` z vRP). Wartości podróżują jako tekst hex, aby każdy bajt przetrwał drogę między Lua a TypeScript.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiada przez `done`; od razu dla klucza w pamięci podręcznej) · **Lib:** brak (tylko most)
+
+```ts title="Sygnatura"
+VrpGetData(kind: string, owner: string, key: string, done: (hex: string) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpGetData('u', tostring(userId), 'myscript:data', function(hex) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Który magazyn: `u` (dane użytkownika / konta), `c` (dane postaci), `s` (dane serwera) lub `g` (dane globalne).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'Id właściciela jako tekst (id konta dla `u`, id postaci dla `c`). Najwyżej 64 znaki.', required: true },
+    key: { type: 'string', description: 'Klucz danych. Od 1 do 100 znaków.', required: true },
+    done: { type: '(hex: string) => void', description: 'Wywoływany raz z wartością jako tekst hex.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje wartość jako hex albo `""`, gdy klucz nie jest ustawiony lub argument jest zły. Dane wczytanych kont i postaci zostają w pamięci podręcznej, więc odpowiada od razu.
+
+#### Przykład
+
+Bez przykładu: skrypty vRP wywołują `vRP.getUData` i podobne, które most zamienia na ten eksport.
+
+### VrpSetData
+
+Zapisuje jedną wartość w magazynie klucz-wartość vRP. Jest zapisywana do bazy danych (`ai_core_vrp_data`) w ciągu sekundy i gdy jej postać jest zwalniana.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** brak (tylko most)
+
+```ts title="Sygnatura"
+VrpSetData(kind: string, owner: string, key: string, hex: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:VrpSetData('u', tostring(userId), 'myscript:data', hex)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    kind: { type: 'string', description: 'Który magazyn: `u`, `c`, `s` lub `g` (jak w `VrpGetData`).', required: true, typeDescription: '"u" | "c" | "s" | "g"' },
+    owner: { type: 'string', description: 'Id właściciela jako tekst. Najwyżej 64 znaki.', required: true },
+    key: { type: 'string', description: 'Klucz danych. Od 1 do 100 znaków.', required: true },
+    hex: { type: 'string', description: 'Wartość jako tekst hex (pary 0-9 / a-f). Najwyżej 16 000 000 znaków.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+`boolean`: `true`, gdy wartość została zapisana. `false` (z ostrzeżeniem w konsoli), gdy argument jest zły albo `hex` nie jest poprawnym tekstem hex.
+
+#### Przykład
+
+Bez przykładu: skrypty vRP wywołują `vRP.setUData` i podobne.
+
+### VrpQuery
+
+API bazy danych vRP (`vRP.query`, `vRP.execute`, `vRP.scalar` dla przygotowanych zapytań) na puli bazy danych ai-core. Placeholdery `@name` są wypełniane z tabeli parametrów; kilka zapytań w jednym tekście działa po kolei w jednej transakcji, a odpowiada ostatnie.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiada przez `done`) · **Lib:** brak (tylko most)
+
+```ts title="Sygnatura"
+VrpQuery(
+  sql: string,
+  params: unknown,
+  mode: "query" | "execute" | "scalar",
+  done: (error: string | null, ...answer: unknown[]) => void,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:VrpQuery('SELECT 1 AS n', {}, 'scalar', function(err, value) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    sql: { type: 'string', description: 'Tekst SQL przygotowanego zapytania.', required: true },
+    params: { type: 'unknown', description: 'Tabela nazwanych wartości (`@name`), lista dla placeholderów `?` albo pusta tabela, gdy ich nie ma.', required: true },
+    mode: { type: '"query" | "execute" | "scalar"', description: 'Co odpowiedzieć. Każda inna wartość liczy się jako `query`.', required: true },
+    done: { type: '(error, ...answer) => void', description: 'Wywoływany raz: `error` to `null` przy sukcesie.', required: true, typeDescription: '(error: string | null, ...answer: unknown[]) => void' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje, po miejscu na błąd: dla `query` wiersze i liczbę zmienionych wierszy; dla `execute` liczbę zmienionych wierszy; dla `scalar` pierwszą kolumnę pierwszego wiersza (lub `null`). Przy niepowodzeniu `done` dostaje tylko tekst błędu (`"empty query"` dla pustego `sql`).
+
+#### Przykład
+
+Bez przykładu: skrypty vRP wywołują `vRP.prepare` i `vRP.query`. Inne zasoby używają `@aicore-fivem/mysql` (skrypty ai-*) albo API oxmysql z `ai-mysql`.
+
+### GetVrpConfig
+
+Mapowanie vRP z panelu (`data/vrp.json`): które prace, gangi, stopnie i administratorzy ai-core mają które uprawnienia vRP, co znaczą nazwy grup vRP i którym przedmiotem ekwipunku jest każde id przedmiotu vRP.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** brak (tylko most)
+
+```ts title="Sygnatura"
+GetVrpConfig(): VrpConfig
+```
+
+```lua title="Lua"
+local config = exports['ai-core']:GetVrpConfig()
+```
+
+#### Parametry
+
+Brak.
+
+#### Zwraca
+
+`VrpConfig`: `defaults` (wbudowane reguły prefiksów), `permissions` (reguły), `groups` (nazwa grupy vRP na pracę / gang / stopień / administratora) i `items` (id przedmiotu vRP na nazwę przedmiotu). Zobacz [VrpConfig](/pl/docs/developers/api/types#vrpconfig). Po zmianie w panelu ai-core wysyła serwerowe zdarzenie `ai-core:vrp:config` z tym samym kształtem.
+
+#### Przykład
+
+Bez przykładu: most czyta to, aby odpowiadać na `vRP.hasPermission` i `vRP.hasGroup`.
+
+### VrpPermissionAsked
+
+Zapisuje string uprawnienia, o który zapytał skrypt vRP, aby panel mógł wyświetlić każde uprawnienie używane przez skrypty serwera, a właściciel mógł je zmapować.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** brak (tylko most)
+
+```ts title="Sygnatura"
+VrpPermissionAsked(permission: string): boolean
+```
+
+```lua title="Lua"
+local new = exports['ai-core']:VrpPermissionAsked('police.armory')
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    permission: { type: 'string', description: 'String uprawnienia (`police.armory`). Od 1 do 100 znaków.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+`boolean`: `true`, gdy uprawnienie było nowe i jest teraz zapisane. `false`, gdy było już znane, nie jest poprawnym tekstem albo zapisana lista jest pełna.
+
+#### Przykład
+
+Bez przykładu: most wywołuje to z `vRP.hasPermission`.

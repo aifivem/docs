@@ -1,0 +1,160 @@
+---
+title: Geometria stref
+description: "zoneContains, zoneBounds, polyFromCorners i readZoneShape: czy punkt jest wewnątrz obszaru, na serwerze, na kliencie albo w NUI."
+icon: Shapes
+---
+
+Obszar w świecie to [ZoneShape](/pl/docs/developers/api/types#zoneshape): kula, walec albo wielokąt na ziemi między dwiema wysokościami. Kliencka klasa `Zones` (callbacki wejścia i wyjścia, zobacz [Strefy](/pl/docs/developers/api/lib-client/zones)) używa tych kształtów; funkcje z tej strony to sama matematyka za nią, bez natywek, więc serwer może sprawdzić ten sam obszar (czy gracz naprawdę jest w sklepie, zanim ten sprzeda?).
+
+```ts title="TypeScript"
+import { zoneContains, zoneBounds, polyFromCorners, readZoneShape, type ZoneShape } from "@aicore-fivem/lib/shared";
+```
+
+**Lua:** żadna z nich nie ma odpowiednika w Lua. Strefy w Lua to `aiLib.Zones.new()` na kliencie (zobacz [Strefy](/pl/docs/developers/api/lib-client/zones)).
+
+### zoneContains
+
+Czy punkt leży wewnątrz kształtu strefy.
+
+**Strona:** Klient, serwer i NUI · **Czeka:** nie
+
+```ts title="Sygnatura"
+zoneContains(shape: ZoneShape, x: number, y: number, z: number): boolean
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    shape: { type: 'ZoneShape', description: 'Obszar.', required: true },
+    x: { type: 'number', description: 'x punktu w metrach.', required: true },
+    y: { type: 'number', description: 'y punktu w metrach.', required: true },
+    z: { type: 'number', description: 'z punktu w metrach.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+`true`, gdy punkt jest wewnątrz (dla kul i walców krawędź liczy się jako wnętrze). Dla walca punkt musi też być w odległości `height` metrów nad albo pod środkiem. Dla wielokąta `z` musi być między `minZ` a `maxZ`.
+
+#### Przykład
+
+```ts title="resource/server/index.ts"
+import { coordsOf, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail, zoneContains, type ZoneShape } from "@aicore-fivem/lib/shared";
+
+const shop: ZoneShape = { type: "cylinder", center: { x: 25.7, y: -1347.3, z: 29.5 }, radius: 6, height: 3 };
+
+onClientCallback("my-shop:open", (source) => {
+  const { x, y, z } = coordsOf(source);
+  if (!zoneContains(shop, x, y, z)) return fail("TOO_FAR");
+  return { ok: true };
+});
+```
+
+### zoneBounds
+
+Prostokąt ograniczający kształt na ziemi: najmniejszy prostokąt (x / y), który go mieści. Używaj go do taniego pierwszego sprawdzenia albo do umieszczenia strefy w komórkach siatki.
+
+**Strona:** Klient, serwer i NUI · **Czeka:** nie
+
+```ts title="Sygnatura"
+zoneBounds(shape: ZoneShape): [minX: number, minY: number, maxX: number, maxY: number]
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    shape: { type: 'ZoneShape', description: 'Obszar.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+`[minX, minY, maxX, maxY]` w metrach. Dla kuli albo walca: środek plus minus promień.
+
+#### Przykład
+
+```ts
+import { zoneBounds } from "@aicore-fivem/lib/shared";
+
+zoneBounds({ type: "sphere", center: { x: 100, y: 200, z: 30 }, radius: 10 }); // [90, 190, 110, 210]
+```
+
+### polyFromCorners
+
+Zamienia narożniki zapisane przez widżet `zone` panelu w kształt wielokąta. Zakres wysokości to najniższe i najwyższe `z` narożników, poszerzone o `height` metrów w górę i w dół.
+
+**Strona:** Klient, serwer i NUI · **Czeka:** nie
+
+```ts title="Sygnatura"
+polyFromCorners(corners: readonly Vec3[], height: number): { type: "poly"; points: Array<{ x: number; y: number }>; minZ: number; maxZ: number } | null
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    corners: { type: 'readonly Vec3[]', description: 'Narożniki po kolei wokół obszaru.', required: true },
+    height: { type: 'number', description: 'Metry dodane pod najniższym narożnikiem i nad najwyższym.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+`ZoneShape` typu poly albo `null` przy mniej niż trzech narożnikach.
+
+#### Przykład
+
+```ts
+import { polyFromCorners } from "@aicore-fivem/lib/shared";
+
+const lot = polyFromCorners(
+  [ { x: 210, y: -810, z: 30 }, { x: 240, y: -800, z: 31 }, { x: 230, y: -770, z: 32 } ],
+  3,
+);
+// { type: "poly", points: [...], minZ: 27, maxZ: 35 }
+```
+
+### readZoneShape
+
+Sprawdza kształt strefy pochodzący z innego zasobu albo pliku: każda liczba skończona, wielokąt z co najmniej trzema punktami. Używaj jej na kształcie przekazanym do jednego z twoich eksportów.
+
+**Strona:** Klient, serwer i NUI · **Czeka:** nie
+
+```ts title="Sygnatura"
+readZoneShape(value: unknown): ZoneShape | null
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'Surowy kształt.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+Czysty `ZoneShape` (dodatkowe pola usunięte) albo `null`, gdy nie jest prawidłową kulą, walcem ani wielokątem.
+
+#### Przykład
+
+```ts title="resource/server/index.ts"
+import { registerExport } from "@aicore-fivem/lib/server";
+import { readZoneShape, type ZoneShape } from "@aicore-fivem/lib/shared";
+
+const noParking = new Map<string, ZoneShape>();
+
+registerExport("AddNoParkingZone", (id: unknown, raw: unknown) => {
+  const shape = readZoneShape(raw);
+  if (typeof id !== "string" || !shape) return false;
+  noParking.set(id, shape);
+  return true;
+});
+```
+
+<Callout type="info">
+`vector3` z Lua dociera do TypeScript jako tablica, której `readZoneShape` nie przyjmuje jako `center`. Wywołujący z Lua podają `center = { x = 1.0, y = 2.0, z = 3.0 }`.
+</Callout>

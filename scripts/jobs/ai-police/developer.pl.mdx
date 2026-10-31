@@ -1,0 +1,92 @@
+---
+title: ai-police dla deweloperów
+description: State bag cuffed z ai-police, jak jego akcje docierają do innych skryptów przez AI Core oraz jego prywatne zdarzenia.
+icon: Code
+---
+
+ai-police **nie ma eksportów**. Jego mandaty, wpisy, wyroki więzienia, alerty, przeszukania i odholowania przechodzą przez warstwy AI Core, więc inny skrypt nigdy nie wywołuje ai-police. Inny skrypt może odczytać stan `cuffed`.
+
+## State bag `cuffed`
+
+`true` w state bagu gracza, dopóki ai-police trzyma go skutego; w przeciwnym razie `false` (lub brak). Zapisuje go serwer; każdy klient może go odczytać. Nazwa klucza to `PLAYER_BAGS.cuffed` w `@aicore-fivem/shared`.
+
+**Strona:** serwer i klient (odczyt) · **Czeka:** nie
+
+```ts title="Sygnatura"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- serwer
+local cuffed = LocalPlayer.state.cuffed == true      -- klient, lokalny gracz
+```
+
+#### Zwraca
+
+`true`, gdy skuty. `false` po rozkuciu, `undefined` / `nil`, gdy gracz nie był skuty w tej sesji.
+
+#### Przykład
+
+Odmów użycia przedmiotu, gdy gracz jest skuty:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... otwórz radio
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... otwórz radio
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Nie ustawiaj `cuffed` sam: ai-police prowadzi na serwerze własną listę skutych graczy i eskort i tylko odwzorowuje ją w state bagu. Wartość zapisana przez inny skrypt nie jest prawdziwym skuciem i zostaje nadpisana przy następnej akcji skuwania.
+</Callout>
+
+## Co ai-police wysyła przez AI Core
+
+| Akcja | Używana warstwa | Co tam trafia |
+| --- | --- | --- |
+| Wystawienie mandatu | `billing.send` z biblioteki | Rachunek od pracy funkcjonariusza na służbie, etykieta „Police fine”. |
+| Wystawienie mandatu | `mdt.record` z biblioteki | Wpis `fine` z kwotą. |
+| Wysłanie do więzienia | `prison.jail` z biblioteki | Wyrok, z funkcjonariuszem jako `by`. |
+| Wysłanie do więzienia | `mdt.record` z biblioteki | Wpis `arrest` z liczbą minut. |
+| Strzały | `dispatch.alert` z biblioteki | Jeden alert na obszar 150 m co 30 s, do prac policyjnych z panelu. |
+| Przeszukanie | `inventory.openInventory` z biblioteki | Ekwipunek celu otwiera się funkcjonariuszowi. |
+| Odholowanie | `garages.impound` z biblioteki | Skrypt garażu zabiera pojazd; jeśli odmówi, pojazd jest usuwany. |
+
+Aby reagować na którąkolwiek z tych akcji, nasłuchuj po stronie warstwy (twojego skryptu rachunków, MDT, więzienia lub alertów), a nie na ai-police.
+
+## Prywatne zdarzenia i callbacki
+
+Własny kontrakt klient-serwer skryptu (`resource/common/police.ts`). Serwer sprawdza służbę, odległość i stan skucia przy każdym wywołaniu. Mogą się zmieniać między wersjami: nie wywołuj ich ani nie nasłuchuj ich z innych zasobów.
+
+| Nazwa | Kierunek | Co przenosi |
+| --- | --- | --- |
+| `ai-police:act` | callback klienta | `(action, target, extra?)`: funkcjonariusz działa na najbliższym graczu (ID na serwerze) lub pojeździe (ID sieciowe). Odpowiada `{ ok }`. |
+| `ai-police:duty` | callback klienta | `(stationId)`: przełącz służbę na posterunku. Odpowiada `{ ok, onDuty }`. |
+| `ai-police:shot` | klient -> serwer | `(x, y, z)`: gracz wystrzelił z broni (z limitem, liczą się tylko osoby spoza policji). |
+| `ai-police:client:cuffed` | serwer -> cel | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | serwer -> cel | `(officerNetId \| null)`: przyczep do funkcjonariusza albo puść. |
+| `ai-police:client:seat` | serwer -> cel | `(vehicleNetId \| null)`: usiądź z tyłu pojazdu albo wysiądź. |

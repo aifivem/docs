@@ -1,0 +1,238 @@
+---
+title: Leczenie
+description: Reanimuj i lecz graczy oraz sprawdzaj, czy gracz jest powalony, przez skrypt śmierci, którego używa serwer.
+icon: HeartPulse
+---
+
+Śmierci i reanimacje przechodzą przez ai-core, nigdy przez własne eksporty lub state bagi skryptu śmierci (łącznie z ai-death). ai-core przekazuje każde wywołanie do **pierwszego działającego skryptu śmierci**: ai-death, qbx_medical, ars_ambulancejob, qb-ambulancejob, esx_ambulancejob i innych z listy zgodności. Gdy żaden nie działa, nikt nie liczy się jako powalony i nikogo nie da się reanimować.
+
+"Powalony" znaczy martwy lub w last stand, tak jak widzi to skrypt śmierci. Skrypty śmierci utrzymują powalonego peda przy życiu, więc nigdy nie używaj `IsEntityDead` z gry, aby sprawdzić, czy gracz jest powalony.
+
+Aby zareagować, gdy gracz umiera, nasłuchuj serwerowego zdarzenia ai-core `ai-core:playerDied (src, killer, weaponHash)` zamiast sprawdzać zdrowie. Zobacz [Zdarzenia i stan](/pl/docs/developers/api/events).
+
+### GetMedicalSystem
+
+Nazwa zasobu skryptu śmierci, do którego ai-core przekazuje wywołania.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** [`medical.provider()`](/pl/docs/developers/api/lib-server/jobs#medicalprovider)
+
+```ts title="Sygnatura"
+GetMedicalSystem(): string | null
+```
+
+```lua title="Lua"
+local system = exports['ai-core']:GetMedicalSystem() -- string lub nil
+```
+
+#### Parametry
+
+Brak.
+
+#### Zwraca
+
+`string | null`: nazwa zasobu skryptu śmierci. `null`, gdy żaden nie działa.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("deathsystem", { help: "Shows the death script in use", restricted: true }, () => {
+  console.log(core.GetMedicalSystem() ?? "none: revive and heal do nothing");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('deathsystem', { help = 'Shows the death script in use', restricted = true }, function()
+  print(exports['ai-core']:GetMedicalSystem() or 'none: revive and heal do nothing')
+end)
+```
+</Tab>
+</Tabs>
+
+### RevivePlayer
+
+Stawia powalonego gracza na nogi tam, gdzie leży.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** [`medical.revive`](/pl/docs/developers/api/lib-server/jobs#medicalrevive)
+
+```ts title="Sygnatura"
+RevivePlayer(source: number): boolean
+```
+
+```lua title="Lua"
+local revived = exports['ai-core']:RevivePlayer(source)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serwera powalonego gracza.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+`boolean`: `true`, gdy gracz był powalony i skrypt śmierci go reanimował. `false`, gdy gracz nie był powalony, nie jest online, nie działa żaden skrypt śmierci albo zawiódł.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, coordsOf, isNear, progressFor, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, oneArg, readId } from "@aicore-fivem/lib/shared";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+
+// Medyk reanimuje apteczką powalonego gracza obok siebie.
+onClientCallback("myscript:revive", { args: oneArg(readId), lock: true }, async (source, target) => {
+  if (core.GetDutyJob(source) !== "ambulance") return fail("NOT_EMS");
+  if (target === source || !isNear(target, coordsOf(source), 2)) return fail("TOO_FAR");
+  if (!core.IsPlayerDead(target)) return fail("NOT_DOWN");
+  if (!(await progressFor(source, { label: Locale("REVIVING"), duration: 10000 }))) return fail("CANCELLED");
+  if (!core.RemoveItem(source, "medkit")) return fail("NO_MEDKIT");
+  core.RevivePlayer(target);
+  core.RefillNeeds(target);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+
+aiLib.onClientCallback('myscript:revive', function(source, target)
+  if math.type(target) ~= 'integer' or target == source then return aiLib.fail('BAD_TARGET') end
+  if exports['ai-core']:GetDutyJob(source) ~= 'ambulance' then return aiLib.fail('NOT_EMS') end
+  if #(GetEntityCoords(GetPlayerPed(source)) - GetEntityCoords(GetPlayerPed(target))) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if not exports['ai-core']:IsPlayerDead(target) then return aiLib.fail('NOT_DOWN') end
+  if not aiLib.progressFor(source, { label = Locale('REVIVING'), duration = 10000 }) then return aiLib.fail('CANCELLED') end
+  if not exports['ai-core']:RemoveItem(source, 'medkit') then return aiLib.fail('NO_MEDKIT') end
+  exports['ai-core']:RevivePlayer(target)
+  exports['ai-core']:RefillNeeds(target)
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### HealPlayer
+
+Daje pełne zdrowie graczowi, który nie jest powalony.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** [`medical.heal`](/pl/docs/developers/api/lib-server/jobs#medicalheal)
+
+```ts title="Sygnatura"
+HealPlayer(source: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:HealPlayer(source)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serwera gracza.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+`boolean`: `true`, gdy leczenie zostało przekazane skryptowi śmierci. `false`, gdy gracz nie jest online, nie działa żaden skrypt śmierci albo zawiódł. Powalony gracz potrzebuje `RevivePlayer`; co skrypt śmierci robi z leczeniem powalonego gracza, zależy od niego.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const CHECK_IN = { x: 308.4, y: -595.3, z: 43.3 };
+
+// Rejestracja w szpitalu: zapłać i daj się opatrzyć.
+onClientCallback("myscript:checkIn", { guards: [near(CHECK_IN, 2)], lock: true }, (source) => {
+  if (core.IsPlayerDead(source)) return fail("IS_DOWN");
+  if (!core.RemoveMoney(source, "bank", 250, "hospital")) return fail("NOT_ENOUGH_MONEY");
+  core.HealPlayer(source);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local CHECK_IN = vector3(308.4, -595.3, 43.3)
+
+aiLib.onClientCallback('myscript:checkIn', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - CHECK_IN) > 2.0 then return aiLib.fail('TOO_FAR') end
+  if exports['ai-core']:IsPlayerDead(source) then return aiLib.fail('IS_DOWN') end
+  if not exports['ai-core']:RemoveMoney(source, 'bank', 250, 'hospital') then return aiLib.fail('NOT_ENOUGH_MONEY') end
+  exports['ai-core']:HealPlayer(source)
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### IsPlayerDead
+
+Czy gracz jest powalony (martwy lub w last stand) w działającym skrypcie śmierci.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** [`medical.isDead`](/pl/docs/developers/api/lib-server/jobs#medicalisdead) (serwer); na kliencie `medical.isDead()` z liba czyta stan lokalnego gracza bez wywołania
+
+```ts title="Sygnatura"
+IsPlayerDead(source: number): boolean
+```
+
+```lua title="Lua"
+local down = exports['ai-core']:IsPlayerDead(source)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serwera gracza.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+`boolean`: `true`, gdy gracz jest powalony. `false`, gdy stoi na nogach, nie jest online albo nie działa żaden skrypt śmierci.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Powalony gracz nie może otworzyć menu sklepu z telefonami.
+onClientCallback("myscript:openShop", (source) =>
+  core.IsPlayerDead(source) ? fail("IS_DOWN") : { ok: true },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:openShop', function(source)
+  if exports['ai-core']:IsPlayerDead(source) then return aiLib.fail('IS_DOWN') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>

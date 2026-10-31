@@ -1,0 +1,807 @@
+---
+title: Wspólne UI
+description: notify, progress, menu, input, prompty, skillCheck, lockpick i itemPicker - UI gracza, które ai-lib rysuje za każdy zasób.
+icon: MessageSquare
+---
+
+ai-lib rysuje jedno wspólne UI za każdy zasób: karty powiadomień, pasek postępu, prompty "naciśnij E", menu, okna wejścia i minigry. Twój skrypt tylko o nie prosi, więc każdy skrypt na serwerze wygląda tak samo, a ty nie piszesz do nich żadnego NUI. Wybierak przedmiotów rysuje ai-core.
+
+Teksty, które podajesz, są pokazywane tak, jak są: najpierw je przetłumacz (`Locale("KEY")` w TypeScript, `t('KEY')` w Lua).
+
+## Powiadomienia
+
+### notify
+
+Pokazuje kartę powiadomienia na ekranie tego gracza.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+notify(text: string, kind?: NotificationKind, duration?: number): void
+```
+
+```lua title="Lua"
+aiLib.notify(text, kind, duration)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    text: { type: 'string', description: 'Wiadomość, już przetłumaczona.', required: true },
+    kind: { type: '"success" | "error" | "info" | "warning"', description: 'Kolor i ikona karty.', default: '"info"' },
+    duration: { type: 'number', description: 'Milisekundy na ekranie.', default: '4000' },
+  }}
+/>
+
+Typ kind to [`NotificationKind`](/pl/docs/developers/api/types#notificationkind). Żeby powiadomić gracza z serwera, użyj serwerowego `notify(source, text, kind)`.
+
+#### Zwracana wartość
+
+`void`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { createLocale, notify } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+notify(Locale("WELCOME"));
+notify(Locale("NO_MONEY"), "error");
+notify(Locale("SAVED"), "success", 2000);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+aiLib.notify(t('WELCOME'))
+aiLib.notify(t('NO_MONEY'), 'error')
+aiLib.notify(t('SAVED'), 'success', 2000)
+```
+</Tab>
+</Tabs>
+
+## Pasek postępu
+
+### progress
+
+Wykonuje akcję z czasem z paskiem postępu ai-lib i opcjonalną animacją albo scenariuszem i czeka, aż się skończy. Kończy się wcześniej (anulowana), gdy gracz zginie, wsiądzie do pojazdu, naciśnie klawisz anulowania ai-lib (domyślnie `Backspace`, tylko z `canCancel`) albo twój skrypt wywoła `cancelProgress()`. Jeden pasek na zasób naraz.
+
+**Strona:** Klient · **Czeka:** tak (Promise w TypeScript, w Lua wstrzymuje wątek)
+
+```ts title="Sygnatura"
+progress(options: ProgressOptions): Promise<boolean>
+```
+
+```lua title="Lua"
+local finished = aiLib.progress(options) -- boolean, wywołuj wewnątrz wątku
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    options: { type: 'ProgressOptions', description: 'Co pokazuje pasek i co gracz może robić. Pola poniżej.', required: true },
+  }}
+/>
+
+#### ProgressOptions
+
+<TypeTable
+  type={{
+    label: { type: 'string', description: 'Tekst na pasku, już przetłumaczony.', required: true },
+    duration: { type: 'number', description: 'Jak długo trwa pasek, w milisekundach.', required: true },
+    anim: { type: '{ dict: string; clip: string; flag?: number }', description: 'Animacja odtwarzana przez cały czas (flag domyślnie 49: górna część ciała, pętla, można się ruszać). Zatrzymywana na końcu.' },
+    scenario: { type: 'string', description: 'Scenariusz odtwarzany w miejscu (WORLD_HUMAN_HAMMERING), gdy nie ma anim. Czyszczony na końcu.' },
+    face: { type: 'Vec3', description: 'Gracz najpierw obraca się w stronę tego punktu (dystrybutor, lada, pojazd), co trwa 600 ms, tylko pieszo. Tylko TypeScript.' },
+    canCancel: { type: 'boolean', description: 'Gracz może anulować klawiszem anulowania ai-lib.', default: 'false' },
+    allowVehicle: { type: 'boolean', description: 'Bycie w pojeździe go nie anuluje. Bez tego bycie w pojeździe przy dowolnym sprawdzeniu (także na starcie) anuluje.', default: 'false' },
+    whileDead: { type: 'boolean', description: 'Trwa dalej, gdy gracz zostanie powalony. Domyślnie powalenie, w dowolnym skrypcie śmierci, anuluje.', default: 'false' },
+    freeze: { type: 'boolean', description: 'Trzyma gracza w miejscu w czasie trwania.', default: 'false' },
+    disable: { type: '{ move?: boolean; car?: boolean; mouse?: boolean; combat?: boolean }', description: 'Sterowanie zablokowane w czasie trwania: move = chodzenie (sterowanie 30, 31, 36, 21, 44), car = jazda (63, 64, 71, 72, 75), mouse = rozglądanie się (1, 2, 106), combat = walka (24, 25, 37, 47, 58, 140-143, 257, 263, 264).' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Promise<boolean>`: `true`, gdy pasek dobiegł końca; `false`, gdy został anulowany, albo od razu, gdy inny pasek twojego zasobu jeszcze trwa. Lua zwraca tę samą wartość logiczną.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, createLocale, nearestVehicle, notify, progress } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+export async function repair(): Promise<void> {
+  const vehicle = nearestVehicle(4, { notOwn: true });
+  if (!vehicle) return notify(Locale("NO_VEHICLE"), "error");
+  const [x = 0, y = 0, z = 0] = GetEntityCoords(vehicle, false);
+  const done = await progress({
+    label: Locale("REPAIRING"),
+    duration: 8000,
+    face: { x, y, z },
+    anim: { dict: "mini@repair", clip: "fixing_a_player" },
+    canCancel: true,
+    disable: { move: true, combat: true },
+  });
+  if (!done) return notify(Locale("CANCELLED"), "error");
+  await callAction("mymech:repair", [NetworkGetNetworkIdFromEntity(vehicle)], { fallback: "REPAIR_FAILED" });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+local function repair()
+    CreateThread(function()
+        local vehicle = aiLib.nearestVehicle(4.0, { notOwn = true })
+        if vehicle == 0 then return aiLib.notify(t('NO_VEHICLE'), 'error') end
+        local done = aiLib.progress({
+            label = t('REPAIRING'),
+            duration = 8000,
+            anim = { dict = 'mini@repair', clip = 'fixing_a_player' },
+            canCancel = true,
+            disable = { move = true, combat = true },
+        })
+        if not done then return aiLib.notify(t('CANCELLED'), 'error') end
+        aiLib.callAction('mymech:repair', { NetworkGetNetworkIdFromEntity(vehicle) }, { fallback = 'REPAIR_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Wynik to słowo klienta: oszust może pominąć pasek. Gdy serwer płaci za akcję (przedmioty, pieniądze, naprawa), uruchom pasek z serwera przez `progressFor(source, options)` ([Wejście z klienta](/pl/docs/developers/api/lib-server/client-input)): odpowiada `true` tylko wtedy, gdy na serwerze też minęło dość czasu.
+</Callout>
+
+### cancelProgress
+
+Anuluje trwający pasek twojego zasobu, niezależnie od tego, czy gracz może go anulować. Wywołanie `progress` rozwiązuje się wtedy `false`. Nic się nie dzieje, gdy żaden pasek nie trwa.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+cancelProgress(): void
+```
+
+```lua title="Lua"
+aiLib.progress.cancel()
+```
+
+#### Zwracana wartość
+
+`void`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cancelProgress, onServerEvent } from "@aicore-fivem/lib/client";
+
+// Serwer mówi, że cel został okradziony przez kogoś innego.
+onServerEvent("myrob:taken", () => cancelProgress());
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onServerEvent('myrob:taken', function() aiLib.progress.cancel() end)
+```
+</Tab>
+</Tabs>
+
+### isProgressRunning
+
+Czy pasek twojego zasobu trwa teraz.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+isProgressRunning(): boolean
+```
+
+```lua title="Lua"
+local running = aiLib.progress.isRunning()
+```
+
+#### Zwracana wartość
+
+`boolean`: `true`, dopóki trwa pasek twojego zasobu. Paski innych zasobów się nie liczą.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { isProgressRunning, menu } from "@aicore-fivem/lib/client";
+
+export async function openMenu(): Promise<void> {
+  if (isProgressRunning()) return; // zajęty
+  await menu({ title: "Actions", items: [{ id: "a", label: "Action" }] });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if aiLib.progress.isRunning() then return end
+```
+</Tab>
+</Tabs>
+
+## Menu i okna dialogowe
+
+### menu
+
+Pokazuje menu ai-lib i czeka na wybór gracza. Strzałki przesuwają, Enter wybiera. Pozycje z `checked` to wiersze-przełączniki, które przełączają się w miejscu bez zamykania menu. W podmenu (`back: true`) krótkie Escape rozwiązuje się `MENU_BACK`, żebyś mógł otworzyć poprzednie menu; przytrzymanie Escape zamyka.
+
+**Strona:** Klient · **Czeka:** tak (Promise w TypeScript, w Lua wstrzymuje wątek)
+
+```ts title="Sygnatura"
+menu(request: MenuRequest, listeners?: ((item: string) => void) | MenuListeners): Promise<string | null>
+```
+
+```lua title="Lua"
+local picked = aiLib.menu.show(request, listeners) -- string albo nil, wywołuj wewnątrz wątku
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    request: { type: 'MenuRequest', description: 'Tytuł i pozycje. Pola poniżej.', required: true },
+    listeners: { type: '((item: string) => void) | MenuListeners', description: 'Funkcja to onHover. Albo obiekt z onHover i onToggle. Lua: tylko obiekt.' },
+  }}
+/>
+
+#### MenuRequest
+
+<TypeTable
+  type={{
+    title: { type: 'string', description: 'Tytuł menu, już przetłumaczony.', required: true },
+    items: { type: 'MenuItem[]', description: 'Wiersze, po kolei. Pola poniżej.', required: true },
+    back: { type: 'boolean', description: 'To jest podmenu: krótkie Escape rozwiązuje się MENU_BACK ("__back"), przytrzymanie Escape zamyka.', default: 'false' },
+  }}
+/>
+
+#### MenuItem
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Czym rozwiązuje się menu, gdy ten wiersz zostanie wybrany.', required: true },
+    label: { type: 'string', description: 'Tekst wiersza, już przetłumaczony.', required: true },
+    icon: { type: 'string', description: 'Nazwa ikony solid z Font Awesome bez fa- (car, key). Nazwy, których brakuje w mapie ikon ai-lib, pokazują kropkę.' },
+    description: { type: 'string', description: 'Dodatkowy tekst pokazywany z wierszem.' },
+    disabled: { type: 'boolean', description: 'Wiersza nie można wybrać.', default: 'false' },
+    checked: { type: 'boolean', description: 'Robi z wiersza przełącznik pokazywany jako włączony albo wyłączony. Wybranie go przełącza przełącznik, menu zostaje otwarte, a onToggle to słyszy.' },
+  }}
+/>
+
+Typy to [`MenuRequest`](/pl/docs/developers/api/types#menurequest) i [`MenuItem`](/pl/docs/developers/api/types#menuitem).
+
+#### MenuListeners
+
+<TypeTable
+  type={{
+    onHover: { type: '(item: string) => void', description: 'Id wiersza pod kursorem albo fokusem klawiatury. Używaj go do podglądów na żywo (kolor na aucie).' },
+    onToggle: { type: '(item: string, checked: boolean) => void', description: 'Wiersz-przełącznik został przełączony na zaznaczony.' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Promise<string | null>`: id wybranej pozycji; `"__back"` (`MENU_BACK` z `@aicore-fivem/shared`) po krótkim Escape w podmenu; `null`, gdy gracz zamknął menu. Lua zwraca to samo, `nil` przy zamknięciu.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, createLocale, menu } from "@aicore-fivem/lib/client";
+import { MENU_BACK } from "@aicore-fivem/shared";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+let engineOn = true;
+
+export async function vehicleMenu(vehicle: number): Promise<void> {
+  const pick = await menu({
+    title: Locale("VEHICLE"),
+    items: [
+      { id: "doors", label: Locale("DOORS"), icon: "door-open" },
+      { id: "engine", label: Locale("ENGINE"), icon: "power-off", checked: engineOn },
+    ],
+  }, {
+    onToggle: (item, checked) => {
+      if (item !== "engine") return;
+      engineOn = checked;
+      SetVehicleEngineOn(vehicle, checked, false, true);
+    },
+  });
+  if (pick === "doors") await doorsMenu(vehicle);
+}
+
+async function doorsMenu(vehicle: number): Promise<void> {
+  const pick = await menu({
+    title: Locale("DOORS"),
+    back: true,
+    items: [0, 1, 2, 3].map((door) => ({ id: String(door), label: Locale("DOOR", door + 1) })),
+  });
+  if (pick === MENU_BACK) return vehicleMenu(vehicle);
+  if (pick !== null) SetVehicleDoorOpen(vehicle, Number(pick), false, false);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+local function openShop()
+    CreateThread(function()
+        local pick = aiLib.menu.show({
+            title = t('SHOP'),
+            items = {
+                { id = 'water', label = t('WATER'), icon = 'bottle-water', description = '$5' },
+                { id = 'bread', label = t('BREAD'), icon = 'bread-slice', description = '$8' },
+            },
+        }, {
+            onHover = function(item) print('looking at', item) end,
+        })
+        if not pick then return end
+        aiLib.callAction('myshop:buy', { pick }, { fallback = 'BUY_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Wybrane id pochodzi z klienta gracza: serwer musi sprawdzić, czy to prawidłowy wybór.
+</Callout>
+
+### input
+
+Pokazuje okno wejścia ai-lib i czeka na wartości. Każde pole to pole liczbowe albo tekstowe.
+
+**Strona:** Klient · **Czeka:** tak (Promise w TypeScript, w Lua wstrzymuje wątek)
+
+```ts title="Sygnatura"
+input(request: InputRequest): Promise<Record<string, string | number> | null>
+```
+
+```lua title="Lua"
+local values = aiLib.input(request) -- tabela albo nil, wywołuj wewnątrz wątku
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    request: { type: 'InputRequest', description: 'Tytuł, pola i przycisk potwierdzenia. Pola poniżej.', required: true },
+  }}
+/>
+
+#### InputRequest
+
+<TypeTable
+  type={{
+    title: { type: 'string', description: 'Tytuł okna, już przetłumaczony.', required: true },
+    fields: { type: 'InputField[]', description: 'Pola, po kolei. Dwa rodzaje poniżej.', required: true },
+    confirm: { type: 'string', description: 'Tekst przycisku potwierdzenia, już przetłumaczony.', required: true },
+  }}
+/>
+
+#### InputField: number
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Klucz tej wartości w wyniku.', required: true },
+    label: { type: 'string', description: 'Etykieta pola, już przetłumaczona.', required: true },
+    type: { type: '"number"', description: 'Pole liczbowe.', required: true },
+    min: { type: 'number', description: 'Najniższa dozwolona wartość.' },
+    max: { type: 'number', description: 'Najwyższa dozwolona wartość.' },
+    placeholder: { type: 'string', description: 'Tekst podpowiedzi pokazywany, gdy pole jest puste.' },
+  }}
+/>
+
+#### InputField: text
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Klucz tej wartości w wyniku.', required: true },
+    label: { type: 'string', description: 'Etykieta pola, już przetłumaczona.', required: true },
+    type: { type: '"text"', description: 'Pole tekstowe.', required: true },
+    maxLength: { type: 'number', description: 'Najwięcej dozwolonych znaków.' },
+    placeholder: { type: 'string', description: 'Tekst podpowiedzi pokazywany, gdy pole jest puste.' },
+    multiline: { type: 'boolean', description: 'Pole wielowierszowe (notatki, opisy).' },
+    value: { type: 'string', description: 'Tekst, od którego zaczyna się pole.' },
+    readOnly: { type: 'boolean', description: 'Pokazywane, nie edytowane (czytanie notatki). Puste pole tylko do odczytu nie blokuje potwierdzenia.' },
+  }}
+/>
+
+Typy to [`InputRequest`](/pl/docs/developers/api/types#inputrequest) i [`InputField`](/pl/docs/developers/api/types#inputfield).
+
+#### Zwracana wartość
+
+`Promise<Record<string, string | number> | null>`: wpisane wartości według `name` pola, gdy gracz potwierdził; `null`, gdy zamknął okno. Wartości, które nie są ani stringiem, ani liczbą, są pomijane. Lua zwraca tabelę albo `nil`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, createLocale, input } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+export async function sendBill(target: number): Promise<void> {
+  const values = await input({
+    title: Locale("BILL"),
+    confirm: Locale("SEND"),
+    fields: [
+      { name: "amount", label: Locale("AMOUNT"), type: "number", min: 1, max: 100000 },
+      { name: "reason", label: Locale("REASON"), type: "text", maxLength: 80 },
+    ],
+  });
+  if (!values) return;
+  await callAction("mybill:send", [target, values.amount, values.reason], { fallback: "BILL_FAILED" });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+local function sendBill(target)
+    CreateThread(function()
+        local values = aiLib.input({
+            title = t('BILL'),
+            confirm = t('SEND'),
+            fields = {
+                { name = 'amount', label = t('AMOUNT'), type = 'number', min = 1, max = 100000 },
+                { name = 'reason', label = t('REASON'), type = 'text', maxLength = 80 },
+            },
+        })
+        if not values then return end
+        aiLib.callAction('mybill:send', { target, values.amount, values.reason }, { fallback = 'BILL_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+`min`, `max` i `maxLength` tylko prowadzą gracza. Serwer musi ponownie sprawdzić każdą wartość (`readInt`, `readText` w handlerze serwera).
+</Callout>
+
+### itemPicker
+
+Narzędzia administratora: pokazuje wybierak przedmiotów ai-core. Wymienia każdy przedmiot aktywnego ekwipunku z obrazkiem i wyszukiwaniem; kliknięcia wypełniają listę po prawej (1 na kliknięcie, 10 z Ctrl, 100 z Shift), która zatrzymuje się na limicie wagi celu. Lista przedmiotów jest wysyłana tylko administratorom.
+
+**Strona:** Klient · **Czeka:** tak (Promise w TypeScript, w Lua wstrzymuje wątek)
+
+```ts title="Sygnatura"
+itemPicker(request: ItemPickerRequest): Promise<PickedItem[] | null>
+```
+
+```lua title="Lua"
+local list = aiLib.itemPicker(request) -- tabela albo nil, wywołuj wewnątrz wątku
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    request: { type: 'ItemPickerRequest', description: 'Pola poniżej.', required: true },
+  }}
+/>
+
+#### ItemPickerRequest
+
+<TypeTable
+  type={{
+    title: { type: 'string', description: 'Tytuł wybieraka, już przetłumaczony.', required: true },
+    target: { type: 'number', description: 'Id serwerowe gracza, który dostaje przedmioty: jego wolna waga ogranicza listę.', default: 'administrator, który wybiera' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Promise<PickedItem[] | null>`: lista, którą wziął administrator, każdy wiersz `{ name: string; count: number }` (count to liczba całkowita powyżej 0); `null`, gdy wybierak został zamknięty. Lua zwraca listę albo `nil`. Typy to [`ItemPickerRequest`](/pl/docs/developers/api/types#itempickerrequest) i [`PickedItem`](/pl/docs/developers/api/types#pickeditem).
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, itemPicker } from "@aicore-fivem/lib/client";
+
+export async function giveItems(target: number): Promise<void> {
+  const list = await itemPicker({ title: "Give items", target });
+  if (!list || list.length === 0) return;
+  await callAction("myadmin:give", [target, list], { fallback: "GIVE_FAILED" });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function giveItems(target)
+    CreateThread(function()
+        local list = aiLib.itemPicker({ title = 'Give items', target = target })
+        if not list or #list == 0 then return end
+        aiLib.callAction('myadmin:give', { target, list }, { fallback = 'GIVE_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Przedmioty daje twój handler serwera: sprawdź, czy wywołujący jest administratorem (strażnik `isAdmin`), i ponownie sprawdź każdą nazwę i ilość. Wybierak nigdy nic sam nie daje.
+</Callout>
+
+## Prompty ręcznie
+
+[Punkty](/pl/docs/developers/api/lib-client/points) pokazują i ukrywają prompty za ciebie. Używaj tych funkcji tylko dla promptu, który nie jest związany z miejscem.
+
+### showPrompt
+
+Pokazuje (albo zmienia tekst) jednego z promptów twojego zasobu: ramkę "naciśnij E" po prawej stronie ekranu. Z `at` prompt zamiast tego unosi się nad punktem w świecie albo miejscem na encji.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+showPrompt(id: string, text: string, at?: PromptAnchor): void
+```
+
+```lua title="Lua"
+aiLib.showPrompt(id, text) -- brak kotwicy w świecie w Lua
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Twoje własne id tego promptu. Id są per zasób: dwa zasoby nigdy się nie zderzą.', required: true },
+    text: { type: 'string', description: 'Tekst promptu, już przetłumaczony.', required: true },
+    at: { type: 'PromptAnchor', description: 'Rysuj go w świecie: punkt { x, y, z } albo miejsca na encjach { anchors: [{ entity, offset }] }. Tylko TypeScript. Zobacz PromptAnchor na stronie punktów.' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`void`.
+
+#### Przykład
+
+Zobacz [`onPromptPressed`](#onpromptpressed).
+
+### hidePrompt
+
+Ukrywa jeden z promptów twojego zasobu. Id, które nie jest pokazane, nic nie robi.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+hidePrompt(id: string): void
+```
+
+```lua title="Lua"
+aiLib.hidePrompt(id)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Id podane w showPrompt.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+`void`.
+
+### onPromptPressed
+
+Uruchamia handler, gdy gracz naciśnie klawisz interakcji (domyślnie `E`), gdy jeden z promptów twojego zasobu jest na wierzchu.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+onPromptPressed(handler: (id: string) => void): void
+```
+
+```lua title="Lua"
+aiLib.onPromptPressed(function(id) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    handler: { type: '(id: string) => void', description: 'Dostaje id promptu, który był na wierzchu. Działa dla każdego promptu twojego zasobu, także tych z Points: sprawdź id.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+`void`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { createLocale, hidePrompt, onCache, onPromptPressed, showPrompt } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+// "Naciśnij E, żeby wyrzucić" podczas siedzenia na miejscu pasażera.
+onCache("seat", (seat) => {
+  if (seat === 0) showPrompt("eject", Locale("EJECT"));
+  else hidePrompt("eject");
+});
+
+onPromptPressed((id) => {
+  if (id !== "eject") return;
+  TaskLeaveVehicle(PlayerPedId(), GetVehiclePedIsIn(PlayerPedId(), false), 4160);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+aiLib.cache.onChange('seat', function(seat)
+    if seat == 0 then aiLib.showPrompt('eject', t('EJECT')) else aiLib.hidePrompt('eject') end
+end)
+
+aiLib.onPromptPressed(function(id)
+    if id ~= 'eject' then return end
+    TaskLeaveVehicle(PlayerPedId(), GetVehiclePedIsIn(PlayerPedId(), false), 4160)
+end)
+```
+</Tab>
+</Tabs>
+
+## Minigry
+
+### skillCheck
+
+Test umiejętności ai-lib: wskazówka obiega pierścień raz na etap, a gracz naciska pokazany klawisz, gdy jest ona na zielonym łuku. Ma typowy kształt testu umiejętności FiveM (`"easy" | "medium" | "hard"` albo `{ areaSize, speedMultiplier }`), więc kod napisany dla testu umiejętności ox_lib działa tak samo.
+
+**Strona:** Klient · **Czeka:** tak (Promise w TypeScript, w Lua wstrzymuje wątek)
+
+```ts title="Sygnatura"
+skillCheck(difficulty: SkillDifficulty | SkillDifficulty[], keys?: string[]): Promise<boolean>
+```
+
+```lua title="Lua"
+local passed = aiLib.skillCheck(difficulty, keys) -- boolean, wywołuj wewnątrz wątku
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    difficulty: { type: 'SkillDifficulty | SkillDifficulty[]', description: 'Jeden etap albo lista etapów rozgrywanych jeden po drugim (najwyżej 20).', required: true },
+    keys: { type: 'string[]', description: 'Klawisze, o które może prosić etap: pojedyncze litery albo cyfry. Każdy etap pokazuje jeden z nich.', default: '["e"]' },
+  }}
+/>
+
+#### SkillDifficulty
+
+[`SkillDifficulty`](/pl/docs/developers/api/types#skilldifficulty) to jedno z:
+
+<TypeTable
+  type={{
+    '"easy"': { type: 'string', description: 'Zielony łuk 50 stopni, wskazówka 0.6 obrotu na sekundę.' },
+    '"medium"': { type: 'string', description: 'Zielony łuk 40 stopni, 0.85 obrotu na sekundę.' },
+    '"hard"': { type: 'string', description: 'Zielony łuk 25 stopni, 1 obrót na sekundę.' },
+    '{ areaSize, speedMultiplier }': { type: '{ areaSize: number; speedMultiplier: number }', description: 'Twój własny etap: areaSize to zielony łuk w stopniach (5-180), speedMultiplier mnoży szybkość easy (0.2-5).' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Promise<boolean>`: `true`, gdy trafiono każdy etap; `false` przy chybieniu, złym klawiszu albo Escape.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, skillCheck } from "@aicore-fivem/lib/client";
+
+export async function hotwire(netId: number): Promise<void> {
+  const passed = await skillCheck(["easy", "easy", "medium", { areaSize: 30, speedMultiplier: 1.5 }], ["w", "a", "s", "d"]);
+  await callAction("mykeys:hotwire", [netId, passed], { fallback: "HOTWIRE_FAILED" });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function hotwire(netId)
+    CreateThread(function()
+        local passed = aiLib.skillCheck({ 'easy', 'easy', 'medium' }, { 'w', 'a', 's', 'd' })
+        aiLib.callAction('mykeys:hotwire', { netId, passed }, { fallback = 'HOTWIRE_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Wynik to słowo klienta. Gdy minigra płaci (auto, napad), uruchom ją z serwera przez `minigameFor(source, { game: "skillCheck", ... })`, które odrzuca też wygraną szybszą niż prawdziwa rozgrywka ([Wejście z klienta](/pl/docs/developers/api/lib-server/client-input)).
+</Callout>
+
+### lockpick
+
+Wytrych ai-lib: gracz przesuwa wytrych klawiszami A / D (albo strzałkami) i przytrzymuje W, żeby obrócić zamek. Zamek obraca się tym dalej, im bliżej wytrych jest ukrytego dobrego punktu; forsowanie zużywa wytrych.
+
+**Strona:** Klient · **Czeka:** tak (Promise w TypeScript, w Lua wstrzymuje wątek)
+
+```ts title="Sygnatura"
+lockpick(options?: LockpickOptions): Promise<LockpickResult>
+```
+
+```lua title="Lua"
+local result = aiLib.lockpick(options) -- 'opened' | 'broken' | 'cancelled', wywołuj wewnątrz wątku
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    options: { type: 'LockpickOptions', description: 'Pola poniżej.', default: '{}' },
+  }}
+/>
+
+#### LockpickOptions
+
+<TypeTable
+  type={{
+    difficulty: { type: '"easy" | "medium" | "hard"', description: 'Szerokość dobrego punktu każdej zapadki: easy 18, medium 11, hard 6 stopni.', default: '"medium"' },
+    pins: { type: 'number', description: 'Zapadki do obrócenia jedna po drugiej (1-6).', default: '1' },
+    picks: { type: 'number', description: 'Ile wytrychów gracz może złamać, zanim gra skończy się jako broken (1-10).', default: '1' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Promise<LockpickResult>` ([`LockpickResult`](/pl/docs/developers/api/types#lockpickresult)): `"opened"`, gdy obróciła się każda zapadka; `"broken"`, gdy złamał się ostatni wytrych (zabierz przedmiot wytrycha); `"cancelled"`, gdy gracz nacisnął Escape.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callAction, lockpick } from "@aicore-fivem/lib/client";
+
+export async function pickDoor(doorId: string): Promise<void> {
+  const result = await lockpick({ difficulty: "hard", pins: 3, picks: 2 });
+  if (result === "cancelled") return;
+  await callAction("mydoors:picked", [doorId, result], { fallback: "PICK_FAILED" });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function pickDoor(doorId)
+    CreateThread(function()
+        local result = aiLib.lockpick({ difficulty = 'hard', pins = 3, picks = 2 })
+        if result == 'cancelled' then return end
+        aiLib.callAction('mydoors:picked', { doorId, result }, { fallback = 'PICK_FAILED' })
+    end)
+end
+```
+</Tab>
+</Tabs>

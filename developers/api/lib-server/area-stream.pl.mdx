@@ -1,0 +1,121 @@
+---
+title: Strumieniowanie obszarów
+description: "AreaStream: obiekty świata (zrzuty, rośliny, ciała, propy) wysyłane tylko graczom w ich pobliżu, jako jedna migawka, a potem tylko zmiany."
+icon: Radar
+---
+
+```ts title="TypeScript"
+import { AreaStream } from "@aicore-fivem/lib/server";
+```
+
+### AreaStream
+
+Trzyma przedmioty świata (upuszczone przedmioty, rośliny, postawione propy, ciała) na siatce komórek i wysyła każdemu graczowi tylko przedmioty z komórek wokół niego. Gracz, który zaczyna śledzić, dostaje jedną migawkę swojego obszaru; potem dostaje tylko zmiany: przedmiot dodany, zmieniony, przeniesiony albo usunięty lub nowe komórki wchodzące w zasięg, gdy się porusza. To, kto ma przedmiot, wynika z komórek, więc nic nie jest zapisywane na parę gracz i przedmiot, a całość skaluje się do bardzo wielu przedmiotów i graczy. Śledzący są zwalniani, gdy wyjdą.
+
+Używaj jednego `AreaStream` na rodzaj przedmiotu, utworzonego na poziomie modułu. Na kliencie `new AreaFollower(event, cellSize)` ([Lib: klient](/pl/docs/developers/api/lib-client)) wysyła `(cx, cy)` na własnym zdarzeniu za każdym razem, gdy zmieni się komórka gracza (sprawdzane co 2 sekundy), dla `followReported`; twój kod klienta nasłuchuje `event` strumienia i trzyma przedmioty.
+
+**Strona:** Serwer · **Czeka:** nie
+
+Brak odpowiednika w Lua.
+
+```ts title="Sygnatura"
+new AreaStream<T extends AreaItem, V = T>(options: AreaStreamOptions<T, V>)
+```
+
+#### AreaItem
+
+Co musi mieć każdy przedmiot:
+
+<TypeTable
+  type={{
+    id: { type: "number | string", description: "Unikalne id przedmiotu.", required: true },
+    x: { type: "number", description: "Pozycja X w świecie, używana do znalezienia jego komórki.", required: true },
+    y: { type: "number", description: "Pozycja Y w świecie.", required: true },
+  }}
+/>
+
+#### AreaStreamOptions
+
+<TypeTable
+  type={{
+    event: { type: "string", description: "Zdarzenie klienta, na którym idą wiadomości. Klient dostaje `(reset: boolean, puts: V[], removes: id[], ...extra)`: `reset` true oznacza, że najpierw ma wszystko zapomnieć (migawka).", required: true },
+    view: { type: "(item: T) => V", description: "Co klient dostaje z przedmiotu: pomiń pola tylko dla serwera.", required: true },
+    cellSize: { type: "number", description: "Rozmiar komórki w metrach. Klient musi używać tej samej wartości.", default: "64" },
+    range: { type: "number", description: "Komórki wokół własnej komórki śledzącego, które zna: 1 oznacza komórki 3x3 wokół niego.", default: "1" },
+    chunk: { type: "number", description: "Najwięcej przedmiotów na zdarzenie. Dłuższa lista idzie jako kilka małych zdarzeń, które zachowują kolejność.", default: "50" },
+    alsoTo: { type: "(item: T) => number | undefined", description: "Gracz, który dostaje ten przedmiot, gdziekolwiek jest (ciało niesione przez gracza).", required: false },
+    extra: { type: "() => unknown[]", description: "Wartości dopisywane do każdego zdarzenia (zegar serwera dla odliczań).", required: false },
+  }}
+/>
+
+#### Przedmioty
+
+| Metoda | Co robi | Zwraca |
+| --- | --- | --- |
+| `set(item: T, resend = true): void` | Dodaje albo aktualizuje przedmiot. Śledzący wokół niego dostają put; śledzący, którzy go stracili, gdy się przesunął, dostają remove. Z `resend` false put dostają tylko śledzący, którzy jeszcze go nie mieli (dla przedmiotu, którego zmiany klienty śledzą same). | `void` |
+| `delete(id): void` | Usuwa przedmiot; śledzący, którzy go mieli, dostają remove. | `void` |
+| `load(items: Iterable<T>): void` | Zapisuje wiele przedmiotów bez wiadomości dla każdego (wczytanie z bazy danych przy starcie), potem wysyła każdemu śledzącemu jego obszar jeszcze raz jako migawkę. | `void` |
+| `get(id): T \| undefined` | Jeden przedmiot. | przedmiot albo `undefined` |
+| `values(): Generator<T>` | Każdy przedmiot. | generator |
+| `size: number` | Ile jest przedmiotów. | `number` |
+| `cellOf(x, y): { cx, cy }` | Komórka punktu na siatce tego strumienia. | współrzędne komórki |
+| `countAt(x, y): number` | Przedmioty w komórce punktu (limit na komórkę). | `number` |
+| `around(x, y, cells = 1): Generator<T>` | Przedmioty w komórce punktu i `cells` komórkach wokół niej (sprawdzanie odstępów i łączenia). | generator |
+| `recipients(id): Set<number>` | Gracze, których klient ma teraz przedmiot. | zbiór id serwerowych |
+| `knows(source, id): boolean` | Czy klient gracza ma teraz przedmiot. | `boolean` |
+
+#### Śledzący
+
+| Metoda | Co robi | Zwraca |
+| --- | --- | --- |
+| `start(source, at = coordsOf(source)): void` | Gracz zaczyna śledzić w punkcie (domyślnie: serwerowa pozycja peda) i dostaje migawkę. | `void` |
+| `follow(source, cx, cy): void` | Bieżąca komórka gracza: pierwsze wywołanie zaczyna śledzenie z migawką, zmiana wysyła tylko różnicę. | `void` |
+| `followReported(source, cx, cy): boolean` | `follow` dla komórki wysłanej przez klienta, odrzucane, chyba że jest w odległości jednej komórki od serwerowej pozycji peda (komórka klienta może być o jedną opóźniona). | `true`, gdy przyjęto |
+| `followAll(): void` | Czyta serwerową pozycję każdego śledzącego i wysyła różnicę tym, którzy zmienili komórkę. Wywołuj ją z timera `every`, gdy klient nie zgłasza komórek. | `void` |
+| `stop(source, tell = false): void` | Gracz przestaje śledzić (wylogowanie, prywatny świat). `tell` opróżnia jego klienta. | `void` |
+| `following(source): boolean` | Czy gracz śledzi. | `boolean` |
+
+#### Przykład
+
+```ts
+import { AreaStream, onClientEvent, onCharacter, every } from "@aicore-fivem/lib/server";
+import { readInt } from "@aicore-fivem/lib/shared";
+
+interface Plant { id: number; x: number; y: number; z: number; growth: number; owner: number }
+
+const plants = new AreaStream<Plant, { id: number; x: number; y: number; z: number; growth: number }>({
+  event: "my-plants:stream",
+  view: ({ id, x, y, z, growth }) => ({ id, x, y, z, growth }), // właściciel zostaje na serwerze
+});
+
+// Przy starcie: plants.load(rowsFromDatabase);
+
+onCharacter({
+  loaded: (source) => plants.start(source),
+  unloaded: (source) => plants.stop(source),
+});
+
+// AreaFollower klienta zgłasza swoją komórkę, gdy się zmieni.
+onClientEvent(
+  "my-plants:cell",
+  {
+    args: ([cx, cy]) => {
+      const x = readInt(cx, -1000, 1000);
+      const y = readInt(cy, -1000, 1000);
+      return x !== null && y !== null ? [x, y] : null;
+    },
+  },
+  (source, cx, cy) => {
+    plants.followReported(source, cx, cy);
+  },
+);
+
+// Zmiany wzrostu docierają tylko do graczy w pobliżu każdej rośliny.
+every(60_000, () => {
+  for (const plant of plants.values()) if (plant.growth < 100) plants.set({ ...plant, growth: plant.growth + 1 });
+});
+```
+
+<Callout type="warn">
+Nigdy nie buduj obok niego własnego indeksu komórek, zbiorów obserwujących ani kodu migawek. Przedmioty `alsoTo` gracza, który wyszedł, są puszczane (następny gracz z tym id nigdy ich nie dostaje), ale twój skrypt nadal sam aktualizuje przedmiot (gdzie teraz leży ciało). `cellSize` na serwerze i w `AreaFollower` klienta muszą się zgadzać.
+</Callout>

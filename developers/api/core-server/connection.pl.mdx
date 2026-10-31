@@ -1,0 +1,183 @@
+---
+title: Sprawdzanie połączeń
+description: Dodaj sprawdzenia, które musi przejść każdy łączący się gracz (whitelisty, bany), i zadeklaruj, że twój skrypt zastępuje inny.
+icon: ShieldCheck
+---
+
+Każdy łączący się gracz przechodzi przez jedną bramę w ai-core. Najpierw idą własne sprawdzenia ai-core: gracz potrzebuje konta FiveM i żaden niepotrzebny skrypt nie może działać obok skryptu, który go zastępuje (gdy w panelu włączone jest **Refuse players while both run**). Potem idą sprawdzenia, które inne zasoby dodają przez `AddConnectionCheck`, w kolejności dodania. Wygrywa pierwsza odmowa.
+
+### AddConnectionCheck
+
+Dodaje sprawdzenie, które musi przejść każdy łączący się gracz. Używaj tego dla whitelisty, listy banów albo trybu konserwacji.
+
+**Strona:** Serwer · **Czeka:** nie (samo sprawdzenie musi odpowiedzieć od razu) · **Lib:** brak
+
+```ts title="Sygnatura"
+AddConnectionCheck(
+  id: string,
+  check: (source: number, identifiers: Record<string, string>) => string | null | undefined,
+): void
+```
+
+```lua title="Lua"
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(source, identifiers) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Unikalna nazwa tego sprawdzenia (`myscript:whitelist`). Ponowne dodanie tego samego id zastępuje sprawdzenie i zachowuje jego miejsce w kolejności.', required: true },
+    check: { type: '(source, identifiers) => string | null | undefined', description: 'Działa dla każdego łączącego się gracza. Zwróć tekst, aby odrzucić gracza z tym tekstem, albo `null` / nic, aby go wpuścić.', required: true, typeDescription: '(source: number, identifiers: Record<string, string>) => string | null | undefined' },
+  }}
+/>
+
+`identifiers` trzyma każdy typ identyfikatora z jego wartością **bez prefiksu**: `identifiers.license` to `abc123...`, nie `license:abc123...`. Typów, których gracz nie ma, brakuje.
+
+#### Zwraca
+
+Nic. Bez tekstowego `id` albo funkcji wywołanie nic nie robi. Sprawdzenie jest usuwane, gdy twój zasób się zatrzymuje.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+import { Locale } from "common";
+
+const core = resourceExport("ai-core");
+const allowed = new Set<string>(); // wypełniane z twojej bazy danych przy starcie
+
+core.AddConnectionCheck("myscript:whitelist", (_source, identifiers) => {
+  const fivem = identifiers.fivem;
+  return fivem && allowed.has(fivem) ? null : Locale("CONNECT_NOT_WHITELISTED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+local allowed = {} -- fivem id -> true, wypełniane z twojej bazy danych przy starcie
+
+exports['ai-core']:AddConnectionCheck('myscript:whitelist', function(_, identifiers)
+  if identifiers.fivem and allowed[identifiers.fivem] then return nil end
+  return Locale('CONNECT_NOT_WHITELISTED')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Sprawdzenie działa podczas łączenia się gracza i musi odpowiedzieć od razu: bez zapytań do bazy danych, bez `await`, bez `Wait`. Trzymaj to, co sprawdzasz, w pamięci (wczytaj przy starcie, aktualizuj przy zmianie). Sprawdzenie, które rzuca wyjątek, jest zapisywane w logu i pomijane, więc nigdy nie blokuje wszystkich.
+</Callout>
+
+### RegisterReplacement
+
+Deklaruje, że jeden skrypt sprawia, że inne są niepotrzebne (twój skrypt wykonuje to samo zadanie co one). Dopóki oba są zainstalowane, ai-core ostrzega w konsoli i podaje folder do usunięcia; dopóki oba są uruchomione, a w panelu włączone jest **Refuse players while both run**, nikt nie może dołączyć.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** brak
+
+```ts title="Sygnatura"
+RegisterReplacement(remove: string | string[], keep?: string): void
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    remove: { type: 'string | string[]', description: 'Nazwy zasobów, które stają się niepotrzebne. Puste nazwy są pomijane.', required: true },
+    keep: { type: 'string', description: 'Zasób, który je zastępuje.', default: 'zasób wywołujący' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. Reguła jest usuwana, gdy wywołujący zasób się zatrzymuje. ai-core ponownie sprawdza konflikty sekundę po starcie lub zatrzymaniu dowolnego zasobu.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// Nasz skrypt bankowy robi to, co te; uruchomienie obu podwoiłoby ekrany banku.
+core.RegisterReplacement(["qb-banking", "okokBanking"]);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-core']:RegisterReplacement({ 'qb-banking', 'okokBanking' })
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Zasób, którego nie możesz zmienić (skrypt escrow), może zadeklarować to samo linią w swoim `fxmanifest.lua`: `ai_replaces 'qb-banking'`.
+</Callout>
+
+### GetConflicts
+
+Każdy konflikt znaleziony teraz: skrypt zainstalowany obok skryptu, który go zastępuje.
+
+**Strona:** Serwer · **Czeka:** nie · **Lib:** brak
+
+```ts title="Sygnatura"
+GetConflicts(): { keep: string; remove: string; running: boolean; from: string }[]
+```
+
+```lua title="Lua"
+local conflicts = exports['ai-core']:GetConflicts() -- lista tabel
+```
+
+#### Parametry
+
+Brak.
+
+#### Zwraca
+
+Lista, jeden wpis na konflikt:
+
+<TypeTable
+  type={{
+    keep: { type: 'string', description: 'Skrypt, który zostaje.' },
+    remove: { type: 'string', description: 'Niepotrzebny skrypt do usunięcia.' },
+    running: { type: 'boolean', description: '`true`, gdy oba są uruchomione (gracze są odrzucani, dopóki przełącznik w panelu jest włączony); `false`, gdy niepotrzebny jest tylko zainstalowany.' },
+    from: { type: 'string', description: 'Skąd pochodzi reguła: `ai-core`, `<resource> fxmanifest` albo zasób, który wywołał `RegisterReplacement`.' },
+  }}
+/>
+
+Pusta lista, gdy nie ma konfliktu.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("conflicts", { help: "Lists scripts to remove", restricted: true }, () => {
+  for (const c of core.GetConflicts())
+    console.log(`${c.keep} replaces ${c.remove}${c.running ? " (both started!)" : ""} [${c.from}]`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('conflicts', { help = 'Lists scripts to remove', restricted = true }, function()
+  for _, c in ipairs(exports['ai-core']:GetConflicts()) do
+    print(('%s replaces %s%s [%s]'):format(c.keep, c.remove, c.running and ' (both started!)' or '', c.from))
+  end
+end)
+```
+</Tab>
+</Tabs>

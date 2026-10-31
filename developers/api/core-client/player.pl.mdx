@@ -1,0 +1,215 @@
+---
+title: Gracz
+description: Odczytaj postać lokalnego gracza, pieniądze, prace, służbę i gangi, sprawdź, czy postać jest wczytana, i odczytaj definicje prac i gangów.
+icon: User
+---
+
+Te eksporty czytają to, co ai-core wie o graczu siedzącym przy tej grze: jego postać, pieniądze, prace i gangi. Serwer wysyła te dane do własnego klienta gracza raz, gdy postać się wczytuje, a potem tylko wartości, które się zmieniają. Dane żadnego innego gracza nigdy nie docierają do tego klienta.
+
+<Callout type="info">
+W TypeScript używaj `getPlayerData(key)` i `onPlayerData(key, handler)` z liba zamiast wywoływać `GetPlayerData` w kółko. W Lua używaj `aiLib.playerData.get(key)` i `aiLib.playerData.onChange(key, handler)`. Czytają eksport raz, a potem śledzą każdą zmianę, którą wysyła ai-core.
+</Callout>
+
+### GetPlayerData
+
+Zwraca w jednej tabeli wszystko, co ai-core wie o wczytanej postaci lokalnego gracza: postać, pieniądze, prace, służbę, główną pracę, gangi, aktywny gang i metadane. Używaj tego, aby odczytać dane raz przy starcie zasobu; zmiany śledź przez `onPlayerData` (TS) lub `aiLib.playerData.onChange` (Lua).
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+GetPlayerData(): AiPlayerData | null
+```
+
+```lua title="Lua"
+local data = exports['ai-core']:GetPlayerData() -- table lub nil
+```
+
+#### Parametry
+
+Brak.
+
+#### Zwraca
+
+[`AiPlayerData`](/pl/docs/developers/api/types#aiplayerdata), gdy postać stoi w świecie, `null` (`nil` w Lua) na ekranie postaci, przed wczytaniem pierwszej postaci i po powrocie gracza do ekranu postaci.
+
+<TypeTable
+  type={{
+    character: { type: 'CharacterInfo | null', description: 'Postać: `id`, `citizenid`, `slot`, `firstname`, `lastname`, `birthdate` (`YYYY-MM-DD`), `sex` (`"male"` lub `"female"`), `nationality`.', required: true, typeDescriptionLink: '/docs/developers/api/types#characterinfo' },
+    money: { type: 'Record<string, number>', description: 'Saldo każdego konta według nazwy, na przykład `{ cash: 500, bank: 12000 }`. Nazwy kont pochodzą z panelu administratora.', required: true },
+    jobs: { type: 'JobMembership[]', description: 'Każda praca postaci: `{ job, grade }`. Postać może mieć kilka prac.', required: true, typeDescriptionLink: '/docs/developers/api/types#jobmembership' },
+    duty: { type: 'string | null', description: 'Praca, w której gracz jest teraz na służbie, `null` poza służbą.', required: true },
+    job: { type: 'JobMembership', description: 'Praca, którą inne skrypty traktują jako "tę" pracę: praca na służbie, w przeciwnym razie ostatnia praca, w której był na służbie, w przeciwnym razie pierwsza praca, w przeciwnym razie `{ job: "unemployed", grade: 0 }`.', required: true, typeDescriptionLink: '/docs/developers/api/types#jobmembership' },
+    gangs: { type: 'GangMembership[]', description: 'Każdy gang, do którego należy postać: `{ gang, grade }`.', required: true, typeDescriptionLink: '/docs/developers/api/types#gangmembership' },
+    activeGang: { type: 'string | null', description: 'Gang, w imieniu którego gracz teraz działa, `null`, gdy brak.', required: true },
+    metadata: { type: 'Record<string, unknown>', description: 'Dowolne wartości zapisane z postacią. Mosty frameworków trzymają tu metadane ESX / QB (głód, pragnienie, stres...).', required: true },
+  }}
+/>
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { getPlayerData, onPlayerData } from "@aicore-fivem/lib/client";
+
+// Pokazuje blip tylko dla policji, dopóki gracz jest na służbie jako policja.
+let blip = 0;
+
+function updateBlip(duty: string | null): void {
+  if (duty === "police" && blip === 0) {
+    blip = AddBlipForCoord(441.8, -982.0, 30.7); // Komisariat Mission Row
+    SetBlipSprite(blip, 60);
+  } else if (duty !== "police" && blip !== 0) {
+    RemoveBlip(blip);
+    blip = 0;
+  }
+}
+
+// Odczytaj raz (lib pyta GetPlayerData z ai-core za ciebie), potem śledź każdą zmianę.
+updateBlip(getPlayerData("duty") ?? null);
+onPlayerData("duty", (duty) => updateBlip(duty));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- fxmanifest.lua: dependency 'ai-lib' i shared_script '@ai-lib/init.lua'
+-- Pokazuje blip tylko dla policji, dopóki gracz jest na służbie jako policja.
+local blip = 0
+
+local function updateBlip(duty)
+  if duty == 'police' and blip == 0 then
+    blip = AddBlipForCoord(441.8, -982.0, 30.7) -- Komisariat Mission Row
+    SetBlipSprite(blip, 60)
+  elseif duty ~= 'police' and blip ~= 0 then
+    RemoveBlip(blip)
+    blip = 0
+  end
+end
+
+-- Odczytaj raz (aiLib pyta GetPlayerData z ai-core za ciebie), potem śledź każdą zmianę.
+updateBlip(aiLib.playerData.get('duty'))
+aiLib.playerData.onChange('duty', updateBlip)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+To własna kopia gracza, do pokazywania rzeczy na ekranie. Nigdy nie decyduj na jej podstawie o niczym, czemu serwer musi ufać (płatność, przedmiot, dostęp do schowka): serwer sprawdza ponownie własnymi eksportami.
+</Callout>
+
+### IsPlayerLoaded
+
+Mówi, czy na tym kliencie postać stoi w świecie. Używaj tego, zanim uruchomisz coś, co potrzebuje postaci (HUD, pętla pracy), gdy twój zasób może wystartować, kiedy gracz jest już wczytany.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+IsPlayerLoaded(): boolean
+```
+
+```lua title="Lua"
+local loaded = exports['ai-core']:IsPlayerLoaded() -- boolean
+```
+
+#### Parametry
+
+Brak.
+
+#### Zwraca
+
+`boolean`: `true`, gdy postać została umieszczona w świecie, `false` na ekranie postaci, gdy gracz wybiera miejsce pojawienia się, i po powrocie do ekranu postaci.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+function start(): void {
+  console.log("character ready, starting the job loop");
+}
+
+// Gracz mógł się wczytać, zanim ten zasób wystartował (restart): najpierw sprawdź, potem nasłuchuj.
+if (core.IsPlayerLoaded()) start();
+on(CORE.clientPlayerLoadedEvent, start);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local function start()
+  print('character ready, starting the job loop')
+end
+
+-- Gracz mógł się wczytać, zanim ten zasób wystartował (restart): najpierw sprawdź, potem nasłuchuj.
+if exports['ai-core']:IsPlayerLoaded() then start() end
+AddEventHandler('ai-core:client:playerLoaded', start)
+```
+</Tab>
+</Tabs>
+
+### GetDefinitions
+
+Zwraca każdą pracę lub każdy gang tak, jak zapisuje je panel administratora (etykiety, stopnie i inne pola edytowane w panelu). Mosty frameworków używają tego do budowania tabel prac ESX / QB. Odczytaj raz, potem śledź klienckie zdarzenie `ai-core:client:definitions`, które jest wysyłane dla każdej pracy lub gangu zmienionego w panelu.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+GetDefinitions(file: "jobs" | "gangs"): Record<string, unknown> | null
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetDefinitions('jobs') -- tabela z nazwą pracy jako kluczem lub nil
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    file: { type: '"jobs" | "gangs"', description: 'Który plik panelu odczytać: każdą pracę albo każdy gang.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+`Record<string, unknown>`: jeden rekord na pracę lub gang, z jego nazwą jako kluczem (`police`, `ambulance`). Rekordy to własne dane panelu i nie są sprawdzane. `null`, gdy `file` nie jest ani `"jobs"`, ani `"gangs"`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { resourceExport } from "@aicore-fivem/lib/client";
+import { CORE } from "@aicore-fivem/shared";
+
+const core = resourceExport("ai-core");
+
+// Lokalna kopia każdej pracy, aktualizowana na bieżąco.
+const jobs: Record<string, unknown> = { ...(core.GetDefinitions("jobs") ?? {}) };
+
+on(CORE.clientDefinitionsEvent, (file: string, name: string, definition: unknown) => {
+  if (file !== "jobs") return;
+  if (definition === null) delete jobs[name];
+  else jobs[name] = definition;
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+-- Lokalna kopia każdej pracy, aktualizowana na bieżąco.
+local jobs = exports['ai-core']:GetDefinitions('jobs') or {}
+
+AddEventHandler('ai-core:client:definitions', function(file, name, definition)
+  if file ~= 'jobs' then return end
+  jobs[name] = definition -- nil, gdy praca została usunięta
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Nazwy i etykiety stopni pracy lub gangu na serwerze bierz z serwerowych eksportów ai-core lub z serwerowego liba; to serwer sprawdza stopnie.
+</Callout>

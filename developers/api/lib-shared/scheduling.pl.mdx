@@ -1,0 +1,371 @@
+---
+title: Harmonogram i cykl życia
+description: "every, onStop, caller, ByResource, Reasons, sleep i waitFor: praca okresowa, czekanie i dane należące do zasobu, który je zarejestrował."
+icon: Timer
+---
+
+```ts title="TypeScript"
+import { every, onStop, caller, ByResource, Reasons } from "@aicore-fivem/lib/fivem";
+import { sleep, waitFor } from "@aicore-fivem/lib/shared";
+```
+
+## Praca okresowa
+
+### every
+
+Uruchamia funkcję co `ms` milisekund (`0` = co klatkę) z jedynego harmonogramu twojego zasobu. Używaj jej zamiast `setInterval`, `setTick` albo pętli `CreateThread` z `Wait`: wszystkie zadania zasobu dzielą jeden tick, a ten tick istnieje tylko wtedy, gdy co najmniej jedno zadanie jest włączone, więc bezczynny zasób nic nie kosztuje w resmonie.
+
+**Strona:** Klient i serwer · **Czeka:** nie
+
+```ts title="Sygnatura"
+every(ms: number, fn: () => unknown, options?: EveryOptions): Job
+```
+
+```lua title="Lua"
+local job = aiLib.every(ms, fn, options) -- job:set(active), job:stop(), job.running
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Odstęp w milisekundach. `0` uruchamia ją co klatkę. Ułamki są zaokrąglane w dół, wartości ujemne liczą się jako 0.', required: true },
+    fn: { type: '() => unknown', description: 'Sama praca. Może zwrócić promise; wyjątek albo odrzucony promise jest logowany, a zadanie działa dalej.', required: true },
+    options: { type: 'EveryOptions', description: 'Pola poniżej.' },
+  }}
+/>
+
+#### EveryOptions
+
+<TypeTable
+  type={{
+    active: { type: 'boolean', description: '`false` tworzy zadanie wyłączone. Włącz je później przez `job.set(true)`.', default: 'true' },
+    name: { type: 'string', description: 'Nazwa w logu błędów.', default: "nazwa funkcji (TS), 'anonymous' (Lua)" },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Job`: uchwyt do włączania i wyłączania zadania.
+
+<TypeTable
+  type={{
+    running: { type: 'boolean (read only)', description: '`true`, dopóki zadanie jest włączone.' },
+    'set(active)': { type: '(active: boolean) => void', description: 'Włącza lub wyłącza zadanie. Po włączeniu pierwsze uruchomienie następuje jeden odstęp później (w następnej klatce dla 0). Lua: `job:set(true)`.' },
+    'stop()': { type: '() => void', description: 'Wyłącza zadanie na dobre: `set(true)` potem nic nie robi. Lua: `job:stop()`.' },
+  }}
+/>
+
+#### Przykład
+
+Zadanie na każdą klatkę, które działa tylko wtedy, gdy ma coś do zrobienia:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { every, cache, onCache } from "@aicore-fivem/lib/client";
+
+// Ukrywa celownik co klatkę, ale tylko gdy broń jest w ręku.
+const hideCrosshair = every(0, () => HideHudComponentThisFrame(14), {
+  active: cache.weapon !== false,
+  name: "hide crosshair",
+});
+
+onCache("weapon", (weapon) => hideCrosshair.set(weapon !== false));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Ukrywa celownik co klatkę, ale tylko gdy broń jest w ręku.
+local hideCrosshair = aiLib.every(0, function()
+    HideHudComponentThisFrame(14)
+end, { active = aiLib.cache.weapon ~= false, name = 'hide crosshair' })
+
+aiLib.cache.onChange('weapon', function(weapon)
+    hideCrosshair:set(weapon ~= false)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Zadanie nigdy nie może czekać: żadnego `Wait` w Lua, żadnego długiego łańcucha `await` w TypeScript, który ma się skończyć przed następnym uruchomieniem. W Lua `Wait` wewnątrz zadania wstrzymuje każde inne zadanie zasobu; do tego uruchom wątek z zadania. Błędne zadanie jest logowane najwyżej raz na 10 sekund (błędy pomiędzy są doliczane do następnej linii).
+</Callout>
+
+## Czekanie
+
+### sleep
+
+Czeka `ms` milisekund.
+
+**Strona:** Klient, serwer i NUI · **Czeka:** tak (Promise)
+
+```ts title="Sygnatura"
+sleep(ms: number): Promise<void>
+```
+
+**Lua:** brak odpowiednika; użyj `Wait(ms)` wewnątrz wątku.
+
+#### Parametry
+
+<TypeTable
+  type={{
+    ms: { type: 'number', description: 'Ile milisekund czekać.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Promise<void>`, który się rozwiązuje po `ms` milisekundach.
+
+#### Przykład
+
+```ts
+import { sleep } from "@aicore-fivem/lib/shared";
+import { fadeOut, fadeIn } from "@aicore-fivem/lib/client";
+
+async function blink(): Promise<void> {
+  await fadeOut(300);
+  await sleep(1000);
+  await fadeIn(300);
+}
+```
+
+### waitFor
+
+Sprawdza warunek, aż da on wartość, potem zwraca tę wartość. Używaj jej, żeby czekać na coś, co gra robi we własnym tempie: aż encja zacznie istnieć, model się wczyta, wartość przyjdzie.
+
+**Strona:** Klient, serwer i NUI · **Czeka:** tak (Promise w TypeScript, w Lua wstrzymuje wątek)
+
+```ts title="Sygnatura"
+waitFor<T>(check: () => T | undefined, timeoutMs?: number | false, intervalMs?: number): Promise<T>
+```
+
+```lua title="Lua"
+local value = aiLib.waitFor(check, timeout, interval) -- wartość albo nil po upływie limitu czasu; wywołuj wewnątrz wątku
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    check: { type: '() => T | undefined', description: 'Działa przy każdym sprawdzeniu. Zwróć wartość, na którą czekasz, albo `undefined` (Lua: `nil`), żeby czekać dalej. Żeby czekać na prawdziwy warunek, zwróć `cond || undefined` (Lua: `cond or nil`).', required: true },
+    timeoutMs: { type: 'number | false', description: 'Poddaj się po tylu milisekundach. `false` czeka bez końca.', default: '10000' },
+    intervalMs: { type: 'number', description: 'Milisekundy między sprawdzeniami. `0` sprawdza co tick.', default: '0' },
+  }}
+/>
+
+#### Zwracana wartość
+
+TypeScript: `Promise<T>`, który się rozwiązuje pierwszą wartością zwróconą przez `check`, która nie była `undefined`. Po upływie limitu czasu **odrzuca** z `Error("waitFor timed out after <ms> ms")`.
+
+Lua: wartość albo `nil` po upływie limitu czasu (nie rzuca wyjątku).
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { waitFor } from "@aicore-fivem/lib/shared";
+
+async function vehicleFromNet(netId: number): Promise<number | null> {
+  try {
+    return await waitFor(() => {
+      const vehicle = NetworkGetEntityFromNetworkId(netId);
+      return DoesEntityExist(vehicle) ? vehicle : undefined;
+    }, 5000);
+  } catch {
+    return null; // nie wczytał się w ciągu 5 sekund
+  }
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local vehicle = aiLib.waitFor(function()
+        local entity = NetworkGetEntityFromNetworkId(netId)
+        return DoesEntityExist(entity) and entity or nil
+    end, 5000)
+    if not vehicle then return end -- nie wczytał się w ciągu 5 sekund
+    SetVehicleEngineOn(vehicle, true, true, false)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+W TypeScript zawsze obsłuż odrzucenie (`try` / `catch` albo `.catch()`) albo podaj `false` jako limit czasu. W Lua `waitFor` działa tylko wewnątrz wątku.
+</Callout>
+
+## Cykl życia zasobu
+
+### onStop
+
+Uruchamia funkcję, gdy twój zasób się zatrzymuje (po stronie, na której działa kod). Używaj jej do usuwania tego, co stworzyły natywki, a czego nic innego nie usuwa: zespawnowanych encji, kamer, fokusu NUI.
+
+**Strona:** Klient i serwer · **Czeka:** nie
+
+```ts title="Sygnatura"
+onStop(fn: () => void): void
+```
+
+**Lua:** brak odpowiednika; użyj `AddEventHandler('onResourceStop', function(name) if name == GetCurrentResourceName() then ... end end)`.
+
+#### Parametry
+
+<TypeTable
+  type={{
+    fn: { type: '() => void', description: 'Działa raz, gdy ten zasób się zatrzymuje.', required: true },
+  }}
+/>
+
+#### Zwracana wartość
+
+`void`.
+
+#### Przykład
+
+```ts title="resource/server/index.ts"
+import { onStop } from "@aicore-fivem/lib/server";
+
+const spawned = new Set<number>();
+
+onStop(() => {
+  for (const entity of spawned) if (DoesEntityExist(entity)) DeleteEntity(entity);
+});
+```
+
+<Callout type="info">
+Wszystkie `onStop`, `ByResource` i `Reasons` zasobu dzielą jeden listener zatrzymania, więc dodanie wielu nic dodatkowo nie kosztuje.
+</Callout>
+
+### caller
+
+Nazwa zasobu, który wywołał aktualnie działający eksport. W twoim własnym kodzie (nie w wywołaniu eksportu) to nazwa twojego zasobu.
+
+**Strona:** Klient i serwer · **Czeka:** nie
+
+```ts title="Sygnatura"
+caller(): string
+```
+
+**Lua:** brak odpowiednika; użyj `GetInvokingResource() or GetCurrentResourceName()`.
+
+#### Zwracana wartość
+
+`string`: nazwa wywołującego zasobu albo nazwa tego zasobu, gdy żaden inny zasób nie wywołuje.
+
+#### Przykład
+
+```ts title="resource/server/index.ts"
+import { registerExport, caller } from "@aicore-fivem/lib/server";
+
+registerExport("Ping", () => {
+  console.log(`${caller()} asked for a ping`);
+  return true;
+});
+```
+
+### ByResource
+
+Mapa, której wpisy należą do zasobu, który je ustawił. Gdy ten zasób się zatrzymuje, jego wpisy są od razu usuwane (a `onDrop` działa dla każdego z nich). Używaj jej do rzeczy, które inne zasoby rejestrują przez twoje eksporty: hooki, prompty, przedmioty, pozycje menu.
+
+**Strona:** Klient i serwer · **Czeka:** nie
+
+```ts title="Sygnatura"
+new ByResource<K, V>(options?: { onDrop?: (resource: string, key: K, value: V) => void })
+```
+
+**Lua:** brak odpowiednika.
+
+#### Parametry
+
+<TypeTable
+  type={{
+    'options.onDrop': { type: '(resource: string, key: K, value: V) => void', description: 'Działa dla każdego wpisu usuniętego dlatego, że jego zasób się zatrzymał (nie dla `delete`).' },
+  }}
+/>
+
+#### Metody
+
+<TypeTable
+  type={{
+    'set(key, value, owner?)': { type: '(key: K, value: V, owner?: string) => void', description: 'Zapisuje wpis pod `owner` (domyślnie: `caller()`, zasób, który wywołuje twój eksport). Ustawienie klucza należącego do innego zasobu przenosi go do nowego właściciela.' },
+    'get(key)': { type: '(key: K) => V | undefined', description: 'Wpis albo `undefined`, gdy go nie ma.' },
+    'ownerOf(key)': { type: '(key: K) => string | undefined', description: 'Zasób, do którego należy wpis.' },
+    'delete(key)': { type: '(key: K) => boolean', description: 'Usuwa wpis. `false`, gdy go nie było.' },
+    'values()': { type: '() => Generator<V>', description: 'Każda wartość.' },
+    'entries()': { type: '() => Generator<[K, V]>', description: 'Każdy klucz i wartość.' },
+    size: { type: 'number (read only)', description: 'Liczba wpisów.' },
+    'dropResource(resource)': { type: '(resource: string) => void', description: 'Od razu usuwa każdy wpis zasobu (`onDrop` dla każdego wpisu). Wywoływane za ciebie, gdy zasób się zatrzymuje.' },
+  }}
+/>
+
+#### Przykład
+
+```ts title="resource/server/index.ts"
+import { ByResource, registerExport } from "@aicore-fivem/lib/server";
+import { readText } from "@aicore-fivem/lib/shared";
+
+type Hook = (source: number, text: string) => boolean;
+const hooks = new ByResource<string, Hook>({
+  onDrop: (resource, id) => console.log(`${resource} stopped: hook ${id} removed`),
+});
+
+// Inny zasób: exports["my-chat"].AddHook("swear-filter", (source, text) => ...)
+registerExport("AddHook", (id: unknown, hook: unknown) => {
+  const name = readText(id, 64);
+  if (name === null || typeof hook !== "function") return false;
+  hooks.set(name, hook as Hook); // owner = zasób, który wywołuje AddHook
+  return true;
+});
+
+export function allowed(source: number, text: string): boolean {
+  for (const hook of hooks.values()) if (!hook(source, text)) return false;
+  return true;
+}
+```
+
+### Reasons
+
+Przełącznik, który jest włączony, dopóki ustawiony jest co najmniej jeden powód. Każdy zasób ustawia własne nazwane powody, a powody zatrzymywanego zasobu są czyszczone. Używaj go do "ukryj HUD", "wstrzymaj synchronizację", "zablokuj menu": kilka skryptów może prosić naraz, a stan wraca dopiero wtedy, gdy ostatni z nich odpuści.
+
+**Strona:** Klient i serwer · **Czeka:** nie
+
+```ts title="Sygnatura"
+new Reasons()
+```
+
+**Lua:** brak odpowiednika.
+
+#### Metody
+
+<TypeTable
+  type={{
+    any: { type: 'boolean (read only)', description: '`true`, dopóki ustawiony jest co najmniej jeden powód dowolnego zasobu.' },
+    'set(reason, on, owner?)': { type: '(reason: string, on: boolean, owner?: string) => void', description: 'Ustawia (`on = true`) albo czyści powód zasobu `owner` (domyślnie: `caller()`).' },
+    'has(reason, owner?)': { type: '(reason: string, owner?: string) => boolean', description: 'Czy ten powód zasobu `owner` (domyślnie: `caller()`) jest ustawiony.' },
+    'onChange(handler)': { type: '(handler: (any: boolean) => void) => void', description: 'Działa, gdy `any` się przełączy (z wyłączonego na włączony albo odwrotnie). Nie przy każdym `set`.' },
+  }}
+/>
+
+#### Przykład
+
+```ts title="resource/client/index.ts"
+import { Reasons, registerExport } from "@aicore-fivem/lib/client";
+import { readText } from "@aicore-fivem/lib/shared";
+
+const hidden = new Reasons();
+hidden.onChange((any) => SendNUIMessage({ action: "visible", value: !any }));
+
+// Inne zasoby: exports["my-hud"].Hide("cutscene") i exports["my-hud"].Show("cutscene")
+registerExport("Hide", (reason: unknown) => {
+  const name = readText(reason, 64);
+  if (name !== null) hidden.set(name, true);
+});
+registerExport("Show", (reason: unknown) => {
+  const name = readText(reason, 64);
+  if (name !== null) hidden.set(name, false);
+});
+```

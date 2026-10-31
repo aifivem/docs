@@ -1,0 +1,411 @@
+---
+title: Pedy, blipy i propy
+description: LocalPed, Blips, createBlip, attachProp, PreviewVehicle i player.holdAnim - lokalni NPC, blipy na mapie, trzymane propy, pojazdy w salonie i trzymane animacje.
+icon: MapPin
+---
+
+Rzeczy, które widzi tylko ten klient: NPC za ladą, blipy na mapie, prop w ręku gracza, auto w salonie. Żadna z nich nie jest sieciowa, więc nigdy nie walczą z blokadą encji i nic nie kosztują serwera. Punkt już tworzy własnego NPC i blip (`ped` i `blip` w [`points.add`](/pl/docs/developers/api/lib-client/points#pointsadd)); używaj tych klas dla tych bez punktu.
+
+## Lokalne pedy
+
+### new LocalPed
+
+Ped widoczny tylko dla tego klienta (sprzedawca, NPC pracy). Jest tworzony, gdy gracz podejdzie na `distance` od `coords`, i usuwany, gdy odejdzie, więc tysiąc NPC na mapie nic nie kosztuje, dopóki ktoś nie podejdzie. Stoi zamrożony, nie można go zranić i ignoruje zdarzenia (strzały, popychanie).
+
+**Strona:** Klient · **Czeka:** nie (model wczytuje się w tle, gdy gracz się zbliży)
+
+```ts title="Sygnatura"
+new LocalPed(options: LocalPedOptions)
+```
+
+```lua title="Lua"
+local ped = aiLib.LocalPed.new(options)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    options: { type: 'LocalPedOptions', description: 'Jaki ped i gdzie. Pola poniżej.', required: true },
+  }}
+/>
+
+#### LocalPedOptions
+
+<TypeTable
+  type={{
+    model: { type: 'string | number', description: 'Nazwa albo hash modelu peda (s_m_y_cop_01).', required: true },
+    coords: { type: '{ x: number; y: number; z: number; heading: number }', description: 'Gdzie stoi i w którą stronę patrzy, w stopniach. Lua: vector4 (w to kierunek) albo tabela z w lub heading.', required: true },
+    ground: { type: 'boolean', description: 'true: coords.z to podłoga (punkt wybrany w panelu), ped na niej stoi. false: z to korzeń peda.', default: 'true' },
+    scenario: { type: 'string', description: 'Scenariusz, który odgrywa (WORLD_HUMAN_CLIPBOARD).' },
+    anim: { type: '{ dict: string; clip: string }', description: 'Pętla animacji, którą odgrywa, gdy nie ma scenariusza.' },
+    distance: { type: 'number', description: 'Tworzony, gdy gracz podejdzie tak blisko do coords, usuwany dalej, w metrach.', default: '50' },
+    attach: { type: '{ entity: number | (() => number); bone?: number; offset?: Vec3; rotation?: Vec3 }', description: 'Przyczepiony do encji (łóżka, pojazdu, innego peda) w indeksie kości (domyślnie 0, korzeń) z przesunięciem i obrotem. entity może być funkcją, czytaną przy każdym spawnie. Nie jest zamrożony, gdy jest przyczepiony.' },
+    seat: { type: '{ vehicle: number | (() => number); seat: number }', description: 'Siedzi na miejscu w pojeździe (-1 kierowca, 0 przedni pasażer). vehicle może być funkcją, czytaną przy każdym spawnie. Nie jest zamrożony.' },
+    onSpawn: { type: '(ped: number) => void', description: 'Działa po pojawieniu się peda (dodaj opcje targetu, daj mu prop).' },
+    onDespawn: { type: '(ped: number) => void', description: 'Działa tuż przed usunięciem peda.' },
+  }}
+/>
+
+#### Składowe
+
+<TypeTable
+  type={{
+    entity: { type: 'number', description: 'Uchwyt peda, dopóki istnieje, 0, dopóki gracz jest daleko. Właściwość tylko do odczytu w TypeScript, pole w Lua.' },
+    'remove()': { type: '() => void', description: 'Usuwa peda na dobre i przestaje obserwować odległość. Lua: ped:remove().' },
+  }}
+/>
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { LocalPed } from "@aicore-fivem/lib/client";
+
+const guard = new LocalPed({
+  model: "s_m_m_security_01",
+  coords: { x: -1037.6, y: -2737.8, z: 20.2, heading: 330 },
+  scenario: "WORLD_HUMAN_GUARD_STAND",
+  distance: 80,
+  onSpawn: (ped) => SetPedComponentVariation(ped, 0, 1, 0, 0),
+});
+
+// Później, gdy praca się skończy:
+guard.remove();
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local guard = aiLib.LocalPed.new({
+    model = 's_m_m_security_01',
+    coords = vector4(-1037.6, -2737.8, 20.2, 330.0),
+    scenario = 'WORLD_HUMAN_GUARD_STAND',
+    distance = 80.0,
+    onSpawn = function(ped) SetPedComponentVariation(ped, 0, 1, 0, 0) end,
+})
+
+-- Później, gdy praca się skończy:
+guard:remove()
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Odległość jest mierzona od `coords`, a nie od przyczepionego rodzica. Ped, który podąża za ruchomą encją (`attach` albo `seat` w pojeździe, który odjeżdża), potrzebuje dużego `distance` i własnego sprawdzenia zasięgu, bo inaczej zostaje tam, gdzie go utworzono.
+</Callout>
+
+## Blipy
+
+### createBlip
+
+Tworzy jeden nazwany blip na mapie i zwraca jego uchwyt. Usuwasz go sam przez `RemoveBlip(handle)`; dla blipów, które przebudowujesz przy zmianie panelu, użyj grupy [`Blips`](#new-blips).
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+createBlip(options: BlipOptions): number
+```
+
+```lua title="Lua"
+local blip = aiLib.Blips.create(options)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    options: { type: 'BlipOptions', description: 'Gdzie i jak wygląda. Pola poniżej.', required: true },
+  }}
+/>
+
+#### BlipOptions
+
+<TypeTable
+  type={{
+    coords: { type: 'Vec3', description: 'Gdzie jest blip. Lua przyjmuje też vector3.', required: true },
+    sprite: { type: 'number', description: 'Id sprite blipa GTA.', required: true },
+    color: { type: 'number', description: 'Id koloru blipa GTA.', required: true },
+    label: { type: 'string', description: 'Nazwa w legendzie mapy, już przetłumaczona. Bez niej domyślna nazwa sprite z gry.' },
+    scale: { type: 'number', description: 'Rozmiar na mapie.', default: '0.8' },
+    shortRange: { type: 'boolean', description: 'Pokazywany na minimapie tylko wtedy, gdy gracz jest blisko.', default: 'true' },
+    display: { type: 'number', description: 'Wartość SetBlipDisplay. 4 pokazuje blip na mapie i minimapie.', default: '4' },
+    route: { type: 'boolean | number', description: 'Tylko TypeScript. Trasa GPS do blipa: true w kolorze trasy z gry, liczba dla tego koloru trasy.' },
+  }}
+/>
+
+Styl blipa wybrany w twoim panelu administratora (widżet `blip`, czytany przez `readBlipStyle`) rozwija się wprost w te opcje: `createBlip({ ...style, coords, label })`.
+
+#### Zwracana wartość
+
+`number`: uchwyt blipa.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { createBlip, createLocale } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+// Cel dostawy z trasą GPS; usuwany po dostarczeniu.
+const target = createBlip({
+  coords: { x: 1197.4, y: -3253.6, z: 7.1 },
+  sprite: 478,
+  color: 5,
+  label: Locale("DELIVERY"),
+  shortRange: false,
+  route: true,
+});
+// ... przy dostarczeniu:
+RemoveBlip(target);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+local target = aiLib.Blips.create({
+    coords = vector3(1197.4, -3253.6, 7.1),
+    sprite = 478,
+    color = 5,
+    label = t('DELIVERY'),
+    shortRange = false,
+})
+SetBlipRoute(target, true) -- Lua nie ma opcji trasy
+-- ... przy dostarczeniu:
+RemoveBlip(target)
+```
+</Tab>
+</Tabs>
+
+### new Blips
+
+Grupa blipów według id: `add` zastępuje blip o tym samym id, a `clear` usuwa je wszystkie. Używaj jednej grupy na funkcję.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+new Blips()
+```
+
+```lua title="Lua"
+local blips = aiLib.Blips.new()
+```
+
+#### Metody
+
+<TypeTable
+  type={{
+    'add(id, options)': { type: '(id: string, options: BlipOptions) => number', description: 'Tworzy blip (opcje jak w createBlip), zastępując ten o tym samym id. Zwraca uchwyt.' },
+    'get(id)': { type: '(id: string) => number | undefined', description: 'Uchwyt blipa, undefined (nil w Lua), gdy go nie ma.' },
+    'remove(id)': { type: '(id: string) => void', description: 'Usuwa jeden blip. Nieznane id nic nie robi.' },
+    'clear()': { type: '() => void', description: 'Usuwa każdy blip grupy.' },
+  }}
+/>
+
+W Lua wywołuj metody z dwukropkiem: `blips:add(id, options)`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { Blips, createLocale } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+const blips = new Blips();
+
+const GARAGES = [
+  { id: "legion", coords: { x: 215.8, y: -810.1, z: 30.7 } },
+  { id: "airport", coords: { x: -796.5, y: -2023.3, z: 9.2 } },
+];
+
+for (const garage of GARAGES)
+  blips.add(garage.id, { coords: garage.coords, sprite: 357, color: 3, label: Locale("GARAGE") });
+
+// Garaż został zamknięty:
+blips.remove("airport");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+local blips = aiLib.Blips.new()
+
+local GARAGES = {
+    { id = 'legion', coords = vector3(215.8, -810.1, 30.7) },
+    { id = 'airport', coords = vector3(-796.5, -2023.3, 9.2) },
+}
+
+for _, garage in ipairs(GARAGES) do
+    blips:add(garage.id, { coords = garage.coords, sprite = 357, color = 3, label = t('GARAGE') })
+end
+
+blips:remove('airport')
+```
+</Tab>
+</Tabs>
+
+## Propy i trzymane animacje
+
+### attachProp
+
+Tworzy lokalny prop i przyczepia go do kości peda (telefon w ręku, pudło niesione przed sobą). Prop nie ma kolizji, chyba że o nią poprosisz.
+
+**Strona:** Klient · **Czeka:** tak (Promise: najpierw wczytuje model)
+
+```ts title="Sygnatura"
+attachProp(model: string | number, options: AttachPropOptions): Promise<number>
+```
+
+Brak odpowiednika w Lua: utwórz obiekt i sam wywołaj `AttachEntityToEntity`.
+
+#### Parametry
+
+<TypeTable
+  type={{
+    model: { type: 'string | number', description: 'Nazwa albo hash modelu propa (prop_npc_phone_02).', required: true },
+    options: { type: 'AttachPropOptions', description: 'Gdzie trafia. Pola poniżej.', required: true },
+  }}
+/>
+
+#### AttachPropOptions
+
+<TypeTable
+  type={{
+    bone: { type: 'number', description: 'Id kości peda (57005 = prawa ręka). Zamieniane na indeks przez GetPedBoneIndex.', required: true },
+    ped: { type: 'number', description: 'Ped, który go trzyma.', default: 'cache.ped' },
+    offset: { type: 'Vec3', description: 'Przesunięcie pozycji od kości, w metrach.', default: '{ x: 0, y: 0, z: 0 }' },
+    rotation: { type: 'Vec3', description: 'Obrót od kości, w stopniach.', default: '{ x: 0, y: 0, z: 0 }' },
+    collision: { type: 'boolean', description: 'Prop koliduje ze światem.', default: 'false' },
+    rotationOrder: { type: 'number', description: 'Kolejność obrotu AttachEntityToEntity.', default: '2' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`Promise<number>`: encja propa albo `0`, gdy model się nie wczyta albo ped już nie istnieje. Nigdy się nie odrzuca.
+
+#### Przykład
+
+```ts
+import { attachProp, player } from "@aicore-fivem/lib/client";
+
+export async function readNewspaper(): Promise<void> {
+  const paper = await attachProp("prop_cliff_paper", {
+    bone: 18905,
+    offset: { x: 0.12, y: 0.03, z: 0.02 },
+    rotation: { x: 10, y: 0, z: 0 },
+  });
+  const hold = player.holdAnim("amb@world_human_tourist_map@male@base", "base");
+  setTimeout(() => {
+    hold.stop();
+    if (paper) DeleteEntity(paper);
+  }, 10_000);
+}
+```
+
+<Callout type="info">
+Prop usuwasz sam przez `DeleteEntity`. Zapomniane propy są usuwane, gdy twój zasób się zatrzyma.
+</Callout>
+
+### player.holdAnim
+
+Utrzymuje odtwarzanie animacji, dopóki jej nie zatrzymasz. Gdy przerwie ją upadek, potrącenie albo ragdoll, jest przywracana w ciągu pół sekundy. Używaj jej do noszenia, trzymania telefonu albo pętli pracy. Jedno trzymanie na zasób: nowe zastępuje stare.
+
+**Strona:** Klient · **Czeka:** nie
+
+```ts title="Sygnatura"
+player.holdAnim(dict: string, clip: string, options?: HoldAnimOptions): { stop(): void }
+```
+
+Brak odpowiednika w Lua: odtwórz animację przez `aiLib.player.playAnim` i sprawdzaj ją zadaniem `aiLib.every`.
+
+#### Parametry
+
+<TypeTable
+  type={{
+    dict: { type: 'string', description: 'Słownik animacji.', required: true },
+    clip: { type: 'string', description: 'Nazwa animacji w słowniku.', required: true },
+    options: { type: 'HoldAnimOptions', description: 'Opcje player.playAnim plus while. Pola poniżej.', default: '{}' },
+  }}
+/>
+
+#### HoldAnimOptions
+
+<TypeTable
+  type={{
+    while: { type: '() => boolean', description: 'Czytane co pół sekundy: trzymanie kończy się (a animacja zatrzymuje), gdy zwróci false.' },
+    flag: { type: 'number', description: 'Flaga TaskPlayAnim. 49 = górna część ciała, pętla, można chodzić.', default: '49' },
+    duration: { type: 'number', description: 'Milisekundy, -1 do zatrzymania.', default: '-1' },
+    blendIn: { type: 'number', description: 'Szybkość wejścia przejścia.', default: '8' },
+    blendOut: { type: 'number', description: 'Szybkość wyjścia przejścia.', default: '-8' },
+  }}
+/>
+
+#### Zwracana wartość
+
+`{ stop(): void }`: wywołaj `stop()`, żeby zakończyć trzymanie i wyczyścić zadania peda. Wywołanie `stop()` na trzymaniu, które zostało już zastąpione, nic nie robi.
+
+#### Przykład
+
+```ts
+import { attachProp, cache, player } from "@aicore-fivem/lib/client";
+
+export async function carryBox(): Promise<void> {
+  const box = await attachProp("hei_prop_heist_box", {
+    bone: 60309,
+    offset: { x: 0.025, y: 0.08, z: 0.255 },
+    rotation: { x: -145, y: 290, z: 0 },
+  });
+  // Kończy się samo, gdy gracz wsiądzie do pojazdu.
+  player.holdAnim("anim@heists@box_carry@", "idle", {
+    while: () => cache.vehicle === false,
+  });
+  setTimeout(() => box && DeleteEntity(box), 60_000);
+}
+```
+
+## Pojazdy w salonie
+
+### new PreviewVehicle
+
+Lokalny pojazd podglądu dla salonów i sklepów: zamrożony, niezniszczalny, zamknięty i czysty. Pokazanie nowego modelu zastępuje stary, a ostatnie wywołanie zawsze wygrywa (starsze wywołanie, które jeszcze wczytuje model, nic nie robi). Usuwany przy `clear()` i gdy twój zasób się zatrzyma. Nic sieciowego.
+
+**Strona:** Klient · **Czeka:** `show` czeka (Promise)
+
+```ts title="Sygnatura"
+new PreviewVehicle()
+```
+
+Brak odpowiednika w Lua.
+
+#### Składowe
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Pojazd pokazywany teraz, 0, gdy żaden.' },
+    'show(model, at, setup?)': { type: '(model: string | number, at: { x; y; z; heading }, setup?: (vehicle: number) => void) => Promise<number>', description: 'Wczytuje model i stawia go w at (kierunek w stopniach). setup go ubiera (kolory, tablica, właściwości), zanim zostanie pokazany. Rozwiązuje się pojazdem albo 0, gdy model się nie wczyta albo w międzyczasie przyszło nowsze show lub clear.' },
+    'clear()': { type: '() => void', description: 'Usuwa podgląd i anuluje show, które jeszcze się wczytuje.' },
+  }}
+/>
+
+#### Przykład
+
+```ts
+import { PreviewVehicle, setVehicleSetup } from "@aicore-fivem/lib/client";
+
+const preview = new PreviewVehicle();
+const STAGE = { x: -44.4, y: -1097.1, z: 26.4, heading: 120 };
+
+export async function showCar(model: string, color: number): Promise<void> {
+  const vehicle = await preview.show(model, STAGE, (v) => setVehicleSetup(v, { colors: [color, color] }));
+  if (vehicle) SetVehicleNumberPlateText(vehicle, "SHOWROOM");
+}
+
+export function leaveShowroom(): void {
+  preview.clear();
+}
+```
