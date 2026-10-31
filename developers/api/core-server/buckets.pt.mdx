@@ -1,0 +1,157 @@
+---
+title: Routing buckets
+description: Pegue um routing bucket livre para um mundo separado (um interior instanciado, uma casa de assalto) e devolva-o.
+icon: Layers
+---
+
+Um **routing bucket** é uma cópia separada do mundo: jogadores e entidades no bucket 5 não conseguem ver nem tocar os do bucket 0 (o mundo normal). Use um para um mundo que precisa ser totalmente separado, como um apartamento instanciado ou o interior de uma casa de assalto. Para só esconder jogadores dentro de um interior, as natives de conceal são mais baratas.
+
+Cada script pega seus buckets do alocador do ai-core, então dois scripts nunca usam o mesmo. Nunca escolha um número de bucket você mesmo (`1000 + houseId`).
+
+### AcquireBucket
+
+Pega um routing bucket livre para o seu recurso. O novo bucket não tem população ambiente (nem trânsito nem pedestres) e tem lockdown estrito de entidades (só o servidor pode criar entidades nele). Ele é seu até você devolvê-lo ou seu recurso parar.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`buckets.acquire`](/pt/docs/developers/api/lib-server/world#bucketsacquire)
+
+```ts title="Assinatura"
+AcquireBucket(tag: string): number
+```
+
+```lua title="Lua"
+local bucket = exports['ai-core']:AcquireBucket('apartment:12')
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    tag: { type: 'string', description: 'Um nome curto que diz para que serve o bucket (`apartment:12`), mostrado nos logs. Cortado em 64 caracteres; `unnamed` quando vazio.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`number`: o id do bucket, 1000 ou mais. Ids devolvidos são entregues de novo primeiro.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, PlayerMap, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const INSIDE = { x: 266.1, y: -1007.3, z: -101.0, heading: 0 };
+// Quem está em qual bucket de apartamento; esvaziado sozinho quando um jogador cai.
+const inside = new PlayerMap<number>();
+
+onClientCallback("myscript:enterApartment", { lock: true }, (source) => {
+  if (inside.has(source)) return fail("ALREADY_INSIDE");
+  const bucket = core.AcquireBucket(`apartment:${source}`);
+  inside.set(source, bucket);
+  SetPlayerRoutingBucket(String(source), bucket);
+  SetEntityCoords(GetPlayerPed(String(source)), INSIDE.x, INSIDE.y, INSIDE.z, false, false, false, false);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local INSIDE = vector3(266.1, -1007.3, -101.0)
+local inside = {}
+
+aiLib.onClientCallback('myscript:enterApartment', function(source)
+  if inside[source] then return aiLib.fail('ALREADY_INSIDE') end
+  local bucket = exports['ai-core']:AcquireBucket('apartment:' .. source)
+  inside[source] = bucket
+  SetPlayerRoutingBucket(source, bucket)
+  SetEntityCoords(GetPlayerPed(source), INSIDE.x, INSIDE.y, INSIDE.z, false, false, false, false)
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Quando o jogador sai (ou cai), mova-o de volta para o bucket 0 e devolva o bucket com `ReleaseBucket`. Um bucket que você nunca libera continua ocupado até seu recurso parar.
+</Callout>
+
+### ReleaseBucket
+
+Devolve um bucket ao alocador. Só o recurso que o pegou pode.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`buckets.release`](/pt/docs/developers/api/lib-server/world#bucketsrelease)
+
+```ts title="Assinatura"
+ReleaseBucket(id: number): boolean
+```
+
+```lua title="Lua"
+local released = exports['ai-core']:ReleaseBucket(bucket)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'Um id de bucket que seu recurso recebeu de `AcquireBucket`.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o bucket foi devolvido. `false` quando seu recurso não o tem (outro recurso o pegou, ele já foi liberado) ou `id` não é um número.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, PlayerMap, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const DOOR = { x: -269.4, y: -955.3, z: 31.2 };
+const inside = new PlayerMap<number>({ onDrop: (_source, bucket) => core.ReleaseBucket(bucket) });
+
+onClientCallback("myscript:leaveApartment", (source) => {
+  const bucket = inside.get(source);
+  if (bucket === undefined) return fail("NOT_INSIDE");
+  inside.delete(source);
+  // Primeiro tire o jogador, depois devolva o bucket.
+  SetPlayerRoutingBucket(String(source), 0);
+  SetEntityCoords(GetPlayerPed(String(source)), DOOR.x, DOOR.y, DOOR.z, false, false, false, false);
+  core.ReleaseBucket(bucket);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local DOOR = vector3(-269.4, -955.3, 31.2)
+local inside = {} -- preenchido pelo callback de entrada acima
+
+aiLib.onClientCallback('myscript:leaveApartment', function(source)
+  local bucket = inside[source]
+  if not bucket then return aiLib.fail('NOT_INSIDE') end
+  inside[source] = nil
+  SetPlayerRoutingBucket(source, 0)
+  SetEntityCoords(GetPlayerPed(source), DOOR.x, DOOR.y, DOOR.z, false, false, false, false)
+  exports['ai-core']:ReleaseBucket(bucket)
+  return { ok = true }
+end)
+
+AddEventHandler('playerDropped', function()
+  local bucket = inside[source]
+  inside[source] = nil
+  if bucket then exports['ai-core']:ReleaseBucket(bucket) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Quando seu recurso para, o ai-core libera de uma vez cada bucket que ele tinha. Jogadores ainda dentro não são movidos: faça isso no seu próprio handler de parada.
+</Callout>

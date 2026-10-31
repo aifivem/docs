@@ -1,0 +1,1095 @@
+---
+title: Camadas pelo ai-core
+description: medical, appearance, gestures, seatbelt, fuel, mdt, radial, world e inventory - chamadas do cliente que alcançam qualquer script de morte, roupas, emotes, cinto, combustível, MDT, radial, clima ou inventário que o servidor roda.
+icon: Layers
+---
+
+Estes objetos nunca falam com um script específico. Eles perguntam ao **ai-core**, e o ai-core encaminha para qualquer script que o servidor roda para aquela tarefa: ai-death ou outro script de morte, ai-appearance ou tgiann-clothing, qualquer script de emotes ou radial suportado. Seu script continua funcionando quando o dono troca um deles. Como as camadas funcionam está em [Camadas e a ponte](/pt/docs/developers/layers).
+
+Quando nenhum script desse tipo está rodando, as chamadas respondem `false`, `null` ou o próprio valor do jogo, como cada entrada indica.
+
+## medical
+
+### medical.isDead
+
+Se o jogador local está caído (morto ou em last stand), em qualquer script de morte rodando. Scripts de morte mantêm um ped caído vivo para animá-lo, então `IsEntityDead` sozinho não os detecta. Uma leitura em memória depois da primeira chamada.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+medical.isDead(): boolean
+```
+
+Sem equivalente em Lua: chame `exports['ai-core']:IsDead()` e escute o evento local `ai-core:client:dead` (`dead`).
+
+#### Retorno
+
+`boolean`: `true` quando a camada médica do ai-core diz que o jogador está caído, ou o ped está morto para o jogo.
+
+#### Exemplo
+
+```ts
+import { medical, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "phone",
+  () => {
+    if (medical.isDead()) return notify("You cannot use the phone now", "error");
+    SetNuiFocus(true, true);
+  },
+  false,
+);
+```
+
+### medical.onChange
+
+Roda um handler quando o jogador local cai ou se levanta.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+medical.onChange(fn: (dead: boolean) => void): void
+```
+
+Sem equivalente em Lua: `AddEventHandler('ai-core:client:dead', function(dead) end)`.
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    fn: { type: '(dead: boolean) => void', description: 'Recebe true quando o jogador caiu, false quando se levantou.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+```ts
+import { medical, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+medical.onChange(() => points.refresh()); // pontos cujo canShow lê medical.isDead()
+```
+
+## appearance
+
+Visuais em peds pela camada de aparência do ai-core, qualquer que seja o script de roupas rodando.
+
+### appearance.apply
+
+Coloca um visual salvo em um ped do modelo desse visual. Pegue o visual no servidor com `appearance.get(charId)`, crie o ped com `look.model` e depois aplique. No próprio ped do jogador, troca as roupas dele.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+appearance.apply(ped: number, look: CharacterAppearance): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.appearance.apply(ped, look)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'O ped a vestir. O modelo dele precisa ser look.model.', required: true },
+    look: { type: 'CharacterAppearance', description: '{ model: number; data: unknown }: o hash do modelo e os dados próprios do script de roupas. Trate data como opaco.', required: true },
+  }}
+/>
+
+O tipo é [`CharacterAppearance`](/pt/docs/developers/api/types#characterappearance).
+
+#### Retorno
+
+`boolean`: `false` quando o ped sumiu, o modelo é diferente ou nenhum script de roupas está rodando.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { appearance, LocalPed, triggerServerCallback } from "@aicore-fivem/lib/client";
+import type { CharacterAppearance } from "@aicore-fivem/shared";
+
+// Uma cópia dormindo de um personagem, vestida como ele.
+export async function showSleeper(charId: number): Promise<void> {
+  const look = (await triggerServerCallback("mysleep:look", [charId]).catch(() => null)) as CharacterAppearance | null;
+  if (!look) return;
+  new LocalPed({
+    model: look.model,
+    coords: { x: 151.2, y: -1004.6, z: 29.4, heading: 90 },
+    onSpawn: (ped) => appearance.apply(ped, look),
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function showSleeper(charId)
+    CreateThread(function()
+        local look = aiLib.triggerServerCallback('mysleep:look', { charId })
+        if type(look) ~= 'table' then return end
+        aiLib.LocalPed.new({
+            model = look.model,
+            coords = vector4(151.2, -1004.6, 29.4, 90.0),
+            onSpawn = function(ped) aiLib.appearance.apply(ped, look) end,
+        })
+    end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Verifique o que o servidor envia antes de fazer o cast. Um ped criado com outro modelo que não `look.model` não consegue receber o visual: `apply` responde `false`.
+</Callout>
+
+### appearance.read
+
+O visual que um ped está usando agora.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+appearance.read(ped: number): CharacterAppearance | null
+```
+
+```lua title="Lua"
+local look = aiLib.appearance.read(ped) -- table ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    ped: { type: 'number', description: 'Qualquer ped.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`CharacterAppearance | null`: o visual, ou `null` (`nil` em Lua) quando o script de roupas não consegue informar ou nenhum está rodando.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { appearance, cache } from "@aicore-fivem/lib/client";
+
+const before = appearance.read(cache.ped); // coloque-o de volta depois com appearance.apply
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local before = aiLib.appearance.read(aiLib.cache.ped)
+```
+</Tab>
+</Tabs>
+
+### appearance.openMenu
+
+Abre a loja de roupas, a barbearia ou as roupas salvas do script de roupas para o jogador.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+appearance.openMenu(menu: ClothingMenu): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.appearance.openMenu(menu)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    menu: { type: '"clothing" | "barber" | "outfits"', description: 'Qual menu: a loja de roupas, a barbearia ou as roupas salvas.', required: true },
+  }}
+/>
+
+O tipo é [`ClothingMenu`](/pt/docs/developers/api/types#clothingmenu).
+
+#### Retorno
+
+`boolean`: `false` quando o script de roupas não tem esse menu ou nenhum está rodando.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { appearance, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+points.add("barber", {
+  coords: { x: -814.3, y: -183.8, z: 37.6 },
+  label: "Barber",
+  onPressed: () => appearance.openMenu("barber"),
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local points = aiLib.Points.new()
+points:add('barber', {
+    coords = vector3(-814.3, -183.8, 37.6),
+    label = 'Barber',
+    onPressed = function() aiLib.appearance.openMenu('barber') end,
+})
+```
+</Tab>
+</Tabs>
+
+### appearance.wearOutfit
+
+Coloca uma roupa de emprego (um uniforme) no jogador até `reloadSkin`. Não é salva: uma reconexão ou `reloadSkin` devolve as roupas próprias do jogador. Só as peças listadas mudam.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+appearance.wearOutfit(outfit: JobOutfit): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.appearance.wearOutfit(outfit)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    outfit: { type: 'JobOutfit', description: '{ components: OutfitPiece[]; props: OutfitPiece[] }. Cada peça é { id, collection, index, texture }: o id do componente ou prop, o nome da coleção ("" = jogo base), o índice do drawable dentro dessa coleção (-1 tira um prop) e a textura.', required: true },
+  }}
+/>
+
+Os tipos são [`JobOutfit`](/pt/docs/developers/api/types#joboutfit) e [`OutfitPiece`](/pt/docs/developers/api/types#outfitpiece).
+
+#### Retorno
+
+`boolean`: `false` quando não consegue (sem script de roupas, um modelo que ele não suporta).
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { appearance } from "@aicore-fivem/lib/client";
+
+appearance.wearOutfit({
+  components: [
+    { id: 11, collection: "", index: 55, texture: 0 },
+    { id: 4, collection: "", index: 35, texture: 0 },
+  ],
+  props: [{ id: 0, collection: "", index: -1, texture: 0 }],
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.appearance.wearOutfit({
+    components = {
+        { id = 11, collection = '', index = 55, texture = 0 },
+        { id = 4, collection = '', index = 35, texture = 0 },
+    },
+    props = { { id = 0, collection = '', index = -1, texture = 0 } },
+})
+```
+</Tab>
+</Tabs>
+
+### appearance.reloadSkin
+
+Coloca de volta o visual salvo do jogador (tira uma roupa de emprego).
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+appearance.reloadSkin(): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.appearance.reloadSkin()
+```
+
+#### Retorno
+
+`boolean`: `false` sem um script de roupas.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { appearance } from "@aicore-fivem/lib/client";
+
+RegisterCommand("offduty", () => appearance.reloadSkin(), false);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('offduty', function() aiLib.appearance.reloadSkin() end, false)
+```
+</Tab>
+</Tabs>
+
+## gestures
+
+Mãos para cima, apontar e emotes de qualquer script de emotes rodando, pelo ai-core.
+
+### gestures.isHandsUp
+
+Se o jogador local está com as mãos para cima.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+gestures.isHandsUp(): boolean
+```
+
+```lua title="Lua"
+local up = aiLib.gestures.isHandsUp()
+```
+
+#### Retorno
+
+`boolean`: `true` enquanto as mãos estão para cima no script de emotes rodando.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { gestures, onServerCallback } from "@aicore-fivem/lib/client";
+
+// O servidor pergunta antes de um roubo se a vítima se rendeu.
+onServerCallback("myrob:surrendered", () => gestures.isHandsUp());
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- Lua responde false como nil: envie uma palavra em vez disso.
+aiLib.onServerCallback('myrob:surrendered', function() return aiLib.gestures.isHandsUp() and 'yes' or 'no' end)
+```
+</Tab>
+</Tabs>
+
+### gestures.isPointing
+
+Se o jogador local está apontando.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+gestures.isPointing(): boolean
+```
+
+```lua title="Lua"
+local pointing = aiLib.gestures.isPointing()
+```
+
+#### Retorno
+
+`boolean`: `true` enquanto aponta.
+
+#### Exemplo
+
+```ts
+if (gestures.isPointing()) return; // não inicie um emote por cima do apontar
+```
+
+### gestures.provider
+
+O script de emotes que responde por mãos para cima e apontar.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+gestures.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.gestures.provider()
+```
+
+#### Retorno
+
+`string | null`: o nome do recurso dele, ou `null` (`nil`) quando nenhum está rodando.
+
+#### Exemplo
+
+```ts
+console.log(`hands up from ${gestures.provider() ?? "nothing"}`);
+```
+
+### gestures.playEmote
+
+Toca um emote pelo nome de comando (o que os jogadores digitam depois de `e`) no script de emotes rodando.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+gestures.playEmote(name: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.gestures.playEmote(name)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'O nome de comando do emote (wave, sit).', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `false` sem um script de emotes.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { gestures } from "@aicore-fivem/lib/client";
+
+RegisterCommand("hi", () => gestures.playEmote("wave"), false);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('hi', function() aiLib.gestures.playEmote('wave') end, false)
+```
+</Tab>
+</Tabs>
+
+### gestures.cancelEmote
+
+Para o emote que o jogador está tocando (algemado, derrubado).
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+gestures.cancelEmote(): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.gestures.cancelEmote()
+```
+
+#### Retorno
+
+`boolean`: `false` sem um script de emotes.
+
+#### Exemplo
+
+```ts
+onServerEvent("mypolice:cuffed", () => gestures.cancelEmote());
+```
+
+### gestures.emoteProvider
+
+O script de emotes que toca emotes (pode ser diferente do que responde por mãos para cima).
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+gestures.emoteProvider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.gestures.emoteProvider()
+```
+
+#### Retorno
+
+`string | null`: o nome do recurso dele, ou `null` (`nil`) quando nenhum está rodando.
+
+#### Exemplo
+
+```ts
+if (gestures.emoteProvider() === null) console.log("no emote script: skipping the emote");
+```
+
+## seatbelt
+
+O cinto de segurança do jogador local pelo ai-core, qualquer que seja o script de cinto rodando.
+
+### seatbelt.isOn
+
+Se o cinto está colocado. Pergunte sob demanda, não a cada frame.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+seatbelt.isOn(): boolean | null
+```
+
+```lua title="Lua"
+local worn = aiLib.seatbelt.isOn() -- boolean ou nil
+```
+
+#### Retorno
+
+`boolean | null`: `true` ou `false`; `null` (`nil`) quando nenhum script de cinto responde.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, notify, onCache, seatbelt } from "@aicore-fivem/lib/client";
+
+onCache("vehicle", (vehicle) => {
+  if (vehicle !== false && seatbelt.isOn() === false) notify("Buckle up", "warning");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.cache.onChange('vehicle', function(vehicle)
+    if vehicle and aiLib.seatbelt.isOn() == false then aiLib.notify('Buckle up', 'warning') end
+end)
+```
+</Tab>
+</Tabs>
+
+### seatbelt.onChange
+
+Roda um handler quando o cinto muda. Só os scripts de cinto que informam mudanças o disparam.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+seatbelt.onChange(fn: (worn: boolean | null) => void): void
+```
+
+```lua title="Lua"
+aiLib.seatbelt.onChange(function(worn) end)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    fn: { type: '(worn: boolean | null) => void', description: 'Recebe true quando afivelado, false quando desafivelado, null quando o script não enviou um valor claro.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+seatbelt.onChange((worn) => SendNUIMessage({ action: "belt", data: worn === true }));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.seatbelt.onChange(function(worn) SendNUIMessage({ action = 'belt', data = worn == true }) end)
+```
+</Tab>
+</Tabs>
+
+### seatbelt.provider
+
+O script de cinto que responde.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+seatbelt.provider(): string | null
+```
+
+```lua title="Lua"
+local name = aiLib.seatbelt.provider()
+```
+
+#### Retorno
+
+`string | null`: o nome do recurso dele, ou `null` (`nil`) quando nenhum responde.
+
+#### Exemplo
+
+```ts
+if (seatbelt.provider() === null) console.log("no seat belt script runs");
+```
+
+## fuel
+
+### fuel.get
+
+O nível de combustível de um veículo. O servidor mantém um state bag `fuel` para todo veículo, qualquer que seja o script de combustível rodando, então isto é uma leitura em memória; sem esse bag é o nível do tanque do jogo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+fuel.get(vehicle: number): number
+```
+
+Sem equivalente em Lua: leia `Entity(vehicle).state.fuel`. Definir o combustível é só no servidor (`fuel.set` em [Veículos](/pt/docs/developers/api/lib-server/vehicles)).
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    vehicle: { type: 'number', description: 'Um veículo que este cliente conhece.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`number`: 0-100.
+
+#### Exemplo
+
+```ts
+import { cache, every, fuel } from "@aicore-fivem/lib/client";
+
+every(1000, () => {
+  if (cache.vehicle !== false) SendNUIMessage({ action: "fuel", data: Math.round(fuel.get(cache.vehicle)) });
+});
+```
+
+## mdt
+
+### mdt.open
+
+Abre o MDT da polícia ativo para o jogador local. O MDT verifica o emprego ele mesmo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+mdt.open(): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.mdt.open()
+```
+
+#### Retorno
+
+`boolean`: `false` quando nenhum MDT está rodando ou ele não pode ser aberto de fora.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { mdt, notify } from "@aicore-fivem/lib/client";
+
+RegisterCommand("mdt", () => {
+  if (!mdt.open()) notify("No MDT available", "error");
+}, false);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('mdt', function()
+    if not aiLib.mdt.open() then aiLib.notify('No MDT available', 'error') end
+end, false)
+```
+</Tab>
+</Tabs>
+
+## radial
+
+Itens em qualquer menu radial rodando (ai-radialmenu, ou outro pela camada radial do ai-core). O ai-core os mantém entre reinícios do radial e os descarta quando o seu recurso para: adicione uma vez na inicialização.
+
+### radial.add
+
+Adiciona um item à roda, ou substitui o item com o mesmo id.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+radial.add(item: RadialItem): void
+```
+
+```lua title="Lua"
+aiLib.radial.add(item)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    item: { type: 'RadialItem', description: 'Campos abaixo.', required: true },
+  }}
+/>
+
+#### RadialItem
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Id único; adicionar um id de novo substitui o item.', required: true },
+    label: { type: 'string', description: 'O texto no card, já traduzido.', required: true },
+    icon: { type: 'string', description: 'Nome do ícone Font Awesome solid sem fa- (car, key), ou a url de uma imagem.' },
+    parent: { type: 'string', description: 'O id do item onde este entra: a categoria embutida "vehicle" (RADIAL_VEHICLE de @aicore-fivem/shared) ou outro item. A roda principal quando omitido.' },
+    items: { type: 'RadialItem[]', description: 'Subitens: o card abre um submenu, cada item com o próprio canShow e onPressed.' },
+    canShow: { type: '() => boolean', description: 'Mostrado só enquanto retorna true (emprego, serviço, um veículo, um item). Lido toda vez que a roda abre ou se atualiza.' },
+    onPressed: { type: '() => void', description: 'Roda quando o jogador escolhe o item.' },
+    keepOpen: { type: 'boolean', description: 'Mantém a roda aberta depois do aperto (portas, extras).', default: 'false' },
+    whileDead: { type: 'boolean', description: 'Mantém o item enquanto o jogador está caído; todos os outros itens se escondem nesse momento.', default: 'false' },
+  }}
+/>
+
+O tipo é [`RadialItem`](/pt/docs/developers/api/types#radialitem).
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { cache, createLocale, hasJob, radial } from "@aicore-fivem/lib/client";
+import { RADIAL_VEHICLE } from "@aicore-fivem/shared";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+radial.add({
+  id: "myscript:engine",
+  label: Locale("ENGINE"),
+  icon: "power-off",
+  parent: RADIAL_VEHICLE,
+  keepOpen: true,
+  canShow: () => cache.seat === -1,
+  onPressed: () => {
+    if (cache.vehicle === false) return;
+    SetVehicleEngineOn(cache.vehicle, !GetIsVehicleEngineRunning(cache.vehicle), false, true);
+  },
+});
+
+radial.add({
+  id: "myscript:police",
+  label: Locale("POLICE"),
+  icon: "shield-halved",
+  canShow: () => hasJob(["police"]),
+  items: [
+    { id: "myscript:cuff", label: Locale("CUFF"), icon: "handcuffs", onPressed: () => emitNet("mypolice:cuff") },
+  ],
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+aiLib.radial.add({
+    id = 'myscript:engine',
+    label = t('ENGINE'),
+    icon = 'power-off',
+    parent = 'vehicle',
+    keepOpen = true,
+    canShow = function() return aiLib.cache.seat == -1 end,
+    onPressed = function()
+        local vehicle = aiLib.cache.vehicle
+        if vehicle then SetVehicleEngineOn(vehicle, not GetIsVehicleEngineRunning(vehicle), false, true) end
+    end,
+})
+```
+</Tab>
+</Tabs>
+
+### radial.remove
+
+Remove um dos seus itens. Um id desconhecido não faz nada.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+radial.remove(id: string): void
+```
+
+```lua title="Lua"
+aiLib.radial.remove(id)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'O id passado para radial.add.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+```ts
+radial.remove("myscript:engine");
+```
+
+### radial.refresh
+
+Lê de novo todo `canShow` de uma roda aberta. Chame depois que algo que eles leem mudou enquanto a roda pode estar aberta.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+radial.refresh(): void
+```
+
+```lua title="Lua"
+aiLib.radial.refresh()
+```
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+onMembershipChange(() => radial.refresh());
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.playerData.onChange('jobs', function() aiLib.radial.refresh() end)
+```
+</Tab>
+</Tabs>
+
+## world
+
+A sincronização de clima e hora de qualquer script de clima rodando, pausada enquanto um motivo vale.
+
+### world.pauseSync
+
+Pausa a sincronização de clima e hora por um motivo: dentro de um interior, durante uma cena, ou enquanto o seu script define o próprio clima.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+world.pauseSync(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.world.pauseSync(reason)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Por quê (apartment, cutscene). A sincronização fica pausada enquanto qualquer motivo de qualquer recurso vale.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { world } from "@aicore-fivem/lib/client";
+
+export function enterApartment(): void {
+  world.pauseSync("apartment");
+  NetworkOverrideClockTime(12, 0, 0);
+  SetWeatherTypeNowPersist("EXTRASUNNY");
+}
+
+export function leaveApartment(): void {
+  world.resumeSync("apartment");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function enterApartment()
+    aiLib.world.pauseSync('apartment')
+    NetworkOverrideClockTime(12, 0, 0)
+    SetWeatherTypeNowPersist('EXTRASUNNY')
+end
+
+local function leaveApartment()
+    aiLib.world.resumeSync('apartment')
+end
+```
+</Tab>
+</Tabs>
+
+### world.resumeSync
+
+Remove um motivo de pausa; a sincronização volta a rodar quando não sobra nenhum motivo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+world.resumeSync(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.world.resumeSync(reason)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'O motivo passado para pauseSync.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`. Veja o exemplo de [`world.pauseSync`](#worldpausesync).
+
+## inventory
+
+O inventário do jogador local pela camada de inventário do ai-core: o inventário que o servidor escolheu responde. Dar e tirar itens é só no servidor ([Itens](/pt/docs/developers/api/lib-server/items)).
+
+### inventory.openInventory
+
+Abre a tela do próprio inventário do jogador.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+inventory.openInventory(): void
+```
+
+```lua title="Lua"
+aiLib.inventory.openInventory()
+```
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory } from "@aicore-fivem/lib/client";
+
+RegisterCommand("bag", () => inventory.openInventory(), false);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('bag', function() aiLib.inventory.openInventory() end, false)
+```
+</Tab>
+</Tabs>
+
+### inventory.hasItem
+
+Se o jogador tem pelo menos `count` de um item. Use em `canShow` para que o jogador só veja o que pode fazer; o servidor verifica de novo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+inventory.hasItem(item: string, count?: number): boolean
+```
+
+```lua title="Lua"
+local has = aiLib.inventory.hasItem(item, count)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    item: { type: 'string', description: 'O nome do item (lockpick).', required: true },
+    count: { type: 'number', description: 'Quantos são necessários.', default: '1' },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o jogador tem o suficiente.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, Points } from "@aicore-fivem/lib/client";
+
+const points = new Points();
+points.addVehicle("lockpick", {
+  label: "Lockpick",
+  icon: "unlock",
+  canShow: (vehicle) => GetVehicleDoorLockStatus(vehicle) >= 2 && inventory.hasItem("lockpick"),
+  onPressed: (vehicle) => emitNet("mykeys:lockpick", NetworkGetNetworkIdFromEntity(vehicle)),
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local points = aiLib.Points.new()
+points:addVehicle('lockpick', {
+    label = 'Lockpick',
+    icon = 'unlock',
+    canShow = function(vehicle)
+        return GetVehicleDoorLockStatus(vehicle) >= 2 and aiLib.inventory.hasItem('lockpick')
+    end,
+    onPressed = function(vehicle) TriggerServerEvent('mykeys:lockpick', NetworkGetNetworkIdFromEntity(vehicle)) end,
+})
+```
+</Tab>
+</Tabs>
+
+### inventory.currentWeapon
+
+O item de arma na mão do jogador: nome, rótulo e imagem.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+inventory.currentWeapon(): HeldWeapon | null
+```
+
+```lua title="Lua"
+local weapon = aiLib.inventory.currentWeapon() -- table ou nil
+```
+
+#### Retorno
+
+[`HeldWeapon`](/pt/docs/developers/api/types#heldweapon) `{ name: string; label: string; image?: string }` (`name` como `WEAPON_PISTOL`, `image` uma url `nui://` quando o inventário tem uma), ou `null` (`nil`) quando a mão está vazia.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, onCache } from "@aicore-fivem/lib/client";
+
+// Leia quando a arma muda, nunca a cada frame.
+onCache("weapon", () => SendNUIMessage({ action: "weapon", data: inventory.currentWeapon() }));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.cache.onChange('weapon', function()
+    SendNUIMessage({ action = 'weapon', data = aiLib.inventory.currentWeapon() })
+end)
+```
+</Tab>
+</Tabs>

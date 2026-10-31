@@ -1,0 +1,326 @@
+---
+title: Acesso, blips e NPCs de lugares
+description: "readAccess, isPublic, decideAccess, ACCESS_FIELDS, accessFields, readBlipStyle, BLIP_STYLE_FIELDS, PLACE_PED_SPEC, placePedFields e readPlacePed: as partes de painel que todo lugar compartilha."
+icon: MapPin
+---
+
+A maioria dos lugares que um script adiciona (uma loja, um baú, uma garagem, uma prefeitura) tem as mesmas três partes de painel: **quem pode usar**, **o blip no mapa** e **um NPC parado ali**. Cada parte vem como um trio: uma especificação de dados para o seu `schema.ts`, campos de painel prontos com os rótulos do próprio ai-core, e um leitor para o valor salvo. Use-os para que o painel de todo script tenha a mesma aparência e o mesmo comportamento.
+
+```ts title="TypeScript"
+import { readAccess, isPublic, decideAccess, ACCESS_FIELDS, accessFields, readBlipStyle, BLIP_STYLE_FIELDS, PLACE_PED_SPEC, placePedFields, readPlacePed } from "@aicore-fivem/lib/shared";
+```
+
+**Lua:** nenhum destes tem equivalente em Lua (o painel de administração é só TypeScript).
+
+## Acesso
+
+A regra é uma [AccessRule](/pt/docs/developers/api/types#accessrule): um dos empregos listados (no cargo mínimo dele, em serviço quando `onDuty` está definido) ou uma das gangues listadas (no cargo mínimo dela). As duas listas vazias significam todos. A verificação no cliente (`allows(rule)`, veja [Vínculos](/pt/docs/developers/api/lib-client/membership)) e a verificação no servidor (`online.allows(source, rule)`, veja [Jogadores](/pt/docs/developers/api/lib-server/players)) usam a mesma decisão, então o que o jogador vê combina com o que o servidor permite.
+
+### readAccess
+
+Lê uma regra de acesso a partir dos próprios campos de um registro (`jobs`, `gangs`, `grades`, `onDuty`). Campos ausentes significam que todos podem usar.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+readAccess(value: unknown): AccessRule
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'O registro (ou qualquer objeto que contenha os campos de acesso).', required: true },
+  }}
+/>
+
+#### Retorno
+
+`AccessRule`. Nomes que não são strings são descartados; cargos que não são números inteiros de 0 ou mais são descartados.
+
+#### Exemplo
+
+```ts
+import { readAccess } from "@aicore-fivem/lib/shared";
+
+readAccess({ label: "Armoury", jobs: ["police"], grades: { police: 2 }, onDuty: true });
+// { jobs: ["police"], gangs: [], grades: { police: 2 }, onDuty: true }
+```
+
+### isPublic
+
+Se uma regra deixa todos entrarem (nenhum emprego e nenhuma gangue listados). Use para pular verificações e para mostrar um lugar a todos.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+isPublic(rule: AccessRule): boolean
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'A regra a testar.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`true` quando `jobs` e `gangs` estão vazios.
+
+#### Exemplo
+
+```ts
+import { isPublic, readAccess } from "@aicore-fivem/lib/shared";
+
+isPublic(readAccess({})); // true
+```
+
+### decideAccess
+
+A decisão da regra a partir dos vínculos de um jogador. O `allows` do cliente e o `online.allows` do servidor a chamam para você; chame-a você mesmo só quando você tem os vínculos de outra forma (uma página NUI, um teste).
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+decideAccess(
+  rule: AccessRule,
+  jobs: ReadonlyArray<{ job: string; grade: number }>,
+  gangs: ReadonlyArray<{ gang: string; grade: number }>,
+  dutyJob: string | null,
+): boolean
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    rule: { type: 'AccessRule', description: 'A regra do lugar.', required: true },
+    jobs: { type: 'ReadonlyArray<JobMembership>', description: 'Os empregos do jogador.', required: true },
+    gangs: { type: 'ReadonlyArray<GangMembership>', description: 'As gangues do jogador.', required: true },
+    dutyJob: { type: 'string | null', description: 'O emprego em que o jogador está em serviço, `null` quando fora de serviço.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`true` quando a regra é pública, quando uma gangue listada corresponde no cargo mínimo dela, ou quando um emprego listado corresponde no cargo mínimo dele (e o jogador está em serviço nele quando `onDuty` está definido).
+
+#### Exemplo
+
+```ts
+import { decideAccess, readAccess } from "@aicore-fivem/lib/shared";
+
+const rule = readAccess({ jobs: ["police"], grades: { police: 2 }, onDuty: true });
+decideAccess(rule, [{ job: "police", grade: 3 }], [], "police"); // true
+decideAccess(rule, [{ job: "police", grade: 3 }], [], null);     // false: fora de serviço
+```
+
+### ACCESS_FIELDS
+
+A especificação de dados dos campos de acesso, para espalhar nas `sections` de um arquivo de records no seu `schema.ts`.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+const ACCESS_FIELDS: Record<string, DataSpec>
+// { jobs: nomes com busca de empregos, opcional; gangs: nomes com busca de gangues, opcional; onDuty: bool, opcional }
+```
+
+#### Exemplo
+
+```ts title="resource/server/schema.ts"
+import { ACCESS_FIELDS } from "@aicore-fivem/lib/shared";
+
+const stashSections = {
+  label: { type: "text", min: 1, max: 48 },
+  coords: { type: "vec3" },
+  ...ACCESS_FIELDS,
+};
+```
+
+### accessFields
+
+Os campos de painel da regra de acesso (tags de empregos, tags de gangues, um interruptor de em serviço), com os rótulos e as dicas de painel do próprio ai-core já definidos.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+accessFields(): WidgetSpec[]
+```
+
+#### Retorno
+
+`WidgetSpec[]`: três campos nos caminhos `jobs`, `gangs` e `onDuty`. Espalhe-os nos `fields` de um card nas `tabs` do seu painel.
+
+#### Exemplo
+
+```ts title="resource/server/schema.ts"
+import { accessFields } from "@aicore-fivem/lib/shared";
+
+import type { CardSpec } from "@aicore-fivem/shared";
+
+const accessCard: CardSpec = { icon: "lock", title: "ADMIN_CARD_ACCESS", fields: [...accessFields()] };
+```
+
+<Callout type="info">
+`ACCESS_FIELDS` e `accessFields()` cobrem só `jobs`, `gangs` e `onDuty`. `readAccess` também lê `grades` (`{ police: 2 }`) quando o registro o tem; sem ele, todo emprego ou gangue listado exige cargo 0.
+</Callout>
+
+## Blips
+
+### readBlipStyle
+
+Lê um estilo de blip dos dados do painel. Cada parte ausente ou inválida vem do valor de reserva; os valores são mantidos dentro da faixa (sprite 0-1000, cor 0-100, escala 0.3-2).
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+readBlipStyle(value: unknown, fallback: BlipStyle): BlipStyle
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'O estilo salvo (`{ sprite, color, scale }`).', required: true },
+    fallback: { type: 'BlipStyle', description: 'O estilo padrão do seu script.', required: true, typeDescription: '{ sprite, color, scale }' },
+  }}
+/>
+
+#### Retorno
+
+Um [BlipStyle](/pt/docs/developers/api/types#blipstyle).
+
+#### Exemplo
+
+```ts
+import { readBlipStyle } from "@aicore-fivem/lib/shared";
+
+readBlipStyle({ sprite: 52, color: 500 }, { sprite: 52, color: 2, scale: 0.8 });
+// { sprite: 52, color: 100, scale: 0.8 }: cor limitada, escala vinda do valor de reserva
+```
+
+### BLIP_STYLE_FIELDS
+
+A especificação de dados dos campos de um estilo de blip, para `{ type: "object", fields: BLIP_STYLE_FIELDS }` no seu `schema.ts`. O painel o mostra com o widget `blip`.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+const BLIP_STYLE_FIELDS: Record<string, DataSpec>
+// sprite: número inteiro 0-1000, color: número inteiro 0-100, scale: número 0.3-2
+```
+
+#### Exemplo
+
+```ts title="resource/server/schema.ts"
+import { BLIP_STYLE_FIELDS } from "@aicore-fivem/lib/shared";
+
+const sections = {
+  blip: { type: "bool" },
+  blipStyle: { type: "object", optional: true, fields: BLIP_STYLE_FIELDS },
+};
+```
+
+## NPCs de lugares
+
+### PLACE_PED_SPEC
+
+A especificação de dados da seção `ped` de um lugar: modelo, cenário parado e posição, todos opcionais. Um lugar sem modelo não tem NPC.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+const PLACE_PED_SPEC: DataSpec
+// { type: "object", optional: true, fields: { model: texto de até 64, scenario: um dos cenários oferecidos, coords: vec4 } }
+```
+
+Os cenários que o painel oferece: nenhum (fica parado), `WORLD_HUMAN_STAND_IMPATIENT`, `WORLD_HUMAN_CLIPBOARD`, `WORLD_HUMAN_STAND_MOBILE`, `WORLD_HUMAN_AA_COFFEE`, `WORLD_HUMAN_SMOKING`, `WORLD_HUMAN_GUARD_STAND`, `WORLD_HUMAN_COP_IDLES`, `WORLD_HUMAN_HANG_OUT_STREET`.
+
+#### Exemplo
+
+```ts title="resource/server/schema.ts"
+import { PLACE_PED_SPEC } from "@aicore-fivem/lib/shared";
+
+const sections = { ped: PLACE_PED_SPEC, label: { type: "text", min: 1, max: 48 } };
+```
+
+### placePedFields
+
+Os campos de painel do NPC de um lugar: um seletor de modelo de ped, uma seleção de cenário e uma ferramenta de ponto com heading que se encaixa no chão. Os rótulos são os do próprio ai-core.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+placePedFields(path?: string): WidgetSpec[]
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    path: { type: 'string', description: 'Onde a seção do ped fica no registro.', default: '"ped"' },
+  }}
+/>
+
+#### Retorno
+
+`WidgetSpec[]`: três campos em `<path>.model`, `<path>.scenario` e `<path>.coords`.
+
+#### Exemplo
+
+```ts title="resource/server/schema.ts"
+import { placePedFields } from "@aicore-fivem/lib/shared";
+
+import type { CardSpec } from "@aicore-fivem/shared";
+
+const npcCard: CardSpec = { icon: "user", title: "ADMIN_CARD_NPC", fields: [...placePedFields()] };
+```
+
+### readPlacePed
+
+Lê o NPC de um lugar dos dados do painel.
+
+**Lado:** Cliente, servidor e NUI · **Espera:** não
+
+```ts title="Signature"
+readPlacePed(value: unknown): PlacePed | null
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    value: { type: 'unknown', description: 'A seção `ped` salva.', required: true },
+  }}
+/>
+
+#### Retorno
+
+Um [PlacePed](/pt/docs/developers/api/types#placeped), ou `null` quando não há modelo (o lugar não tem NPC). `coords` fica de fora a menos que `x`, `y`, `z` e `heading` sejam todos números; um cenário vazio fica de fora.
+
+#### Exemplo
+
+```ts title="resource/common/shop.ts"
+import { readPlacePed, readBlipStyle, readAccess, str, type PlacePed, type BlipStyle, type AccessRule } from "@aicore-fivem/lib/shared";
+
+export interface Shop {
+  label: string;
+  ped: PlacePed | null;
+  blipStyle: BlipStyle;
+  access: AccessRule;
+}
+
+export function readShop(id: string, v: Record<string, unknown>): Shop {
+  return {
+    label: str(v.label, id, 48),
+    ped: readPlacePed(v.ped),
+    blipStyle: readBlipStyle(v.blipStyle, { sprite: 52, color: 2, scale: 0.8 }),
+    access: readAccess(v),
+  };
+}
+```
+
+No cliente, passe `shop.ped ?? undefined` como a opção `ped` de um ponto de `Points`: o ponto spawna o NPC e coloca a opção de target nele.

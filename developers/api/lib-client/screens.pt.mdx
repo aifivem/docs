@@ -1,0 +1,504 @@
+---
+title: Telas e controles
+description: NuiScreen, hud, keyHints e controls - sua própria NUI de tela cheia, esconder todos os HUDs, linhas de ajuda de teclas e controles desativados.
+icon: Monitor
+---
+
+Helpers para scripts com a própria página NUI ou modo de ferramenta: abrir uma página de tela cheia com foco e HUDs escondidos, listar as teclas de uma ferramenta no HUD e bloquear controles sem escrever um loop por frame.
+
+## NuiScreen
+
+### new NuiScreen
+
+A página NUI de tela cheia do seu recurso em um objeto. `open` pega o foco, esconde todos os HUDs (por [`hud`](#hudhide)) e envia a mensagem de abertura; `close` devolve o foco, mostra os HUDs, envia `{ action: "close" }` para a página e roda o seu `onClose`. O callback NUI `close` da própria página também a fecha. Crie uma por recurso, no topo do arquivo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+new NuiScreen<M extends NuiPageMessage = NuiPageMessage>(name: string, options?: NuiScreenOptions)
+```
+
+Sem equivalente em Lua: recursos Lua chamam `SetNuiFocus`, `aiLib.hud.hide` / `show` e `RegisterNUICallback('close', ...)` eles mesmos.
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Um nome para esta tela, usado como motivo para esconder o HUD (shop, editor).', required: true },
+    options: { type: 'NuiScreenOptions', description: 'Campos abaixo.', default: '{}' },
+  }}
+/>
+
+#### NuiScreenOptions
+
+<TypeTable
+  type={{
+    cursor: { type: 'boolean', description: 'Mostra o cursor do mouse enquanto aberta.', default: 'true' },
+    onClose: { type: '() => void', description: 'Roda depois que a tela fechou, seja quem for que a fechou (incluindo o botão de fechar da página). Coloque a sua limpeza aqui: câmera, veículo de prévia, ped congelado.' },
+    closeCallback: { type: 'boolean', description: 'Registra o callback NUI de fechar da página, que fecha a tela. false quando só o seu script pode fechá-la.', default: 'true' },
+  }}
+/>
+
+#### NuiPageMessage
+
+O que `open` e `send` recebem: `{ action: string; data?: unknown }`. Passe o seu próprio tipo união como `M` para tipar todas as mensagens.
+
+#### Membros
+
+<TypeTable
+  type={{
+    isOpen: { type: 'boolean', description: 'Propriedade somente leitura: se a tela está aberta.' },
+    'open(message)': { type: '(message: M) => void', description: 'Pega o foco e esconde os HUDs (só na primeira vez enquanto aberta), depois envia message. Chamá-la de novo enquanto aberta só envia.' },
+    'close()': { type: '() => void', description: 'Devolve o foco, mostra os HUDs, envia { action: "close", data: null } e roda onClose. Não faz nada quando já está fechada.' },
+    'send(message)': { type: '(message: M) => void', description: 'Um SendNUIMessage tipado para a página.' },
+    'on(name, parse, handler)': { type: '<A>(name: string, parse: (data: unknown) => A | null, handler: (data: A) => unknown) => void', description: 'Um callback NUI da página. parse verifica os dados: null responde { ok: false }. O resultado do handler (aguardado) é a resposta; { ok: true } quando ele não retorna nada; { ok: false } quando lança um erro.' },
+  }}
+/>
+
+#### Exemplo
+
+```ts title="resource/client/index.ts"
+import { callAction, NuiScreen, ScriptCamera } from "@aicore-fivem/lib/client";
+import { readText } from "@aicore-fivem/lib/shared";
+
+type Message =
+  | { action: "open"; data: { items: string[] } }
+  | { action: "result"; data: boolean };
+
+const camera = new ScriptCamera();
+const screen = new NuiScreen<Message>("shop", {
+  onClose: () => camera.stop(500),
+});
+
+export function openShop(items: string[]): void {
+  camera.start({ x: 26.5, y: -1345.0, z: 30.2 }, { pointAt: { x: 25.7, y: -1347.3, z: 29.5 } }, 500);
+  screen.open({ action: "open", data: { items } });
+}
+
+// A página chama fetch(`https://${GetParentResourceName()}/buy`, { body: JSON.stringify("water") }).
+screen.on(
+  "buy",
+  (data) => readText(data, 32),
+  async (item) => {
+    const reply = await callAction("myshop:buy", [item], { fallback: "BUY_FAILED" });
+    return { ok: reply !== null };
+  },
+);
+```
+
+<Callout type="info">
+Use `NuiScreen` para páginas de tela cheia. Overlays que mantêm o HUD na tela (uma caixa de chat, uma roda radial, um olho de target) mantêm o próprio código de foco.
+</Callout>
+
+## hud
+
+HUDs (ai-hud e os outros scripts de HUD que o ai-core suporta) pelo ai-core. Uma UI de tela cheia os esconde ao abrir e os mostra ao fechar. Os motivos são contados por recurso, então duas telas abertas ao mesmo tempo mantêm os HUDs escondidos até as duas fecharem. Enquanto qualquer motivo vale, o ai-core esconde todos os HUDs e o minimapa.
+
+### hud.hide
+
+Esconde todos os HUDs por um motivo, até `hud.show` com o mesmo motivo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+hud.hide(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.hud.hide(reason)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Por quê (photo, cutscene). Os motivos são por recurso: os seus nunca colidem com os de outro recurso.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { hud } from "@aicore-fivem/lib/client";
+
+RegisterCommand(
+  "cinema",
+  () => {
+    if (hud.visible) hud.hide("cinema");
+    else hud.show("cinema");
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterCommand('cinema', function()
+    if aiLib.hud.visible() then aiLib.hud.hide('cinema') else aiLib.hud.show('cinema') end
+end, false)
+```
+</Tab>
+</Tabs>
+
+### hud.show
+
+Remove um motivo de esconder. Os HUDs voltam quando não sobra motivo de nenhum recurso.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+hud.show(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.hud.show(reason)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'O motivo passado para hud.hide.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`. Veja o exemplo de [`hud.hide`](#hudhide).
+
+### hud.visible
+
+Se os HUDs aparecem agora (nenhuma UI de tela cheia aberta).
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+hud.visible: boolean // propriedade somente leitura
+```
+
+```lua title="Lua"
+local visible = aiLib.hud.visible() -- uma função em Lua
+```
+
+#### Retorno
+
+`boolean`: `true` quando nenhum motivo de esconder de nenhum recurso vale.
+
+### hud.onChange
+
+Roda um handler sempre que os HUDs aparecem ou se escondem. Um script de HUD usa isto para se esconder.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+hud.onChange(fn: (visible: boolean) => void): void
+```
+
+Sem equivalente em Lua: escute o evento local `ai-core:client:hudVisible` (`visible`).
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    fn: { type: '(visible: boolean) => void', description: 'Recebe true quando os HUDs aparecem de novo, false quando se escondem.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+```ts
+import { hud } from "@aicore-fivem/lib/client";
+
+hud.onChange((visible) => SendNUIMessage({ action: "visible", data: visible }));
+```
+
+## keyHints
+
+Linhas de ajuda de teclas que um script mostra por um tempo (as teclas do noclip de um admin, os controles de um minigame), listadas pelo HUD à esquerda ao lado das que os keybinds declaram com `hint`. As ajudas de um recurso parado somem sozinhas.
+
+### keyHints.show
+
+Mostra uma ajuda de tecla, ou altera a que tem o mesmo id.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+keyHints.show(id: string, hint: KeyHintRequest): void
+```
+
+```lua title="Lua"
+aiLib.keyHints.show(id, hint)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'O seu próprio id para esta ajuda (por recurso).', required: true },
+    hint: { type: 'KeyHintRequest', description: 'Campos abaixo.', required: true },
+  }}
+/>
+
+#### KeyHintRequest
+
+<TypeTable
+  type={{
+    label: { type: 'string', description: 'O que a tecla faz, já traduzido (Speed up).', required: true },
+    keybind: { type: 'string', description: 'O nome de um Keybind: mostra a tecla que o jogador associou a ele agora.' },
+    key: { type: 'string', description: 'Um texto literal de tecla (SHIFT) quando não há keybind.' },
+    icon: { type: 'string', description: 'Nome do ícone Font Awesome solid sem fa-.' },
+  }}
+/>
+
+O tipo é [`KeyHintRequest`](/pt/docs/developers/api/types#keyhintrequest).
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { createLocale, keyHints } from "@aicore-fivem/lib/client";
+
+const Locale = createLocale<typeof import("../../locales/en.json")>();
+
+export function startPlacing(): void {
+  keyHints.show("rotate", { label: Locale("ROTATE"), key: "Q / E", icon: "rotate" });
+  keyHints.show("place", { label: Locale("PLACE"), keybind: "myscript_place", icon: "check" });
+}
+
+export function stopPlacing(): void {
+  keyHints.hide("rotate");
+  keyHints.hide("place");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local t = aiLib.locale()
+
+local function startPlacing()
+    aiLib.keyHints.show('rotate', { label = t('ROTATE'), key = 'Q / E', icon = 'rotate' })
+end
+
+local function stopPlacing()
+    aiLib.keyHints.hide('rotate')
+end
+```
+</Tab>
+</Tabs>
+
+### keyHints.hide
+
+Remove uma das suas ajudas de teclas. Um id desconhecido não faz nada.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+keyHints.hide(id: string): void
+```
+
+```lua title="Lua"
+aiLib.keyHints.hide(id)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'O id passado para keyHints.show.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`. Veja o exemplo de [`keyHints.show`](#keyhintsshow).
+
+## controls
+
+Controles desativados do seu recurso, com um único job por frame para todos eles. Cada motivo (`cuffed`, `menu`, `placing`) adiciona os seus controles e os remove quando termina; o job só roda enquanto algum motivo está ativo. Nunca escreva o seu próprio `setTick` com `DisableControlAction`.
+
+### controls.disable
+
+Desativa uma lista de controles a cada frame até `controls.enable(reason)`. Chamá-la de novo com o mesmo motivo substitui a lista desse motivo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+controls.disable(reason: string, controls: readonly number[], group?: number): void
+```
+
+```lua title="Lua"
+aiLib.controls.disable(reason, controls, group)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Por quê (cuffed, placing). A chave com que você reativa depois.', required: true },
+    controls: { type: 'number[]', description: 'Ids de controle do GTA.', required: true },
+    group: { type: 'number', description: 'Grupo de entrada dos controles.', default: '0' },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { controls, onServerEvent } from "@aicore-fivem/lib/client";
+
+const CUFFED = [21, 22, 23, 24, 25, 37, 44, 140, 141, 142, 143, 257, 263, 264];
+
+onServerEvent(
+  "mypolice:cuffed",
+  { args: ([on]) => (typeof on === "boolean" ? [on] : null) },
+  (on) => (on ? controls.disable("cuffed", CUFFED) : controls.enable("cuffed")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local CUFFED = { 21, 22, 23, 24, 25, 37, 44, 140, 141, 142, 143, 257, 263, 264 }
+
+aiLib.onServerEvent('mypolice:cuffed', function(on)
+    if on == true then aiLib.controls.disable('cuffed', CUFFED) else aiLib.controls.enable('cuffed') end
+end)
+```
+</Tab>
+</Tabs>
+
+### controls.disableAll
+
+Desativa todos os controles (grupos de entrada 0, 1 e 2) a cada frame até `controls.enable(reason)`, exceto os que você mantém. Use para um noclip ou uma câmera livre, e leia as teclas desativadas com `IsDisabledControlPressed`.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+controls.disableAll(reason: string, except?: readonly number[]): void
+```
+
+```lua title="Lua"
+aiLib.controls.disableAll(reason, except)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'Por quê (noclip). A chave com que você reativa depois.', required: true },
+    except: { type: 'number[]', description: 'Controles do grupo 0 que continuam funcionando (olhar com a câmera, push to talk). Quando vários motivos de disableAll valem, só ficam ativos os controles que todos eles mantêm.', default: '[]' },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { controls, every } from "@aicore-fivem/lib/client";
+
+const fly = every(0, () => {
+  if (IsDisabledControlPressed(0, 32)) console.log("forward");
+}, { active: false, name: "noclip" });
+
+export function noclip(on: boolean): void {
+  if (on) controls.disableAll("noclip", [1, 2, 249]);
+  else controls.enable("noclip");
+  fly.set(on);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local fly = aiLib.every(0, function()
+    if IsDisabledControlPressed(0, 32) then print('forward') end
+end, { active = false, name = 'noclip' })
+
+local function noclip(on)
+    if on then aiLib.controls.disableAll('noclip', { 1, 2, 249 }) else aiLib.controls.enable('noclip') end
+    fly:set(on)
+end
+```
+</Tab>
+</Tabs>
+
+### controls.enable
+
+Encerra um motivo: os controles dele voltam a funcionar, a menos que outro motivo ainda os desative. Um motivo desconhecido não faz nada.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+controls.enable(reason: string): void
+```
+
+```lua title="Lua"
+aiLib.controls.enable(reason)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'O motivo passado para disable ou disableAll.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`void`. Veja os exemplos acima.
+
+### controls.isDisabled
+
+Se um motivo do seu recurso está ativo agora.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Signature"
+controls.isDisabled(reason: string): boolean
+```
+
+Sem equivalente em Lua.
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    reason: { type: 'string', description: 'O motivo passado para disable ou disableAll.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` enquanto esse motivo vale.
+
+#### Exemplo
+
+```ts
+import { controls } from "@aicore-fivem/lib/client";
+
+if (controls.isDisabled("cuffed")) console.log("the player is cuffed");
+```

@@ -1,0 +1,283 @@
+---
+title: State bags
+description: "EntityState, PlayerState, GlobalKey, GlobalGroup e os parsers stateNumber, stateBoolean, stateString: ler valores replicados da memória."
+icon: Database
+---
+
+Um state bag é um valor que o FiveM copia do servidor para os clientes que precisam dele: o combustível de um veículo (`Entity(vehicle).state.fuel`), se um jogador está caído (`Player(id).state.dead`), uma flag do servidor inteiro (`GlobalState["ai:pvp"]`).
+
+Ler um bag diretamente é lento: toda leitura cria proxies, chama várias natives e decodifica o valor de novo. Estas classes mantêm **um handler de mudança por chave** e uma cópia de todo valor em memória, então uma leitura é uma consulta em um mapa. Use-as para qualquer bag que você lê mais de uma vez.
+
+```ts title="Client file: read-only versions (get, onChange)"
+import { EntityState, PlayerState, GlobalKey, GlobalGroup, stateNumber, stateBoolean, stateString } from "@aicore-fivem/lib/client";
+```
+
+```ts title="Server file: the same classes plus set(...)"
+import { EntityState, PlayerState, GlobalKey, GlobalGroup, stateNumber, stateBoolean, stateString } from "@aicore-fivem/lib/server";
+```
+
+As classes não estão em `@aicore-fivem/lib/fivem`: importe-as da entrada de cliente ou de servidor. Só o servidor escreve state bags (`sv_stateBagStrictMode`); um cliente pede ao servidor por um callback e o servidor define o valor. Os métodos `set` do servidor estão em [Lib: servidor, State bags](/pt/docs/developers/api/lib-server/state-bags).
+
+**Lua:** nenhum destes tem equivalente em Lua. Lua lê os bags diretamente (`Entity(vehicle).state.fuel`, `Player(id).state.dead`, `GlobalState['ai:pvp']`) e escuta com `AddStateBagChangeHandler`.
+
+As chaves que o ai-core e os scripts `ai-*` usam estão listadas em [Eventos e estado](/pt/docs/developers/api/events).
+
+## Parsers
+
+Toda classe recebe um parser: uma função que transforma o valor replicado bruto no seu tipo, ou `undefined` quando não é um valor válido. O tipo é `StateParse<T> = (value: unknown) => T | undefined`. Um bag limpo (`null`) sempre é lido como `undefined`; o parser nunca o vê.
+
+### stateNumber
+
+Aceita um número finito; qualquer outra coisa (texto, `NaN`, `Infinity`) é lida como `undefined`.
+
+**Lado:** Cliente e servidor · **Espera:** não
+
+```ts title="Signature"
+stateNumber: StateParse<number>
+```
+
+#### Exemplo
+
+```ts
+import { EntityState, stateNumber } from "@aicore-fivem/lib/client";
+
+const fuel = new EntityState("fuel", stateNumber); // 0-100, definido pelo script de combustível
+```
+
+### stateBoolean
+
+Aceita `true` ou `false`; qualquer outra coisa é lida como `undefined`.
+
+**Lado:** Cliente e servidor · **Espera:** não
+
+```ts title="Signature"
+stateBoolean: StateParse<boolean>
+```
+
+#### Exemplo
+
+```ts
+import { PlayerState, stateBoolean } from "@aicore-fivem/lib/client";
+
+const dead = new PlayerState("dead", stateBoolean); // true enquanto caído (ai-death)
+```
+
+### stateString
+
+Aceita uma string; qualquer outra coisa é lida como `undefined`.
+
+**Lado:** Cliente e servidor · **Espera:** não
+
+```ts title="Signature"
+stateString: StateParse<string>
+```
+
+#### Exemplo
+
+```ts
+import { GlobalKey, stateString } from "@aicore-fivem/lib/client";
+
+const inventoryScript = new GlobalKey("ai:inventory", stateString); // o nome do recurso do inventário ativo
+```
+
+<Callout type="info">
+Para um valor de objeto, escreva o seu próprio parser que verifica cada campo e retorna `undefined` para um valor inválido:
+
+```ts
+import { PlayerState, type StateParse } from "@aicore-fivem/lib/client";
+
+type Proximity = { index: number; distance: number; mode: string };
+const proximity: StateParse<Proximity> = (v) => {
+  if (typeof v !== "object" || v === null) return undefined;
+  const { index, distance, mode } = v as Record<string, unknown>;
+  return typeof index === "number" && typeof distance === "number" && typeof mode === "string"
+    ? { index, distance, mode }
+    : undefined;
+};
+const voiceRange = new PlayerState("proximity", proximity); // o alcance do pma-voice, escrito pelo ai-voice
+```
+</Callout>
+
+## Classes
+
+### EntityState
+
+Uma chave dos state bags de entidade (`fuel`, `ai:owned`...), para toda entidade em rede. Os valores são guardados por network id; uma leitura recebe o handle da entidade.
+
+**Lado:** Cliente e servidor · **Espera:** não
+
+```ts title="Signature"
+new EntityState<T>(key: string, parse: StateParse<T>)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'A chave do bag (`"fuel"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Transforma o valor bruto em `T`, ou `undefined` para um valor inválido. Veja Parsers acima.', required: true },
+  }}
+/>
+
+#### Métodos
+
+<TypeTable
+  type={{
+    'get(entity)': { type: '(entity: number) => T | undefined', description: 'O valor em um handle de entidade. `undefined` quando ela não tem, quando não está em rede, ou quando `entity` é 0.' },
+    'getByNetId(netId)': { type: '(netId: number) => T | undefined', description: 'O valor por network id, até onde este lado sabe (sem leitura do bag).' },
+    'onChange(listener)': { type: '(listener: (netId: number, value: T | undefined, old: T | undefined) => void) => () => void', description: 'Roda depois que um valor muda; o novo valor já pode ser lido. Retorna uma função que remove o listener.' },
+    key: { type: 'string (read only)', description: 'A chave do bag.' },
+  }}
+/>
+
+#### Exemplo
+
+```ts title="resource/client/index.ts"
+import { EntityState, stateNumber, cache, every } from "@aicore-fivem/lib/client";
+
+const fuel = new EntityState("fuel", stateNumber);
+
+every(1000, () => {
+  if (cache.vehicle === false) return;
+  SendNUIMessage({ action: "fuel", value: fuel.get(cache.vehicle) ?? 100 });
+});
+```
+
+<Callout type="info">
+A memória fica pequena sozinha: o servidor esquece uma entidade quando ela é apagada, e um cliente descarta a cada 30 segundos as entidades que saíram do escopo dele. Um network id reutilizado por uma nova entidade é lido de novo.
+</Callout>
+
+### PlayerState
+
+Uma chave dos state bags de jogador (`dead`, `cuffed`, o `proximity` do pma-voice...), por id de servidor.
+
+**Lado:** Cliente e servidor · **Espera:** não
+
+```ts title="Signature"
+new PlayerState<T>(key: string, parse: StateParse<T>)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'A chave do bag (`"dead"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Transforma o valor bruto em `T`.', required: true },
+  }}
+/>
+
+#### Métodos
+
+<TypeTable
+  type={{
+    'get(serverId)': { type: '(serverId: number) => T | undefined', description: 'O valor de um jogador pelo id de servidor (o jogador local em um cliente: `cache.serverId`). `undefined` quando não há.' },
+    'onChange(listener)': { type: '(listener: (serverId: number, value: T | undefined, old: T | undefined) => void) => () => void', description: 'Roda depois que um valor muda. Retorna uma função que remove o listener.' },
+    key: { type: 'string (read only)', description: 'A chave do bag.' },
+  }}
+/>
+
+#### Exemplo
+
+```ts title="resource/server/index.ts"
+import { PlayerState, stateBoolean, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const dead = new PlayerState("dead", stateBoolean);
+const cuffed = new PlayerState("cuffed", stateBoolean);
+
+onClientCallback("my-shop:open", (source) => {
+  if (dead.get(source) || cuffed.get(source)) return fail("CANNOT_NOW");
+  return { ok: true };
+});
+```
+
+<Callout type="info">
+No servidor, um jogador que sai é esquecido em todo `PlayerState` do seu recurso (um único listener de `playerDropped` compartilhado).
+</Callout>
+
+### GlobalKey
+
+Uma chave do `GlobalState`: um valor de que todo jogador precisa (a chave de PvP, o inventário ativo). Lida uma vez na inicialização, depois mantida atualizada pelo handler de mudança dela.
+
+**Lado:** Cliente e servidor · **Espera:** não
+
+```ts title="Signature"
+new GlobalKey<T>(key: string, parse: StateParse<T>)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'A chave do `GlobalState` (`"ai:pvp"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Transforma o valor bruto em `T`.', required: true },
+  }}
+/>
+
+#### Métodos
+
+<TypeTable
+  type={{
+    'get()': { type: '() => T | undefined', description: 'O valor atual, `undefined` quando não definido.' },
+    'onChange(listener)': { type: '(listener: (id: "global", value: T | undefined, old: T | undefined) => void) => () => void', description: 'Roda depois que o valor muda. O primeiro argumento é sempre `"global"`.' },
+    key: { type: 'string (read only)', description: 'A chave.' },
+  }}
+/>
+
+#### Exemplo
+
+```ts title="resource/client/index.ts"
+import { GlobalKey, stateBoolean } from "@aicore-fivem/lib/client";
+
+const pvp = new GlobalKey("ai:pvp", stateBoolean);
+
+pvp.onChange((_id, on) => SendNUIMessage({ action: "pvp", value: on === true }));
+```
+
+### GlobalGroup
+
+Muitas chaves do `GlobalState` que compartilham um prefixo (`ai:duty:police`, `ai:duty:ambulance`), lidas pela parte depois do prefixo. Todos os grupos de um recurso compartilham um handler.
+
+**Lado:** Cliente e servidor · **Espera:** não
+
+```ts title="Signature"
+new GlobalGroup<T>(prefix: string, parse: StateParse<T>)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    prefix: { type: 'string', description: 'O início compartilhado das chaves (`"ai:duty:"`).', required: true },
+    parse: { type: 'StateParse<T>', description: 'Transforma cada valor bruto em `T`.', required: true },
+  }}
+/>
+
+#### Métodos
+
+<TypeTable
+  type={{
+    'get(id)': { type: '(id: string) => T | undefined', description: 'O valor de `<prefix><id>`, `undefined` quando não definido.' },
+    'ids()': { type: '() => IterableIterator<string>', description: 'Todo id que tem um valor.' },
+    'onChange(listener)': { type: '(listener: (id: string, value: T | undefined, old: T | undefined) => void) => () => void', description: 'Roda depois que uma chave do grupo muda, com o id depois do prefixo.' },
+    prefix: { type: 'string (read only)', description: 'O prefixo.' },
+  }}
+/>
+
+#### Exemplo
+
+O ai-core publica quantos jogadores estão em serviço por emprego em `ai:duty:<job>`:
+
+```ts title="resource/client/index.ts"
+import { GlobalGroup, stateNumber } from "@aicore-fivem/lib/client";
+
+const onDuty = new GlobalGroup("ai:duty:", stateNumber);
+
+function policeOnline(): number {
+  return onDuty.get("police") ?? 0;
+}
+```
+
+<Callout type="warn">
+Crie cada classe uma vez por chave, no topo de um arquivo, nunca dentro de uma função que roda com frequência: toda instância adiciona um handler de mudança. O `GlobalState` é enviado a todo jogador, então só coloque ali valores de que todo jogador precisa.
+</Callout>

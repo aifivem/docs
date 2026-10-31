@@ -1,0 +1,159 @@
+---
+title: ai-hud para desenvolvedores
+description: Os exports do ai-hud para necessidades (fome, sede, estresse) e as configurações do HUD dele, e o que ele lê de outros scripts.
+icon: Code
+---
+
+As necessidades são números de 0 a 100 guardados na metadata do personagem (`hunger`, `thirst`, `stress`, as chaves do QB). Fome e sede contam para baixo (100 = cheio); o estresse conta para cima (0 = calmo). O ai-hud é o único script que as escreve.
+
+<Callout type="info">
+Para adicionar estresse a partir do seu script, use a camada de estresse do AI Core (o `stress` da lib, o export `AddStress`), que funciona com qualquer HUD que estiver rodando. Os efeitos de comida e bebida pertencem ao item: defina os valores **Hunger**, **Thirst** e **Stress** do item no painel do ai-inventory, e o ai-hud os aplica quando o item é usado.
+</Callout>
+
+## Exports do servidor
+
+`SetNeed` e `AddNeed` são tipados como `AiHudServerExports` em `@aicore-fivem/shared` (`resourceExport("ai-hud")` em TypeScript). `GetNeeds` não é tipado: chame-o com o `callExport("ai-hud", "GetNeeds", source)` da lib.
+
+### GetNeeds
+
+Lê as necessidades de um jogador carregado.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+GetNeeds(source: number): { hunger: number; thirst: number; stress: number } | null
+```
+
+```lua title="Lua"
+local needs = exports['ai-hud']:GetNeeds(source) -- tabela ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id do servidor do jogador.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`{ hunger, thirst, stress } | null`: cada valor 0-100 (decimais mantidos). `null` quando o jogador não tem um personagem carregado.
+
+### SetNeed
+
+Define uma necessidade com um valor.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+SetNeed(source: number, need: "hunger" | "thirst" | "stress", value: number): void
+```
+
+```lua title="Lua"
+exports['ai-hud']:SetNeed(source, 'hunger', 100)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id do servidor de um jogador com um personagem carregado.', required: true },
+    need: { type: '"hunger" | "thirst" | "stress"', description: 'Qual necessidade.', required: true },
+    value: { type: 'number', description: 'O novo valor. Limitado a 0-100.', required: true },
+  }}
+/>
+
+#### Retorno
+
+Nada. Não faz nada quando o jogador não tem um personagem carregado ou um argumento é inválido. O novo valor é salvo no personagem e enviado ao HUD do jogador quando o valor arredondado muda.
+
+### AddNeed
+
+Muda uma necessidade por um valor.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+AddNeed(source: number, need: "hunger" | "thirst" | "stress", delta: number): void
+```
+
+```lua title="Lua"
+exports['ai-hud']:AddNeed(source, 'thirst', 25)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id do servidor de um jogador com um personagem carregado.', required: true },
+    need: { type: '"hunger" | "thirst" | "stress"', description: 'Qual necessidade.', required: true },
+    delta: { type: 'number', description: 'Somado ao valor atual (negativo o abaixa). O resultado é limitado a 0-100.', required: true },
+  }}
+/>
+
+#### Retorno
+
+Nada.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { callExport, resourceExport, onClientCallback } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const hud = resourceExport("ai-hud");
+
+// Uma máquina de refrigerante: enche um pouco a sede, recusa quando o jogador não está com sede.
+onClientCallback("myscript:soda", (source) => {
+  const needs = callExport("ai-hud", "GetNeeds", source) as { thirst: number } | null;
+  if (!needs) return fail("NO_CHARACTER");
+  if (needs.thirst > 90) return fail("NOT_THIRSTY");
+  hud.AddNeed(source, "thirst", 20);
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+RegisterNetEvent('myscript:soda', function()
+    local src = source
+    local needs = exports['ai-hud']:GetNeeds(src)
+    if not needs or needs.thirst > 90 then return end
+    exports['ai-hud']:AddNeed(src, 'thirst', 20)
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Esses exports só funcionam enquanto o ai-hud está rodando. Se o dono substituir o ai-hud por outro HUD, suas chamadas falham. A camada de estresse do AI Core (`AddStress`) continua funcionando com outros HUDs.
+</Callout>
+
+## Exports do cliente
+
+Tipados como `AiHudClientExports`.
+
+| Export | O que faz |
+| --- | --- |
+| `OpenSettings(): void` | Abre as configurações do HUD do jogador (o mesmo que `/hud`). Outros scripts abrem as configurações de qualquer HUD pelo `OpenHudSettings()` do AI Core. |
+| `SetMinimapAlways(on: boolean): void` | O interruptor próprio de um administrador (o menu do ai-admin): mantém o minimapa a pé, não importa o que o painel diga, só para este jogador. |
+| `GetMinimapAlways(): boolean` | Se esse interruptor está ligado. |
+
+## O que o ai-hud lê
+
+| Fonte | Para quê |
+| --- | --- |
+| Evento de servidor do AI Core `itemUsed (source, name, status)` | Soma os valores `hunger`, `thirst`, `stress` do item. |
+| Evento de cliente do AI Core `CORE.clientHudVisibleEvent (visible)` | Esconde o HUD enquanto um menu de tela cheia está aberto (`hud.hide(reason)` da lib a partir de qualquer script). |
+| Dicas de teclas do AI Core (`ai-core:client:keyHints`, `GetKeyHints()`) | A lista de teclas à esquerda. |
+| State bag de veículo `fuel` | O marcador de combustível. |
+| State bag de jogador `proximity` e os eventos `pma-voice:setTalkingMode` / `pma-voice:radioActive` | Alcance da voz, falando, rádio. |
+| `seatbelt` da lib (a camada de cinto do AI Core) | O aviso de cinto de segurança. |
+| `inventory.currentWeapon()` da lib | O quadro da arma. |
+
+## Eventos
+
+Os eventos próprios do ai-hud (`resource/common/hud.ts`) são internos. Um está aberto só para o próprio cliente dele: `ai-hud:stress` (cliente para servidor, 1 a 5 pontos, no máximo dois por segundo). Outros scripts adicionam estresse no servidor através do AI Core.

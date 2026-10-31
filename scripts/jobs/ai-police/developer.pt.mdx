@@ -1,0 +1,92 @@
+---
+title: ai-police para desenvolvedores
+description: O state bag de algemado do ai-police, como suas ações chegam a outros scripts através do AI Core, e seus eventos privados.
+icon: Code
+---
+
+O ai-police **não tem exports**. Suas multas, registros, penas de prisão, alertas, revistas e apreensões passam todos pelas camadas do AI Core, então outro script nunca chama o ai-police. O que outro script pode ler é o estado `cuffed`.
+
+## State bag `cuffed`
+
+`true` no state bag de um jogador enquanto o ai-police o mantém algemado; `false` (ou ausente) caso contrário. O servidor o escreve; todo cliente pode lê-lo. O nome da chave é `PLAYER_BAGS.cuffed` em `@aicore-fivem/shared`.
+
+**Lado:** Servidor e cliente (leitura) · **Espera:** não
+
+```ts title="Signature"
+new PlayerState<boolean>(PLAYER_BAGS.cuffed, stateBoolean).get(serverId: number): boolean | undefined
+```
+
+```lua title="Lua"
+local cuffed = Player(source).state.cuffed == true   -- servidor
+local cuffed = LocalPlayer.state.cuffed == true      -- cliente, o jogador local
+```
+
+#### Retorno
+
+`true` enquanto algemado. `false` depois de ter as algemas tiradas, `undefined` / `nil` quando o jogador nunca foi algemado nesta sessão.
+
+#### Exemplo
+
+Recusa um item enquanto o jogador está algemado:
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { inventory, notify, PlayerState, stateBoolean } from "@aicore-fivem/lib/server";
+import { PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+inventory.registerUsableItem("radio", (source: number) => {
+  if (cuffed.get(source) === true) {
+    notify(source, "You cannot use that while cuffed", "error");
+    return;
+  }
+  // ... abre o rádio
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- server.lua (fxmanifest.lua: shared_script '@ai-lib/init.lua')
+aiLib.inventory.registerUsableItem('radio', function(source)
+  if Player(source).state.cuffed == true then
+    aiLib.notify(source, 'You cannot use that while cuffed', 'error')
+    return
+  end
+  -- ... abre o rádio
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Não defina `cuffed` você mesmo: o ai-police mantém sua própria lista de jogadores algemados e escoltados no servidor e só a espelha no state bag. Um valor escrito por outro script não é uma algema de verdade e é sobrescrito na próxima ação de algemar.
+</Callout>
+
+## O que o ai-police envia através do AI Core
+
+| Ação | Camada que usa | O que chega lá |
+| --- | --- | --- |
+| Aplicar uma multa | `billing.send` da lib | Uma cobrança do emprego em serviço do policial, rótulo "Police fine". |
+| Aplicar uma multa | `mdt.record` da lib | Um registro `fine` com o valor. |
+| Mandar para a prisão | `prison.jail` da lib | A pena, com o policial como `by`. |
+| Mandar para a prisão | `mdt.record` da lib | Um registro `arrest` com os minutos. |
+| Disparos | `dispatch.alert` da lib | Um alerta por área de 150 m a cada 30 s, para os empregos de polícia do painel. |
+| Revista | `inventory.openInventory` da lib | O inventário do alvo abre para o policial. |
+| Apreensão | `garages.impound` da lib | O script de garagem fica com o veículo; se recusar, o veículo é apagado. |
+
+Para reagir a qualquer um desses, escute do lado da camada (seu script de cobranças, MDT, prisão ou alertas), não no ai-police.
+
+## Eventos e callbacks privados
+
+O contrato cliente-servidor próprio do script (`resource/common/police.ts`). O servidor verifica o serviço, a distância e o estado de algemado a cada chamada. Eles podem mudar entre versões: não os dispare nem os escute a partir de outros recursos.
+
+| Nome | Direção | O que carrega |
+| --- | --- | --- |
+| `ai-police:act` | callback do cliente | `(action, target, extra?)`: um policial age sobre o jogador mais próximo (id do servidor) ou veículo (id de rede). Responde `{ ok }`. |
+| `ai-police:duty` | callback do cliente | `(stationId)`: alterna o serviço em uma delegacia. Responde `{ ok, onDuty }`. |
+| `ai-police:shot` | cliente -> servidor | `(x, y, z)`: o jogador disparou uma arma (com limite de frequência, só não policiais contam). |
+| `ai-police:client:cuffed` | servidor -> alvo | `(cuffed: boolean)`. |
+| `ai-police:client:escort` | servidor -> alvo | `(officerNetId \| null)`: prende ao policial, ou solta. |
+| `ai-police:client:seat` | servidor -> alvo | `(vehicleNetId \| null)`: senta no banco de trás de um veículo, ou sai. |

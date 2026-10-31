@@ -1,0 +1,963 @@
+---
+title: Empregos e gangues
+description: Leia e altere os empregos, gangues, cargos e serviço de um personagem, conte jogadores em serviço, horário nobre, leia definições de empregos e gangues.
+icon: Briefcase
+---
+
+Um personagem pode ter **vários empregos e várias gangues** (até **Most jobs per character** e **Most gangs per character** do painel). No máximo **um emprego fica em serviço** de cada vez, e só esse emprego paga salário. No máximo **uma gangue fica ativa**. Empregos e gangues, com seus cargos, são definidos no painel de administração (seções Jobs e Gangs).
+
+Um **cargo** é uma posição na lista de cargos do emprego, contada a partir de 0: o cargo 0 é a primeira linha no painel, o cargo 1 a segunda, e assim por diante.
+
+Cada mudança dispara um evento de servidor (`ai-core:jobsChanged`, `ai-core:dutyChanged`, `ai-core:gangsChanged`, `ai-core:activeGangChanged`) e chega ao próprio jogo do jogador. Recursos que precisam dos empregos de muitos jogadores seguem esses eventos pelo espelho `online` da lib em vez de chamar os exports abaixo para cada jogador. Veja [Eventos e estado](/pt/docs/developers/api/events).
+
+### GetJobs
+
+Cada vínculo de emprego do personagem de um jogador.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`online.jobs(source)`](/pt/docs/developers/api/lib-server/players#onlinejobs) lê o mesmo do espelho da lib
+
+```ts title="Assinatura"
+GetJobs(src: number): JobMembership[] | null
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetJobs(source) -- lista de { job, grade } ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`JobMembership[] | null`: um `{ job, grade }` por emprego ([JobMembership](/pt/docs/developers/api/types#jobmembership)). Uma lista vazia quando o personagem não tem emprego (o emprego de desempregado do painel nunca é gravado). `null` quando o jogador não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// A tela de uma agência de empregos lista os empregos do jogador com seus rótulos.
+onClientCallback("myscript:myJobs", (source) => {
+  const jobs = core.GetJobs(source);
+  if (!jobs) return fail("NO_CHARACTER");
+  return {
+    ok: true,
+    jobs: jobs.map(({ job, grade }) => ({
+      job,
+      label: core.GetJobDefinition(job)?.label ?? job,
+      grade,
+    })),
+  };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:myJobs', function(source)
+  local jobs = exports['ai-core']:GetJobs(source)
+  if not jobs then return aiLib.fail('NO_CHARACTER') end
+  local rows = {}
+  for _, m in ipairs(jobs) do
+    local def = exports['ai-core']:GetJobDefinition(m.job)
+    rows[#rows + 1] = { job = m.job, label = def and def.label or m.job, grade = m.grade }
+  end
+  return { ok = true, jobs = rows }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetCurrentJob
+
+O único emprego que os outros scripts devem tratar como "o" emprego do jogador: o emprego em serviço, senão o último emprego em que o jogador esteve em serviço, senão o primeiro emprego, senão o emprego de desempregado do painel. Os scripts de ESX e QB veem este emprego pela ponte.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+GetCurrentJob(src: number): JobMembership | null
+```
+
+```lua title="Lua"
+local job = exports['ai-core']:GetCurrentJob(source) -- { job, grade } ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`JobMembership | null`: `{ job, grade }`. Para um personagem sem nenhum emprego é o emprego de desempregado (configuração do painel, `unemployed` por padrão) com cargo 0. `null` só quando o jogador não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("job", { help: "Shows a player job", params: [{ name: "id", type: "playerId" }], restricted: true }, (_source, args) => {
+  const job = core.GetCurrentJob(args.id);
+  if (job) console.log(`${job.job} grade ${job.grade}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('job', { help = 'Shows a player job', params = { { name = 'id', type = 'playerId' } }, restricted = true }, function(_, args)
+  local job = exports['ai-core']:GetCurrentJob(args.id)
+  if job then print(('%s grade %d'):format(job.job, job.grade)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### GetDutyJob
+
+O emprego em que o jogador está em serviço agora. Use para toda verificação do tipo "só a polícia em serviço pode fazer isto".
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`online.dutyJob(source)`](/pt/docs/developers/api/lib-server/players#onlinedutyjob) lê o mesmo do espelho da lib
+
+```ts title="Assinatura"
+GetDutyJob(src: number): string | null
+```
+
+```lua title="Lua"
+local job = exports['ai-core']:GetDutyJob(source) -- nome do emprego ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`string | null`: o nome do emprego. `null` quando o jogador está fora de serviço ou não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:openArmory", (source) => {
+  if (core.GetDutyJob(source) !== "police") return fail("NOT_POLICE");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:openArmory', function(source)
+  if exports['ai-core']:GetDutyJob(source) ~= 'police' then return aiLib.fail('NOT_POLICE') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### SetDuty
+
+Coloca um jogador em serviço num dos empregos dele (e fora de serviço em qualquer outro), ou fora de serviço.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+SetDuty(src: number, job: string | null): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetDuty(source, 'police') -- nil = fora de serviço
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+    job: { type: 'string | null', description: 'O emprego em que entrar em serviço (o jogador precisa tê-lo), ou `null` (`nil` em Lua) para sair de serviço.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o jogador agora está em serviço em `job` (ou fora de serviço para `null`), também quando nada precisou mudar. `false` quando o jogador não tem `job` ou não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport, near } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const LOCKER_ROOM = { x: 452.3, y: -993.2, z: 30.7 };
+
+// Um interruptor de serviço no vestiário da delegacia.
+onClientCallback("myscript:toggleDuty", { guards: [near(LOCKER_ROOM, 3)] }, (source) => {
+  const onDuty = core.GetDutyJob(source) === "police";
+  return core.SetDuty(source, onDuty ? null : "police") ? { ok: true, onDuty: !onDuty } : fail("NOT_POLICE");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local LOCKER_ROOM = vector3(452.3, -993.2, 30.7)
+
+aiLib.onClientCallback('myscript:toggleDuty', function(source)
+  if #(GetEntityCoords(GetPlayerPed(source)) - LOCKER_ROOM) > 3.0 then return aiLib.fail('TOO_FAR') end
+  local onDuty = exports['ai-core']:GetDutyJob(source) == 'police'
+  if not exports['ai-core']:SetDuty(source, (not onDuty) and 'police' or nil) then return aiLib.fail('NOT_POLICE') end
+  return { ok = true, onDuty = not onDuty }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+O serviço não é salvo: um jogador que entra fica fora de serviço, a menos que a configuração **Keep duty after rejoining** do painel esteja ligada.
+</Callout>
+
+### SetJob
+
+Dá um emprego a um jogador, ou muda o cargo de um emprego que ele já tem.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+SetJob(src: number, job: string, grade: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetJob(source, 'mechanic', 0)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+    job: { type: 'string', description: 'Nome do emprego no painel (`police`, `mechanic`).', required: true },
+    grade: { type: 'number', description: 'Índice do cargo, contado a partir de 0. Precisa existir na lista de cargos do emprego.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o personagem agora tem `job` no cargo `grade`. `false` quando o emprego não existe, o cargo não existe (não é um número inteiro, está abaixo de 0 ou passa do último cargo), o personagem já tem tantos empregos quanto **Most jobs per character** permite ou o jogador não tem personagem carregado.
+
+Quando a configuração **Several jobs per character** do painel está desligada, um novo emprego substitui o outro emprego do personagem.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Uma agência de empregos: qualquer um pode pegar um emprego que o painel lista, no cargo 0.
+onClientCallback(
+  "myscript:takeJob",
+  { args: ([job]) => { const name = readText(job, 32); return name ? [name] : null; } },
+  (source, job) => {
+    if (!core.GetJobDefinition(job)?.listed) return fail("JOB_NOT_LISTED");
+    return core.SetJob(source, job, 0) ? { ok: true } : fail("JOB_LIMIT");
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:takeJob', function(source, job)
+  if type(job) ~= 'string' then return aiLib.fail('BAD_JOB') end
+  local def = exports['ai-core']:GetJobDefinition(job)
+  if not def or not def.listed then return aiLib.fail('JOB_NOT_LISTED') end
+  if not exports['ai-core']:SetJob(source, job, 0) then return aiLib.fail('JOB_LIMIT') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### RemoveJob
+
+Tira um emprego de um jogador. Um jogador em serviço nesse emprego sai de serviço antes.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+RemoveJob(src: number, job: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RemoveJob(source, 'mechanic')
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+    job: { type: 'string', description: 'Nome do emprego a remover.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o emprego foi removido. `false` quando o personagem não o tem ou o jogador não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "myscript:quitJob",
+  { args: ([job]) => { const name = readText(job, 32); return name ? [name] : null; } },
+  (source, job) => (core.RemoveJob(source, job) ? { ok: true } : fail("NOT_MEMBER")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:quitJob', function(source, job)
+  if type(job) ~= 'string' or not exports['ai-core']:RemoveJob(source, job) then return aiLib.fail('NOT_MEMBER') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetOnDutyCount
+
+Quantos jogadores estão em serviço num emprego agora. Use para regras do tipo "precisa de 2 policiais online".
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma ([`online.countOnDuty(jobs)`](/pt/docs/developers/api/lib-server/players#onlinecountonduty) conta vários empregos a partir do espelho da lib)
+
+```ts title="Assinatura"
+GetOnDutyCount(job: string): number
+```
+
+```lua title="Lua"
+local officers = exports['ai-core']:GetOnDutyCount('police')
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Nome do emprego.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`number`: jogadores em serviço em `job`. `0` para ninguém ou um emprego desconhecido. O mesmo número fica no GlobalState `ai:duty:<job>` para scripts de cliente.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+const POLICE_NEEDED = 2;
+
+onClientCallback("myscript:startRobbery", { lock: true }, (source) => {
+  if (core.GetOnDutyCount("police") < POLICE_NEEDED) return fail("NOT_ENOUGH_POLICE");
+  // ... inicia o assalto
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local POLICE_NEEDED = 2
+
+aiLib.onClientCallback('myscript:startRobbery', function(source)
+  if exports['ai-core']:GetOnDutyCount('police') < POLICE_NEEDED then return aiLib.fail('NOT_ENOUGH_POLICE') end
+  -- ... inicia o assalto
+  return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+### IsPrimeTime
+
+Se agora é horário nobre para um emprego. As horas do horário nobre vêm da fonte que o painel escolhe: um script que mantém as próprias horas (tgiann-policealert) enquanto ele roda, senão as horas próprias do ai-core (a janela do próprio emprego ou a padrão). Use para regras que mudam com as horas de movimento, como um assalto que paga mais.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`isPrimeTime(job?)`](/pt/docs/developers/api/lib-server/jobs#isprimetime)
+
+```ts title="Assinatura"
+IsPrimeTime(job?: string): boolean
+```
+
+```lua title="Lua"
+local prime = exports['ai-core']:IsPrimeTime('police')
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Nome do emprego. Sem ele (ou com um texto vazio) as horas padrão são verificadas.' },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` durante o horário nobre. As horas são o horário local do servidor; uma janela cujo início é depois do fim passa da meia-noite, e o mesmo início e fim significa o dia inteiro. Quando o painel escolhe um script como fonte e esse script está parado, toda hora conta como horário nobre. Funciona esteja ou não ligado o corte do salário no horário nobre.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** A store robbery pays 50% more outside police prime time. */
+export function robberyReward(base: number): number {
+  return core.IsPrimeTime("police") ? base : Math.round(base * 1.5);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function RobberyReward(base)
+  if exports['ai-core']:IsPrimeTime('police') then return base end
+  return math.floor(base * 1.5 + 0.5)
+end
+```
+</Tab>
+</Tabs>
+
+### GetJobDefinitions
+
+Cada definição de emprego do painel, como uma cópia. Use para leituras raras, como montar uma lista uma vez; para um emprego use `GetJobDefinition`.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+GetJobDefinitions(): Record<string, JobDefinition>
+```
+
+```lua title="Lua"
+local jobs = exports['ai-core']:GetJobDefinitions() -- table indexada pelo nome do emprego
+```
+
+#### Parâmetros
+
+Nenhum.
+
+#### Retorno
+
+`Record<string, JobDefinition>`: cada emprego indexado pelo nome. Cada um tem `label`, `type`, `defaultDuty`, `listed` (mostrado nas agências de empregos) e `grades` (cada um com `label`, `salary` e `boss`). Veja [JobDefinition](/pt/docs/developers/api/types#jobdefinition) e [GradeDefinition](/pt/docs/developers/api/types#gradedefinition).
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+// A agência de empregos lista cada emprego marcado como "listed" no painel.
+onClientCallback("myscript:jobCenter", () => ({
+  ok: true,
+  jobs: Object.entries(core.GetJobDefinitions())
+    .filter(([, def]) => def.listed)
+    .map(([name, def]) => ({ name, label: def.label, salary: def.grades[0]?.salary ?? 0 })),
+}));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:jobCenter', function()
+  local list = {}
+  for name, def in pairs(exports['ai-core']:GetJobDefinitions()) do
+    if def.listed then
+      list[#list + 1] = { name = name, label = def.label, salary = def.grades[1] and def.grades[1].salary or 0 }
+    end
+  end
+  return { ok = true, jobs = list }
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Em Lua, `def.grades[1]` é o cargo 0: as listas de Lua começam em 1, os cargos começam em 0.
+</Callout>
+
+### GetJobDefinition
+
+A definição de um emprego: rótulo, tipo, serviço padrão, se as agências de empregos o listam, e os cargos dele.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`definitions.job(name)`](/pt/docs/developers/api/lib-server/jobs#definitionsjob) (lê cada emprego uma vez e o esquece quando o painel o muda)
+
+```ts title="Assinatura"
+GetJobDefinition(job: string): JobDefinition | null
+```
+
+```lua title="Lua"
+local def = exports['ai-core']:GetJobDefinition('police') -- table ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Nome do emprego.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`JobDefinition | null`: o emprego ([JobDefinition](/pt/docs/developers/api/types#jobdefinition)). `null` para um emprego desconhecido ou um valor que não é texto.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, online, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+// Só um cargo de chefe pode abrir o menu de chefe.
+onClientCallback("myscript:bossMenu", (source) => {
+  const job = online.dutyJob(source);
+  const grade = job ? online.jobGrade(source, job) : null;
+  if (!job || grade === null) return fail("NOT_ON_DUTY");
+  if (!core.GetJobDefinition(job)?.grades[grade]?.boss) return fail("NOT_BOSS");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:bossMenu', function(source)
+  local job = exports['ai-core']:GetCurrentJob(source)
+  if not job or exports['ai-core']:GetDutyJob(source) ~= job.job then return aiLib.fail('NOT_ON_DUTY') end
+  local def = exports['ai-core']:GetJobDefinition(job.job)
+  local grade = def and def.grades[job.grade + 1]
+  if not grade or not grade.boss then return aiLib.fail('NOT_BOSS') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetGangs
+
+Cada vínculo de gangue do personagem de um jogador.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`online.gangs(source)`](/pt/docs/developers/api/lib-server/players#onlinegangs) lê o mesmo do espelho da lib
+
+```ts title="Assinatura"
+GetGangs(src: number): GangMembership[] | null
+```
+
+```lua title="Lua"
+local gangs = exports['ai-core']:GetGangs(source) -- lista de { gang, grade } ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`GangMembership[] | null`: um `{ gang, grade }` por gangue ([GangMembership](/pt/docs/developers/api/types#gangmembership)). Uma lista vazia sem gangues. `null` quando o jogador não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** Whether a player belongs to any gang (active or not). */
+export function inAnyGang(source: number): boolean {
+  return (core.GetGangs(source)?.length ?? 0) > 0;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function InAnyGang(source)
+  local gangs = exports['ai-core']:GetGangs(source)
+  return gangs ~= nil and #gangs > 0
+end
+```
+</Tab>
+</Tabs>
+
+### GetActiveGang
+
+A gangue que o jogador tem ativa agora. Território de gangue, baús de gangue e chats de gangue devem usar a gangue ativa.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+GetActiveGang(src: number): string | null
+```
+
+```lua title="Lua"
+local gang = exports['ai-core']:GetActiveGang(source) -- nome da gangue ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`string | null`: o nome da gangue. `null` quando nenhuma gangue está ativa ou o jogador não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, inventory, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:gangStash", (source) => {
+  const gang = core.GetActiveGang(source);
+  if (!gang) return fail("NO_GANG");
+  return inventory.openInventory(source, `gang_${gang}`) ? { ok: true } : fail("STASH_FAILED");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:gangStash', function(source)
+  local gang = exports['ai-core']:GetActiveGang(source)
+  if not gang then return aiLib.fail('NO_GANG') end
+  if not exports['ai-core']:OpenInventory(source, 'gang_' .. gang) then return aiLib.fail('STASH_FAILED') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### SetGang
+
+Adiciona um jogador a uma gangue, ou muda o cargo dele numa gangue a que pertence. Um personagem sem gangue ativa recebe a nova gangue como ativa.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+SetGang(src: number, gang: string, grade: number): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetGang(source, 'ballas', 0)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+    gang: { type: 'string', description: 'Nome da gangue no painel.', required: true },
+    grade: { type: 'number', description: 'Índice do cargo, contado a partir de 0. Precisa existir na lista de cargos da gangue.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o personagem agora pertence a `gang` no cargo `grade`. `false` quando a gangue ou o cargo não existe, o personagem já pertence a tantas gangues quanto **Most gangs per character** permite ou o jogador não tem personagem carregado. Quando a configuração **Several gangs per character** do painel está desligada, a nova gangue substitui a antiga.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { addCommand, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+addCommand("setgang", {
+  help: "Adds a player to a gang",
+  params: [{ name: "id", type: "playerId" }, { name: "gang", type: "string" }, { name: "grade", type: "number" }],
+  restricted: true,
+}, (_source, args) => {
+  console.log(core.SetGang(args.id, args.gang, args.grade) ? "done" : "refused");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.addCommand('setgang', {
+  help = 'Adds a player to a gang',
+  params = { { name = 'id', type = 'playerId' }, { name = 'gang', type = 'string' }, { name = 'grade', type = 'number' } },
+  restricted = true,
+}, function(_, args)
+  print(exports['ai-core']:SetGang(args.id, args.gang, args.grade) and 'done' or 'refused')
+end)
+```
+</Tab>
+</Tabs>
+
+### RemoveGang
+
+Remove um jogador de uma gangue. Quando era a gangue ativa, a próxima gangue que sobra fica ativa (ou nenhuma).
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+RemoveGang(src: number, gang: string): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:RemoveGang(source, 'ballas')
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+    gang: { type: 'string', description: 'Nome da gangue a deixar.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o vínculo foi removido. `false` quando o personagem não está nessa gangue ou o jogador não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:leaveGang", (source) => {
+  const gang = core.GetActiveGang(source);
+  return gang && core.RemoveGang(source, gang) ? { ok: true } : fail("NO_GANG");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:leaveGang', function(source)
+  local gang = exports['ai-core']:GetActiveGang(source)
+  if not gang or not exports['ai-core']:RemoveGang(source, gang) then return aiLib.fail('NO_GANG') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### SetActiveGang
+
+Escolhe qual das gangues do jogador fica ativa, ou nenhuma.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+SetActiveGang(src: number, gang: string | null): boolean
+```
+
+```lua title="Lua"
+local ok = exports['ai-core']:SetActiveGang(source, 'vagos') -- nil = nenhuma gangue ativa
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    src: { type: 'number', description: 'Id de servidor do jogador.', required: true },
+    gang: { type: 'string | null', description: 'Uma gangue a que o personagem pertence, ou `null` (`nil` em Lua) para nenhuma.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando `gang` agora está ativa (também quando já estava). `false` quando o personagem não está nessa gangue ou o jogador não tem personagem carregado. A gangue ativa é salva.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+import { fail, readText } from "@aicore-fivem/lib/shared";
+
+const core = resourceExport("ai-core");
+
+onClientCallback(
+  "myscript:pickGang",
+  { args: ([gang]) => { const name = readText(gang, 32); return name ? [name] : null; } },
+  (source, gang) => (core.SetActiveGang(source, gang) ? { ok: true } : fail("NOT_MEMBER")),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:pickGang', function(source, gang)
+  if type(gang) ~= 'string' or not exports['ai-core']:SetActiveGang(source, gang) then return aiLib.fail('NOT_MEMBER') end
+  return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetGangDefinitions
+
+Cada definição de gangue do painel, como uma cópia.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** nenhuma
+
+```ts title="Assinatura"
+GetGangDefinitions(): Record<string, GangDefinition>
+```
+
+```lua title="Lua"
+local gangs = exports['ai-core']:GetGangDefinitions() -- table indexada pelo nome da gangue
+```
+
+#### Parâmetros
+
+Nenhum.
+
+#### Retorno
+
+`Record<string, GangDefinition>`: cada gangue indexada pelo nome, cada uma com `label` e `grades`. Veja [GangDefinition](/pt/docs/developers/api/types#gangdefinition).
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+onClientCallback("myscript:gangList", () => ({
+  ok: true,
+  gangs: Object.entries(core.GetGangDefinitions()).map(([name, def]) => ({ name, label: def.label })),
+}));
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:gangList', function()
+  local list = {}
+  for name, def in pairs(exports['ai-core']:GetGangDefinitions()) do
+    list[#list + 1] = { name = name, label = def.label }
+  end
+  return { ok = true, gangs = list }
+end)
+```
+</Tab>
+</Tabs>
+
+### GetGangDefinition
+
+A definição de uma gangue: o rótulo e os cargos dela.
+
+**Lado:** Servidor · **Espera:** não · **Lib:** [`definitions.gang(name)`](/pt/docs/developers/api/lib-server/jobs#definitionsgang)
+
+```ts title="Assinatura"
+GetGangDefinition(gang: string): GangDefinition | null
+```
+
+```lua title="Lua"
+local def = exports['ai-core']:GetGangDefinition('ballas') -- table ou nil
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    gang: { type: 'string', description: 'Nome da gangue.', required: true },
+  }}
+/>
+
+#### Retorno
+
+`GangDefinition | null`: a gangue ([GangDefinition](/pt/docs/developers/api/types#gangdefinition)). `null` para uma gangue desconhecida ou um valor que não é texto.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aicore-fivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+/** "Ballas" for "ballas", the name itself for an unknown gang. */
+export function gangLabel(gang: string): string {
+  return core.GetGangDefinition(gang)?.label ?? gang;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+function GangLabel(gang)
+  local def = exports['ai-core']:GetGangDefinition(gang)
+  return def and def.label or gang
+end
+```
+</Tab>
+</Tabs>

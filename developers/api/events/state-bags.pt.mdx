@@ -1,0 +1,137 @@
+---
+title: State bags
+description: Os valores de estado compartilhado que o ai-core e os scripts ai-* publicam - bags de jogador, bags de veículo e chaves de GlobalState -, o que cada um guarda, quem o escreve e como lê-lo e acompanhá-lo.
+icon: Database
+---
+
+Um **state bag** é um valor que o FiveM mantém sincronizado para todos: no GlobalState (um valor para o servidor inteiro), num jogador ou numa entidade (um veículo). Cada recurso em cada lado pode lê-lo, e ele acompanha as mudanças sem nenhum evento seu. O ai-core e os scripts ai-* os usam para estado de que todos precisam, nunca para dados privados.
+
+<Callout type="warn">
+**Somente leitura.** Cada chave abaixo tem um recurso dono, que é o único que a escreve, sempre a partir do servidor. Nunca escreva essas chaves você mesmo, nem do servidor nem do cliente: o dono sobrescreveria você, e outros scripts veriam um estado errado. Para mudar o estado, chame o export do dono (por exemplo o revive do ai-death, o export de serviço do ai-core).
+</Callout>
+
+## Como lê-los
+
+A lib tem uma classe por tipo. Cada uma guarda uma cópia local, então `get` não custa nada, e `onChange` roda seu listener depois de uma mudança.
+
+| Tipo | TypeScript (lib) | Lua |
+| --- | --- | --- |
+| Uma chave de GlobalState | `new GlobalKey(key, parse)`: `.get()`, `.onChange((_, value, old) => ...)` | `GlobalState[key]`, `AddStateBagChangeHandler(key, 'global', fn)` |
+| Muitas chaves de GlobalState com um prefixo | `new GlobalGroup(prefix, parse)`: `.get(id)`, `.ids()`, `.onChange((id, value, old) => ...)` | `GlobalState[prefix .. id]` |
+| O bag de um jogador | `new PlayerState(key, parse)`: `.get(serverId)`, `.onChange((serverId, value, old) => ...)` | `Player(serverId).state[key]`, `LocalPlayer.state[key]` no cliente |
+| O bag de uma entidade | `new EntityState(key, parse)`: `.get(entity)`, `.getByNetId(netId)`, `.onChange((netId, value, old) => ...)` | `Entity(entity).state[key]` |
+
+`parse` verifica o valor bruto: `stateNumber`, `stateBoolean`, `stateString` da lib, ou uma função sua que retorna `undefined` para um valor ruim. Todos vêm de `@aicore-fivem/lib/client` ou `@aicore-fivem/lib/server`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { cache, GlobalKey, PlayerState, stateBoolean, stateNumber } from "@aicore-fivem/lib/client";
+import { dutyCountKey, PLAYER_BAGS } from "@aicore-fivem/shared";
+
+const policeOnDuty = new GlobalKey(dutyCountKey("police"), stateNumber);
+const cuffed = new PlayerState(PLAYER_BAGS.cuffed, stateBoolean);
+
+console.log(`police on duty: ${policeOnDuty.get() ?? 0}`);
+policeOnDuty.onChange((_, count) => console.log(`police on duty now: ${count ?? 0}`));
+
+cuffed.onChange((serverId, value) => {
+  if (serverId === cache.serverId) console.log(value ? "you are cuffed" : "you are free");
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+print(('police on duty: %d'):format(GlobalState['ai:duty:police'] or 0))
+
+AddStateBagChangeHandler('ai:duty:police', 'global', function(_, _, value)
+  print(('police on duty now: %d'):format(value or 0))
+end)
+
+-- O bag do próprio jogador local.
+AddStateBagChangeHandler('cuffed', ('player:%d'):format(GetPlayerServerId(PlayerId())), function(_, _, value)
+  print(value and 'you are cuffed' or 'you are free')
+end)
+```
+</Tab>
+</Tabs>
+
+## Bags de jogador (`PLAYER_BAGS`)
+
+Chaves que vários recursos leem num jogador. Constante: `PLAYER_BAGS` em `@aicore-fivem/shared`.
+
+| Chave | Constante | Dono | Valor |
+| --- | --- | --- | --- |
+| `dead` | `PLAYER_BAGS.dead` | ai-death | `true` enquanto o jogador está caído. Ausente ou `false` caso contrário. Com outro script de morte, use a camada médica (export `IsDead`, `medical` da lib): outros scripts de morte usam as próprias chaves. |
+| `cuffed` | `PLAYER_BAGS.cuffed` | ai-police | `true` enquanto o jogador está algemado. |
+| `proximity` | `PLAYER_BAGS.proximity` | ai-voice | O alcance de voz, no formato do pma-voice: `{ index, distance, mode }`. |
+
+## Bags de veículo (`VEHICLE_BAGS`)
+
+Chaves em entidades de veículos. Constante: `VEHICLE_BAGS` em `@aicore-fivem/shared`.
+
+| Chave | Constante | Dono | Valor |
+| --- | --- | --- | --- |
+| `ai:owned` | `VEHICLE_BAGS.owned` | ai-vehicles | `true` num veículo próprio spawnado. |
+| `ai:vid` | `VEHICLE_BAGS.id` | ai-vehicles | O id do veículo no ai-vehicles (número). |
+| `ai:props` | `VEHICLE_BAGS.props` | ai-vehicles | O visual e o tuning do veículo (`VehicleProps`). O ai-core os aplica no cliente dono da entidade. |
+| `ai:setup` | `VEHICLE_BAGS.setup` | ai-vehicles | Uma configuração de spawn (`VehicleSetup`, por exemplo uma cor escolhida numa loja). O ai-core a aplica uma vez no cliente dono. |
+| `fuel` | `VEHICLE_BAGS.fuel` | o script de combustível (ai-fuel; o ai-core o mantém para scripts de combustível do lado cliente) | Nível de combustível, 0-100. |
+
+<Callout type="info">
+Para ler o combustível, use a camada `fuel` da lib: ela funciona com qualquer script de combustível, inclusive os que não escrevem o bag `fuel` eles mesmos.
+</Callout>
+
+## Chaves de GlobalState do ai-core
+
+| Chave | Constante | Valor |
+| --- | --- | --- |
+| `ai:duty:<job>` | `dutyCountKey(job)` (prefixo `DUTY_COUNT_PREFIX`) | Quantos jogadores estão em serviço nesse emprego (número). Só contagens, nunca quem. |
+| `ai:interaction` | `CORE.interactionStateKey` | `"prompt"` ou `"target"`: como os `Points` da lib deixam os jogadores interagir (configuração do painel do ai-core). |
+| `ai:pvp` | `CORE.pvpStateKey` | `true` quando os jogadores podem ferir uns aos outros (configuração `pvp` do painel, comando `/togglepvp`). |
+| `ai:inventory` | `INVENTORY_STATE_KEY` | Nome do recurso do inventário por trás da camada de inventário do ai-core. Sem valor enquanto nenhum está rodando. |
+| `ai:vehicleKeys` | `VEHICLE_KEYS_STATE_KEY` | Nome do recurso do script de chaves de veículos ativo. Sem valor enquanto nenhum está rodando. |
+| `ai:appearance` | `APPEARANCE_STATE_KEY` | Nome do recurso do script de roupas ativo. Sem valor enquanto nenhum está rodando. |
+| `ai:medical` | `CORE.medicalStateKey` | Nome do recurso do script de morte ativo. |
+| `ai:mdt` | `CORE.mdtStateKey` | Nome do recurso do MDT ativo. |
+| `ai:notify` | `CORE.notifyStateKey` | Nome do recurso da UI de notificação para onde vão os cards do ai-lib. Sem valor: o ai-lib desenha os próprios cards. |
+| `ai:fuel` | `FUEL_STATE_KEY` | Nome do recurso do script de combustível ativo. Sem valor enquanto nenhum está rodando. |
+| `ai:garages` | `GARAGES_STATE_KEY` | Nome do recurso do script de garagem ativo. Sem valor enquanto nenhum está rodando. |
+
+As chaves com nomes de recursos dizem às metades de cliente do ai-core com qual script falar. Leia-as quando precisar saber qual script está rodando (para uma linha de log, uma dica ao jogador), não para chamar esse script diretamente: chame a camada do ai-core.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/server/index.ts"
+import { GlobalKey, stateBoolean } from "@aicore-fivem/lib/server";
+import { CORE } from "@aicore-fivem/shared";
+
+const pvp = new GlobalKey(CORE.pvpStateKey, stateBoolean);
+
+pvp.onChange((_, on) => console.log(on ? "PvP is on" : "PvP is off"));
+```
+</Tab>
+<Tab value="Lua">
+```lua title="server.lua"
+AddStateBagChangeHandler('ai:pvp', 'global', function(_, _, on)
+  print(on and 'PvP is on' or 'PvP is off')
+end)
+```
+</Tab>
+</Tabs>
+
+## Chaves de outros scripts ai-*
+
+Estado compartilhado que alguns scripts ai-* publicam, para scripts que trabalham com eles. A página de desenvolvedor de cada script tem os detalhes.
+
+| Chave | Onde | Dono | Valor |
+| --- | --- | --- | --- |
+| `door:<id>` | GlobalState | ai-doorlock | `true` enquanto a porta está trancada. |
+| `ai:clock` | GlobalState | ai-weathersync | `{ base, at, scale, frozen }`: minutos de jogo do dia no horário do servidor `at` (ms), avançando `scale` minutos de jogo por minuto real. Os clientes rodam o relógio eles mesmos a partir disto. |
+| `ai:weather` | GlobalState | ai-weathersync | `{ type, blackout }`: o clima atual. |
+| `ai:rweather:<id>` | GlobalState | ai-weathersync | O clima atual de uma região de clima. |
+| `prop:<id>` | GlobalState | ai-properties | `true` quando a propriedade tem dono. |
+| `rob:<id>` | GlobalState | ai-robberies | `true` enquanto um alvo de assalto está esvaziado e espera o cooldown dele. |
+| `siren:lx` | Veículo | ai-sirens | Tom principal da sirene: 0 desligado, 1-3 um tom. |
+| `siren:manu` | Veículo | ai-sirens | Buzina / sirene manual: 0 desligado, 1 buzina, 2 manual, 3 ambos. |
+| `siren:lightbar` | Veículo | ai-sirens | O modelo de giroflex preso ao veículo; ausente quando não há. |

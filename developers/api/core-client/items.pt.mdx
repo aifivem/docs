@@ -1,0 +1,244 @@
+---
+title: Itens
+description: Abra o inventário do jogador, verifique um item, leia a arma na mão e abra o seletor de itens do admin, seja qual for o inventário do servidor.
+icon: Package
+---
+
+Estes exports passam pela **camada de inventário** do ai-core: o inventário que o dono do servidor escolheu (ai-inventory, ou um inventário de terceiros suportado) responde a eles. Seu script nunca chama os exports de um inventário específico, então continua funcionando quando o inventário muda. Enquanto nenhum inventário está rodando, as verificações respondem `false` / `null` e abrir não faz nada.
+
+O cliente só lê e abre. Dar e tirar itens sempre acontece no servidor (`inventory` da lib no servidor, ou os exports de servidor do ai-core), onde o servidor verifica o jogador antes.
+
+### OpenInventory
+
+Abre a tela do inventário do próprio jogador no inventário ativo (com o que esse inventário mostrar ao redor: o chão, um porta-malas, um porta-luvas).
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Assinatura"
+OpenInventory(): void
+```
+
+```lua title="Lua"
+exports['ai-core']:OpenInventory() -- ou aiLib.inventory.openInventory()
+```
+
+#### Parâmetros
+
+Nenhum.
+
+#### Retorno
+
+Nada. Sem um inventário ativo nada abre.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { inventory } from "@aicore-fivem/lib/client";
+
+RegisterCommand("bag", () => inventory.openInventory(), false);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+RegisterCommand('bag', function() aiLib.inventory.openInventory() end, false)
+```
+</Tab>
+</Tabs>
+
+### HasItem
+
+Diz se o jogador tem pelo menos uma quantidade de um item. Use para mostrar ou esconder uma opção (um item radial, uma opção de target) antes de pedir algo ao servidor.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Assinatura"
+HasItem(item: string, count?: number): boolean
+```
+
+```lua title="Lua"
+local has = exports['ai-core']:HasItem(item, count) -- ou aiLib.inventory.hasItem(item, count)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    item: { type: 'string', description: 'O nome do item como o inventário o conhece (`"lockpick"`).', required: true },
+    count: { type: 'number', description: 'Quantos o jogador precisa ter. Um valor ausente, zero ou negativo conta como 1.', default: '1' },
+  }}
+/>
+
+#### Retorno
+
+`boolean`: `true` quando o jogador tem pelo menos `count`. `false` quando tem menos, quando `item` não é string ou quando nenhum inventário está rodando.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/index.ts"
+import { inventory, notify, triggerServerCallback } from "@aicore-fivem/lib/client";
+import { Locale } from "common";
+
+RegisterCommand(
+  "picklock",
+  async () => {
+    // Uma verificação rápida para o jogador; o servidor verifica o item de novo antes de fazer qualquer coisa.
+    if (!inventory.hasItem("lockpick")) return notify(Locale("NEED_LOCKPICK"), "error");
+    await triggerServerCallback("myscript:picklock", []);
+  },
+  false,
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client.lua"
+local Locale = aiLib.locale()
+
+RegisterCommand('picklock', function()
+  -- Uma verificação rápida para o jogador; o servidor verifica o item de novo antes de fazer qualquer coisa.
+  if not aiLib.inventory.hasItem('lockpick') then
+    return aiLib.notify(Locale('NEED_LOCKPICK'), 'error')
+  end
+  CreateThread(function()
+    aiLib.triggerServerCallback('myscript:picklock', {}) -- espera a resposta do servidor
+  end)
+end, false)
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Uma resposta do cliente pode ser falsificada por um trapaceiro. Use `HasItem` para o que o jogador vê; o servidor precisa verificar e remover o item ele mesmo.
+</Callout>
+
+### GetCurrentWeapon
+
+Retorna o item de arma que o jogador segura na mão, com o rótulo e a imagem dele, pelo inventário ativo.
+
+**Lado:** Cliente · **Espera:** não
+
+```ts title="Assinatura"
+GetCurrentWeapon(): HeldWeapon | null
+```
+
+```lua title="Lua"
+local weapon = exports['ai-core']:GetCurrentWeapon() -- { name, label, image? } ou nil
+```
+
+#### Parâmetros
+
+Nenhum.
+
+#### Retorno
+
+[`HeldWeapon`](/pt/docs/developers/api/types#heldweapon) enquanto um item de arma está na mão, `null` quando as mãos estão vazias ou nenhum inventário está rodando.
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'O nome do item (`"WEAPON_PISTOL"`).', required: true },
+    label: { type: 'string', description: 'O nome de exibição do item.', required: true },
+    image: { type: 'string', description: 'Url da imagem (`nui://...`); ausente quando o inventário não tem uma.' },
+  }}
+/>
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/weapon.ts"
+import { inventory, onCache } from "@aicore-fivem/lib/client";
+
+// Leia quando a arma na mão muda, não a cada frame.
+onCache("weapon", () => {
+  const weapon = inventory.currentWeapon();
+  SendNUIMessage({ action: "weapon", data: weapon });
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/weapon.lua"
+-- Leia quando a arma na mão muda, não a cada frame.
+aiLib.cache.onChange('weapon', function()
+  local weapon = aiLib.inventory.currentWeapon()
+  SendNUIMessage({ action = 'weapon', data = weapon })
+end)
+```
+</Tab>
+</Tabs>
+
+### OpenItemPicker
+
+Abre o seletor de itens do ai-core: uma grade pesquisável com cada item do inventário ativo e suas imagens, onde o jogador monta uma lista de itens e quantidades. É feito para ferramentas de admin (dar itens a um jogador): a lista de itens vem do servidor, que só a envia para admins. A lista que o jogador escolhe chega depois como o evento de cliente `ai-lib:client:menuResult`.
+
+**Lado:** Cliente · **Espera:** não (a resposta chega como evento; o `itemPicker` da lib espera por você)
+
+```ts title="Assinatura"
+OpenItemPicker(requestId: number, request: ItemPickerRequest): void
+```
+
+```lua title="Lua"
+local list = aiLib.itemPicker({ title = 'Give items', target = 12 }) -- espera; chame dentro de uma thread
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    requestId: { type: 'number', description: 'Seu número para este pedido. Ele volta no evento de resposta, para você saber a qual pedido ele responde.', required: true },
+    request: { type: 'ItemPickerRequest', description: 'O título do seletor e para o inventário de quem são os itens. Campos abaixo.', required: true, typeDescriptionLink: '/docs/developers/api/types#itempickerrequest' },
+  }}
+/>
+
+#### ItemPickerRequest
+
+Veja também [ItemPickerRequest](/pt/docs/developers/api/types#itempickerrequest).
+
+<TypeTable
+  type={{
+    title: { type: 'string', description: 'O título no topo do seletor, já traduzido. Cortado em 60 caracteres.', required: true },
+    target: { type: 'number', description: 'Id de servidor do jogador que vai receber os itens. O peso livre dele limita o que pode ser escolhido. O admin que escolhe quando omitido.' },
+  }}
+/>
+
+#### Retorno
+
+Nada na hora. Depois o ai-core dispara `ai-lib:client:menuResult` com `(resource, requestId, value)`: `value` é uma lista [`PickedItem[]`](/pt/docs/developers/api/types#pickeditem) (`{ name, count }`) quando o jogador confirmou, `null` quando fechou o seletor. O `itemPicker(request)` da lib retorna `Promise<PickedItem[] | null>` com esse valor, e `aiLib.itemPicker(request)` retorna a lista ou `nil`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts title="resource/client/admin.ts"
+import { itemPicker, triggerServerCallback } from "@aicore-fivem/lib/client";
+import { Locale } from "common";
+
+// Ferramenta de admin: escolha itens para um jogador; o servidor verifica o admin e dá cada item.
+export async function giveItemsTo(target: number): Promise<void> {
+  const list = await itemPicker({ title: Locale("GIVE_ITEMS"), target });
+  if (!list || list.length === 0) return;
+  await triggerServerCallback("myadmin:giveItems", [target, list]);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua title="client/admin.lua"
+local Locale = aiLib.locale()
+
+-- Ferramenta de admin: escolha itens para um jogador; o servidor verifica o admin e dá cada item.
+local function giveItemsTo(target)
+  CreateThread(function()
+    local list = aiLib.itemPicker({ title = Locale('GIVE_ITEMS'), target = target })
+    if not list or #list == 0 then return end
+    aiLib.triggerServerCallback('myadmin:giveItems', { target, list })
+  end)
+end
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+O seletor só mostra itens para admins (`ai.admin`): para qualquer outra pessoa a grade fica vazia. O servidor responde no máximo duas aberturas por jogador em 2 segundos; um `target` que não está online conta como o admin que escolhe. A resposta do jogador é dado do cliente: seu servidor precisa verificar se quem chama é admin e conferir cada item e quantidade antes de dar qualquer coisa.
+</Callout>

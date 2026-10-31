@@ -1,0 +1,986 @@
+---
+title: Jogadores e personagens
+description: "online, onCharacter, notify, jogadores próximos, posições e stores por jogador: PlayerMap, Cooldowns, KeyedCooldowns, SourceLock, RateLimit, KeyWatchers."
+icon: Users
+---
+
+```ts title="TypeScript"
+import { online, onCharacter, notify, playersNear, coordsOf, PlayerMap, Cooldowns } from "@aicore-fivem/lib/server";
+```
+
+Um **jogador** é um cliente conectado com um id de servidor (`source`). Um **personagem** é a pessoa que ele interpreta; um jogador na tela de personagens não tem personagem carregado. O ai-core é dono dos jogadores e personagens; estes helpers os leem.
+
+## online
+
+`online` é a cópia, no seu recurso, dos jogadores carregados do ai-core: personagens, vínculos com empregos e gangues com cargos, listas de membros por emprego e gangue, e serviço. Ele lê o ai-core uma vez no primeiro uso e depois acompanha os eventos do ai-core, então uma leitura é uma consulta em memória. Use em caminhos quentes (cada mensagem de chat, cada alerta) em vez de chamar os exports do ai-core.
+
+Em Lua, `aiLib.online` consulta os exports do ai-core a cada chamada: bom para ações, não para todo tick. Ele tem `character`, `name`, `jobs`, `gangs`, `jobGrade`, `gangGrade`, `dutyJob` e `sources`; o resto não tem equivalente em Lua.
+
+### online.sources
+
+Os ids de servidor de todos os jogadores com um personagem carregado.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.sources(): IterableIterator<number>
+```
+
+```lua title="Lua"
+local list = aiLib.online.sources() -- integer[]
+```
+
+#### Retorno
+
+`IterableIterator<number>` (Lua: um array). Jogadores na tela de personagens não estão nele.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { online, notify } from "@aicore-fivem/lib/server";
+
+for (const source of online.sources()) notify(source, "Server restart in 5 minutes", "warning", 10_000);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+for _, source in ipairs(aiLib.online.sources()) do
+    aiLib.notify(source, 'Server restart in 5 minutes', 'warning', 10000)
+end
+```
+</Tab>
+</Tabs>
+
+### online.size
+
+Quantos jogadores têm um personagem carregado.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+readonly online.size: number
+```
+
+Sem equivalente em Lua: `#aiLib.online.sources()`.
+
+### online.character
+
+O personagem carregado de um jogador.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.character(source: number): CharacterInfo | null
+```
+
+```lua title="Lua"
+local character = aiLib.online.character(source) -- table ou nil
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+  }}
+/>
+
+#### Retorno
+
+[`CharacterInfo`](/pt/docs/developers/api/types#characterinfo) (`id`, `citizenid`, `slot`, `firstname`, `lastname`, `birthdate`, `sex`, `nationality`), ou `null` (`nil` em Lua) quando o jogador não tem personagem carregado.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const character = online.character(source);
+if (character) console.log(`${character.citizenid} is ${character.firstname}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local character = aiLib.online.character(source)
+if character then print(character.citizenid .. ' is ' .. character.firstname) end
+```
+</Tab>
+</Tabs>
+
+### online.charId
+
+O id do personagem carregado do jogador (o id no banco de dados, estável entre reconexões).
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.charId(source: number): number | undefined
+```
+
+Sem equivalente em Lua: `(aiLib.online.character(source) or {}).id`.
+
+**Retorno** o id do personagem, ou `undefined` quando nenhum está carregado. Indexe por este id, não por `source`, os dados que precisam sobreviver a uma reconexão (cooldowns, posse).
+
+```ts
+const charId = online.charId(source);
+if (charId === undefined) return fail("NO_CHARACTER");
+```
+
+### online.name
+
+O "Nome Sobrenome" do personagem, ou o nome de jogador do FiveM quando nenhum personagem está carregado.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.name(source: number, options?: { fallback?: boolean }): string
+```
+
+```lua title="Lua"
+local name = aiLib.online.name(source, fallback) -- fallback: boolean?
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+    "options.fallback": { type: "boolean", description: "Quando `false`, um jogador sem personagem dá uma string vazia em vez do nome do FiveM. Em Lua passe `false` como segundo argumento.", default: "true" },
+  }}
+/>
+
+**Retorno** `string`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+notify(target, `${online.name(source)} sent you a gift`, "success");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.notify(target, aiLib.online.name(source) .. ' sent you a gift', 'success')
+```
+</Tab>
+</Tabs>
+
+### online.jobs
+
+Todos os empregos de que o jogador é membro, em serviço ou não. O ai-core permite que um personagem tenha vários empregos (`maxJobs` no painel), com um emprego em serviço por vez.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.jobs(source: number): readonly string[]
+```
+
+```lua title="Lua"
+local memberships = aiLib.online.jobs(source) -- { { job = 'police', grade = 2 }, ... }
+```
+
+**Retorno** os nomes dos empregos (vazio quando não há nenhum ou não há personagem). O equivalente em Lua retorna tabelas de vínculo `{ job, grade }`, não nomes.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const isMechanic = online.jobs(source).includes("mechanic");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local isMechanic = aiLib.online.jobGrade(source, 'mechanic') ~= nil
+```
+</Tab>
+</Tabs>
+
+### online.gangs
+
+Todas as gangues em que o jogador está.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.gangs(source: number): readonly string[]
+```
+
+```lua title="Lua"
+local memberships = aiLib.online.gangs(source) -- { { gang = 'ballas', grade = 0 }, ... }
+```
+
+**Retorno** os nomes das gangues (vazio quando não há nenhuma). O equivalente em Lua retorna tabelas de vínculo `{ gang, grade }`.
+
+```ts
+if (online.gangs(source).length === 0) return fail("NOT_IN_GANG");
+```
+
+### online.jobGrade
+
+O cargo do jogador em um emprego.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.jobGrade(source: number, job: string): number | null
+```
+
+```lua title="Lua"
+local grade = aiLib.online.jobGrade(source, job) -- integer ou nil
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+    job: { type: "string", description: "Nome do emprego (`police`).", required: true },
+  }}
+/>
+
+**Retorno** o número do cargo, ou `null` (`nil` em Lua) quando o jogador não é membro. O cargo `0` é um membro: compare com `null`, não com uma verificação de valor verdadeiro.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const grade = online.jobGrade(source, "police");
+if (grade === null || grade < 3) return fail("RANK_TOO_LOW");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local grade = aiLib.online.jobGrade(source, 'police')
+if not grade or grade < 3 then return aiLib.fail('RANK_TOO_LOW') end
+```
+</Tab>
+</Tabs>
+
+### online.gangGrade
+
+O cargo do jogador em uma gangue.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.gangGrade(source: number, gang: string): number | null
+```
+
+```lua title="Lua"
+local grade = aiLib.online.gangGrade(source, gang) -- integer ou nil
+```
+
+**Retorno** o cargo, ou `null` (`nil` em Lua) quando não é membro.
+
+```ts
+const boss = (online.gangGrade(source, "ballas") ?? -1) >= 4;
+```
+
+### online.jobMembers
+
+Todos os jogadores com vínculo em um emprego, em serviço ou não.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.jobMembers(job: string): ReadonlySet<number>
+```
+
+Sem equivalente em Lua.
+
+**Retorno** um set vivo de ids de servidor (vazio quando não há nenhum). Ele muda conforme os jogadores entram e saem do emprego: copie-o (`[...set]`) antes de um `await`.
+
+```ts
+for (const source of online.jobMembers("mechanic")) notify(source, "A customer is waiting", "info");
+```
+
+### online.gangMembers
+
+Todos os jogadores de uma gangue.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.gangMembers(gang: string): ReadonlySet<number>
+```
+
+Sem equivalente em Lua. **Retorno** um set vivo de ids de servidor; copie-o antes de um `await`.
+
+```ts
+const members = [...online.gangMembers("ballas")];
+```
+
+### online.dutyJob
+
+O emprego em que o jogador está em serviço.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.dutyJob(source: number): string | null
+```
+
+```lua title="Lua"
+local job = aiLib.online.dutyJob(source) -- string ou nil
+```
+
+**Retorno** o nome do emprego, ou `null` (`nil` em Lua) quando fora de serviço.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+if (online.dutyJob(source) !== "ambulance") return fail("NOT_ON_DUTY");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if aiLib.online.dutyJob(source) ~= 'ambulance' then return aiLib.fail('NOT_ON_DUTY') end
+```
+</Tab>
+</Tabs>
+
+### online.onDutyIn
+
+Se o jogador está em serviço em um de vários empregos (todos os empregos de polícia, todos os de EMS).
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.onDutyIn(source: number, jobs: readonly string[]): boolean
+```
+
+Sem equivalente em Lua. **Retorno** `true` quando o emprego em serviço está em `jobs`.
+
+```ts
+const POLICE = ["police", "sheriff"];
+if (!online.onDutyIn(source, POLICE)) return fail("NOT_POLICE");
+```
+
+### online.onDutyFor
+
+Os jogadores em serviço em um emprego.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.onDutyFor(job: string): ReadonlySet<number>
+```
+
+Sem equivalente em Lua. **Retorno** um set vivo de ids de servidor; copie-o antes de um `await`.
+
+```ts
+for (const medic of online.onDutyFor("ambulance")) notify(medic, "Patient at Pillbox", "info");
+```
+
+### online.countOnDuty
+
+Quantos jogadores estão em serviço somando vários empregos.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.countOnDuty(jobs: readonly string[]): number
+```
+
+Sem equivalente em Lua. **Retorno** a contagem total (o custo cresce com o número de empregos, não de jogadores).
+
+```ts
+if (online.countOnDuty(["police", "sheriff"]) < 2) return fail("NOT_ENOUGH_POLICE");
+```
+
+### online.allows
+
+Se o jogador pode usar um lugar travado por uma regra de acesso (empregos, gangues, cargos mínimos, em serviço). O `allows` do cliente usa a mesma regra, então o que um jogador vê é o que o servidor o deixa usar.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+online.allows(source: number, rule: AccessRule): boolean
+```
+
+Sem equivalente em Lua.
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+    rule: { type: "AccessRule", typeDescriptionLink: "/pt/docs/developers/api/types#accessrule", description: "`{ jobs, gangs, grades, onDuty }`, lido de um registro do painel com `readAccess(record)`. As duas listas vazias: todos.", required: true },
+  }}
+/>
+
+**Retorno** `true` quando as listas estão vazias, o jogador está em uma das `gangs` no cargo mínimo dela, ou em um dos `jobs` no cargo mínimo dele (e em serviço nele quando `onDuty` está definido).
+
+```ts
+import { online } from "@aicore-fivem/lib/server";
+import { readAccess, fail } from "@aicore-fivem/lib/shared";
+
+const rule = readAccess(stashRecord); // { jobs: ["police"], gangs: [], grades: { police: 2 }, onDuty: true }
+if (!online.allows(source, rule)) return fail("NO_ACCESS");
+```
+
+## Ciclo de vida do personagem
+
+### onCharacter
+
+Roda o seu código quando um personagem entra no mundo e quando sai. Também repete os personagens que já estão no mundo quando o seu recurso (re)inicia, e cobre as saídas, então você não precisa de um handler de `playerDropped` ao lado dele.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+onCharacter(handlers: CharacterHandlers): void
+```
+
+```lua title="Lua"
+aiLib.onCharacter({ loaded = function(source, character) end, unloaded = function(source, charId, reason) end })
+```
+
+#### CharacterHandlers
+
+<TypeTable
+  type={{
+    loaded: { type: "(source: number, character: CharacterInfo) => void | Promise<void>", typeDescriptionLink: "/pt/docs/developers/api/types#characterinfo", description: "Um personagem entrou no mundo. Também roda uma vez, no tick seguinte à chamada de `onCharacter`, para cada personagem carregado antes de o seu recurso iniciar. Um erro lançado ou uma rejeição é registrado em log.", required: false },
+    unloaded: { type: '(source: number, charId: number, reason: "dropped" | "switch") => void', description: "O personagem saiu: `switch` para logout ou troca de personagem, `dropped` quando o jogador desconectou. Todo `loaded` recebe exatamente um `unloaded`.", required: false },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onCharacter, PlayerMap } from "@aicore-fivem/lib/server";
+
+const playtime = new PlayerMap<{ charId: number; since: number }>();
+
+onCharacter({
+  loaded(source, character) {
+    playtime.set(source, { charId: character.id, since: Date.now() });
+  },
+  unloaded(source, charId, reason) {
+    const entry = playtime.get(source);
+    if (entry) console.log(`character ${charId} played ${Date.now() - entry.since} ms (${reason})`);
+    playtime.delete(source);
+  },
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local since = {}
+
+aiLib.onCharacter({
+    loaded = function(source, character)
+        since[source] = os.time()
+    end,
+    unloaded = function(source, charId, reason)
+        print(('character %d played %ds (%s)'):format(charId, os.time() - (since[source] or os.time()), reason))
+        since[source] = nil
+    end,
+})
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Chame uma vez no nível superior de um arquivo de servidor. O PlayerMap acima é esvaziado sozinho na saída; o handler de `unloaded` ainda roda primeiro em uma saída, então você pode salvar dados ali.
+</Callout>
+
+## Falando com os jogadores
+
+### notify
+
+Mostra um card de notificação na tela de um jogador (o ai-lib o desenha, ou a UI de notificação que o dono escolheu no painel do ai-core).
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+notify(source: number, text: string, kind?: NotificationKind, duration?: number): void
+```
+
+```lua title="Lua"
+aiLib.notify(source, text, kind, duration)
+```
+
+#### Parâmetros
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+    text: { type: "string", description: "A mensagem, já traduzida (`Locale(\"PAID\", price)`).", required: true },
+    kind: { type: '"success" | "error" | "info" | "warning"', typeDescriptionLink: "/pt/docs/developers/api/types#notificationkind", description: "Cor e ícone do card.", default: '"info"' },
+    duration: { type: "number", description: "Milissegundos na tela.", default: "4000" },
+  }}
+/>
+
+#### Retorno
+
+`void`.
+
+#### Exemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { notify, createLocale } from "@aicore-fivem/lib/server";
+
+const Locale = createLocale();
+notify(source, Locale("PAID", 250), "success");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local Locale = aiLib.locale()
+aiLib.notify(source, Locale('PAID', 250), 'success')
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Para responder a uma ação do cliente, retorne `fail("KEY")` em vez de chamar `notify`: o `callAction` do cliente mostra o erro traduzido sozinho.
+</Callout>
+
+### isOnline
+
+Se um jogador ainda está conectado. Verifique depois de um `await` longo antes de dar qualquer coisa.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+isOnline(source: number): boolean
+```
+
+Sem equivalente em Lua: `GetPlayerName(source) ~= nil`.
+
+**Retorno** `true` enquanto o jogador está conectado.
+
+```ts
+await new Promise((resolve) => setTimeout(resolve, 60_000));
+if (!isOnline(source)) return;
+```
+
+## Jogadores próximos
+
+Estes perguntam ao ai-core quais jogadores estão no escopo OneSync uns dos outros (cerca de 424 metros) e medem só esses poucos, em vez de percorrer todos os jogadores do servidor. Um raio maior que cerca de 424 m não encontra ninguém mais longe.
+
+### playersNear
+
+Os jogadores a até `radius` metros de um jogador.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+playersNear(source: number, radius: number): number[]
+```
+
+```lua title="Lua"
+local list = aiLib.playersNear(source, radius) -- integer[]
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador no centro.", required: true },
+    radius: { type: "number", description: "Raio em metros (até cerca de 424).", required: true },
+  }}
+/>
+
+**Retorno** um array de ids de servidor. O TypeScript inclui o próprio `source`; **o Lua o deixa de fora**.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+for (const other of playersNear(source, 20)) if (other !== source) notify(other, "You hear a scream", "warning");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+for _, other in ipairs(aiLib.playersNear(source, 20.0)) do
+    aiLib.notify(other, 'You hear a scream', 'warning')
+end
+```
+</Tab>
+</Tabs>
+
+### playersNearEntity
+
+Os jogadores a até `radius` metros de uma entidade em rede (um veículo, um prop): o dono dela e os jogadores no escopo do dono.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+playersNearEntity(entity: number, radius: number): number[]
+```
+
+```lua title="Lua"
+local list = aiLib.playersNearEntity(entity, radius) -- integer[]
+```
+
+<TypeTable
+  type={{
+    entity: { type: "number", description: "Handle de entidade do servidor.", required: true },
+    radius: { type: "number", description: "Raio em metros (até cerca de 424).", required: true },
+  }}
+/>
+
+**Retorno** um array de ids de servidor. Vazio quando a entidade não existe ou nenhum jogador é dono dela (uma entidade de que só o servidor é dono não tem ninguém perto).
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const witnesses = playersNearEntity(vehicle, 30);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local witnesses = aiLib.playersNearEntity(vehicle, 30.0)
+```
+</Tab>
+</Tabs>
+
+### nearestPlayerTo
+
+O outro jogador mais próximo, a até `metres` de um jogador, que passa no seu filtro.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+nearestPlayerTo(source: number, metres: number, filter?: (other: number) => boolean): number | null
+```
+
+```lua title="Lua"
+local other = aiLib.nearestPlayerTo(source, metres, filter) -- integer ou nil
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador que procura.", required: true },
+    metres: { type: "number", description: "Maior distância em metros (até cerca de 424).", required: true },
+    filter: { type: "(other: number) => boolean", description: "Pula os jogadores para os quais ele responde `false` (sem personagem, em um veículo, algemado...).", required: false },
+  }}
+/>
+
+**Retorno** o id de servidor do mais próximo que corresponde, ou `null` (`nil` em Lua) quando não há nenhum.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+const target = nearestPlayerTo(source, 2, (other) => online.character(other) !== null);
+if (target === null) return fail("NOBODY_NEAR");
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local target = aiLib.nearestPlayerTo(source, 2.0, function(other) return aiLib.online.character(other) ~= nil end)
+if not target then return aiLib.fail('NOBODY_NEAR') end
+```
+</Tab>
+</Tabs>
+
+## Posições
+
+Sem equivalentes em Lua: Lua tem matemática de vetores (`GetEntityCoords(GetPlayerPed(source))`, `#(a - b)`).
+
+### coordsOf
+
+A posição do ped de um jogador como o servidor a vê.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+coordsOf(source: number): Vec3
+```
+
+**Retorno** um [`Vec3`](/pt/docs/developers/api/types#vec3) `{ x, y, z }`.
+
+```ts
+const { x, y, z } = coordsOf(source);
+```
+
+### entityCoords
+
+A posição de qualquer entidade (a cópia no servidor da sincronização do dono dela).
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+entityCoords(entity: number): Vec3
+```
+
+**Retorno** um [`Vec3`](/pt/docs/developers/api/types#vec3).
+
+```ts
+import { distance } from "@aicore-fivem/lib/shared";
+if (distance(entityCoords(vehicle), coordsOf(source)) > 5) return fail("TOO_FAR");
+```
+
+### isNear
+
+Se o ped do jogador está a até `metres` de um ponto. O guard `near` o usa.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+isNear(source: number, point: Vec3, metres: number): boolean
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+    point: { type: "Vec3", typeDescriptionLink: "/pt/docs/developers/api/types#vec3", description: "O ponto até onde medir.", required: true },
+    metres: { type: "number", description: "Maior distância em metros (3D).", required: true },
+  }}
+/>
+
+**Retorno** `true` quando está ao alcance.
+
+```ts
+if (!isNear(source, { x: 25.7, y: -1347.3, z: 29.5 }, 3)) return fail("TOO_FAR");
+```
+
+### vehicleOf
+
+O veículo em que o jogador está sentado.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+vehicleOf(source: number, options?: { driver?: boolean }): number
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+    "options.driver": { type: "boolean", description: "Conta só o banco do motorista.", default: "false" },
+  }}
+/>
+
+**Retorno** a entidade do veículo, ou `0` a pé (ou fora do banco do motorista com `driver: true`).
+
+```ts
+const vehicle = vehicleOf(source, { driver: true });
+if (!vehicle) return fail("NOT_DRIVING");
+```
+
+## Stores por jogador
+
+Nenhum destes tem equivalente em Lua: use uma tabela Lua e limpe-a em `playerDropped`. Crie cada store uma vez no nível do módulo, nunca dentro de um handler.
+
+### PlayerMap
+
+Um `Map` indexado pelo id de servidor do jogador que se esvazia sozinho quando o jogador sai. Use para tudo o que você guarda por jogador (uma tela aberta, um item selecionado).
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+new PlayerMap<V>(options?: { onDrop?: (source: number, value: V) => void })
+```
+
+<TypeTable
+  type={{
+    "options.onDrop": { type: "(source: number, value: V) => void", description: "Roda depois que a entrada de um jogador que saiu foi removida, com o último valor dela (terminar uma ação, salvar algo).", required: false },
+  }}
+/>
+
+Ele tem todos os métodos de um `Map` do JavaScript (`get`, `set`, `has`, `delete`, `size`, iteração).
+
+```ts
+import { PlayerMap } from "@aicore-fivem/lib/server";
+
+const carrying = new PlayerMap<string>({
+  onDrop: (source, item) => console.log(`${source} left while carrying ${item}`),
+});
+carrying.set(source, "box");
+```
+
+### Cooldowns
+
+Cooldowns por jogador no relógio do jogo, liberados quando o jogador sai.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+new Cooldowns()
+ready(source: number): boolean
+start(source: number, ms: number): void
+take(source: number, ms: number): boolean
+left(source: number): number
+clear(source: number): void
+```
+
+| Método | O que faz | Retorno |
+| --- | --- | --- |
+| `ready(source)` | Nenhum cooldown está rodando para o jogador. | `boolean` |
+| `start(source, ms)` | Inicia (ou reinicia) o cooldown do jogador por `ms` milissegundos. | `void` |
+| `take(source, ms)` | Inicia o cooldown quando ele está pronto. | `true` quando iniciado, `false` enquanto um ainda roda |
+| `left(source)` | Milissegundos restantes. | `number`, `0` quando pronto |
+| `clear(source)` | Encerra o cooldown do jogador. | `void` |
+
+```ts
+import { onClientCallback, Cooldowns } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const searchCooldown = new Cooldowns();
+
+onClientCallback("my-bins:search", (source) => {
+  if (!searchCooldown.take(source, 30_000)) return fail("WAIT");
+  return { ok: true };
+});
+```
+
+<Callout type="warn">
+Um jogador pode reconectar para zerar uma entrada de `Cooldowns`. Um cooldown que precisa sobreviver a uma reconexão usa `KeyedCooldowns` indexado por `online.charId(source)`.
+</Callout>
+
+### KeyedCooldowns
+
+Cooldowns por qualquer chave que dura mais que uma conexão: um id de personagem, uma entidade, um id de porta. Entradas expiradas são limpas conforme o mapa cresce.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+new KeyedCooldowns<K = number>()
+ready(key: K): boolean
+start(key: K, ms: number): void
+take(key: K, ms: number): boolean
+left(key: K): number
+clear(key: K): void
+```
+
+Os mesmos métodos de `Cooldowns`, por `key`. `start` com `ms` de 0 ou menos encerra o cooldown.
+
+```ts
+import { KeyedCooldowns, online } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const robbed = new KeyedCooldowns<string>(); // por id de loja
+const perCharacter = new KeyedCooldowns(); // por id de personagem
+
+function canRob(source: number, store: string) {
+  const charId = online.charId(source);
+  if (charId === undefined) return fail("NO_CHARACTER");
+  if (!robbed.ready(store)) return fail("STORE_EMPTY");
+  if (!perCharacter.take(charId, 15 * 60_000)) return fail("WAIT");
+  robbed.start(store, 30 * 60_000);
+  return { ok: true };
+}
+```
+
+### SourceLock
+
+Uma ação em andamento por jogador entre vários callbacks. O próprio `lock: true` de um callback cobre só aquele callback; duas ações que precisam se excluir (listar e vender o mesmo veículo) compartilham um `SourceLock`.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+new SourceLock()
+run<T, B>(source: number, busy: B, task: () => Promise<T>): Promise<T | B>
+release(source: number): void
+```
+
+<TypeTable
+  type={{
+    source: { type: "number", description: "Id de servidor do jogador.", required: true },
+    busy: { type: "B", description: "O que `run` retorna quando o jogador já tem uma tarefa rodando (`fail(\"BUSY\")`).", required: true },
+    task: { type: "() => Promise<T>", description: "A ação. O lock é liberado quando ela termina, mesmo quando lança um erro.", required: true },
+  }}
+/>
+
+**Retorno** (`run`) o resultado da tarefa, ou `busy`. `release(source)` libera o jogador; chame a partir de `playerDropped` (uma tarefa ainda rodando mantém a própria entrada até terminar).
+
+```ts
+import { onClientCallback, SourceLock } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const dealer = new SourceLock();
+on("playerDropped", () => dealer.release(Number(globalThis.source)));
+
+onClientCallback("my-dealer:list", (source) => dealer.run(source, fail("BUSY"), async () => ({ ok: true })));
+onClientCallback("my-dealer:sell", (source) => dealer.run(source, fail("BUSY"), async () => ({ ok: true })));
+```
+
+### RateLimit
+
+Um limite de rajada por jogador: no máximo `count` ações dentro de qualquer `windowMs`. O portão já limita a taxa de toda entrada; use isto para um limite extra, mais lento, em uma ação.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+new RateLimit(count: number, windowMs: number)
+take(source: number): boolean
+release(source: number): void
+```
+
+```lua title="Lua"
+local limit = aiLib.RateLimit.new(count, windowMs)
+local allowed = limit:take(source)
+limit:release(source)
+```
+
+<TypeTable
+  type={{
+    count: { type: "number", description: "Ações permitidas por janela.", required: true },
+    windowMs: { type: "number", description: "Duração da janela em milissegundos (uma janela deslizante).", required: true },
+  }}
+/>
+
+**Retorno** (`take`) `true` e conta uma ação, ou `false` quando o jogador passou do limite (não contada). `release(source)` esquece o jogador; chame a partir de `playerDropped`.
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { onClientCallback, RateLimit } from "@aicore-fivem/lib/server";
+import { fail } from "@aicore-fivem/lib/shared";
+
+const reports = new RateLimit(3, 60_000);
+on("playerDropped", () => reports.release(Number(globalThis.source)));
+
+onClientCallback("my-report:send", (source) => {
+  if (!reports.take(source)) return fail("TOO_MANY_REPORTS");
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local reports = aiLib.RateLimit.new(3, 60000)
+AddEventHandler('playerDropped', function() reports:release(source) end)
+
+aiLib.onClientCallback('my-report:send', function(source)
+    if not reports:take(source) then return aiLib.fail('TOO_MANY_REPORTS') end
+    return { ok = true }
+end)
+```
+</Tab>
+</Tabs>
+
+### KeyWatchers
+
+Os jogadores que recebem as mudanças ao vivo de uma chave (os carros de um estacionamento, uma ficha de personagem aberta). Uma chave por jogador: observar uma nova chave para a antiga. Liberado na saída; toda operação é de tempo constante.
+
+**Lado:** Servidor · **Espera:** não
+
+```ts title="Signature"
+new KeyWatchers<K>()
+watch(source: number, key: K): void
+stop(source: number): void
+of(key: K): ReadonlySet<number> | undefined
+keyOf(source: number): K | undefined
+```
+
+| Método | O que faz | Retorno |
+| --- | --- | --- |
+| `watch(source, key)` | O jogador observa `key` e para de observar a anterior. | `void` |
+| `stop(source)` | O jogador para de observar. | `void` |
+| `of(key)` | Os jogadores que observam `key`. | um set, ou `undefined` quando ninguém observa |
+| `keyOf(source)` | A chave que o jogador observa. | a chave, ou `undefined` |
+
+```ts
+import { onClientCallback, onClientEvent, KeyWatchers } from "@aicore-fivem/lib/server";
+import { oneArg, readText } from "@aicore-fivem/lib/shared";
+
+const lots = new KeyWatchers<string>();
+
+onClientCallback("my-lot:open", { args: oneArg((v) => readText(v, 32)) }, (source, lot) => {
+  lots.watch(source, lot);
+  return { ok: true, cars: [] }; // o snapshot
+});
+onClientEvent("my-lot:close", (source) => lots.stop(source));
+
+function carChanged(lot: string, car: unknown) {
+  for (const source of lots.of(lot) ?? []) emitNet("my-lot:car", source, car); // o delta
+}
+```
