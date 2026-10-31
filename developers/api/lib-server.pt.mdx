@@ -1,0 +1,138 @@
+---
+title: "Lib: servidor"
+description: "@aicore-fivem/lib/server - todo helper de servidor com sua assinatura, e o gêmeo em Lua do aiLib quando existe."
+icon: Server
+---
+
+```ts title="TypeScript"
+import { onClientCallback, inventory, online, fail } from "@aicore-fivem/lib/server";
+```
+
+A entrada de servidor também reexporta os helpers de `/fivem`: veja [Lib: shared e fivem](/pt/docs/developers/api/lib-shared). A última coluna dá o gêmeo em Lua no `aiLib` ([Lib para Lua](/pt/docs/developers/api/lua)).
+
+## Entrada do cliente
+
+Todo pedido do cliente passa pelo portão: verificação de jogador real, limite de taxa, guards, um parser de argumentos e, opcionalmente, uma chamada por vez.
+
+| Helper | O quê | Lua |
+| --- | --- | --- |
+| `onClientCallback(name, handler, options?)` / `onClientCallback(name, { args, guards?, rate?, lock? }, handler)` | Responde a `triggerServerCallback`; `args` transforma valores crus em valores verificados (null recusa). | `onClientCallback` (opções `rate`, `lock`, `ace`) |
+| `onClientEvent(name, handler, options?)` / `onClientEvent(name, { args, ... }, handler)` | Um evento de rede de um cliente, pelo mesmo portão. | `onClientEvent` |
+| `triggerClientCallback(name, source, args = [], timeoutMs?): Promise<unknown>` | Pergunta a um cliente (`onServerCallback` lá). | `triggerClientCallback` |
+| `isAdmin(ace?)`, `hasCharacter()`, `near(point \| (source) => point, metres)` | Guards para `guards: [...]`. | `isAdmin(source, ace?)` |
+| `eventSource(): number` | O jogador que enviou o evento (leia antes do primeiro `await`). | |
+| `isOnline(source): boolean` | Se o jogador está conectado. | |
+| `progressFor(source, { label, duration, anim?, scenario?, face?, allowVehicle?, canCancel?, freeze?, disable?, minRatio? }): Promise<boolean>` | Uma ação cronometrada que o servidor confere: a barra do ai-lib no cliente do jogador, true só quando terminou lá e passou tempo suficiente aqui. | `progressFor` (aguarda) |
+| `minigameFor(source, { game, difficulty?, rounds?, keys?, pins?, picks?, minMs? }): Promise<"won" \| "lost" \| "broken">` | Um skill check ou lockpick de que um fluxo do servidor precisa; uma vitória antes de `minMs` conta como derrota. | `minigameFor` (aguarda) |
+| `new PendingActions({ minRatio? })`: `start(source, data, ms)`, `take(source, token)`, `peek`, `cancel` | Diálogos que o servidor aguarda: um token, liberado quando o jogador sai. | |
+
+```ts title="TypeScript"
+onClientCallback(
+  "repair",
+  { args: oneArg(readId), guards: [hasCharacter()], lock: true },
+  async (source, netId) => {
+    if (!inventory.hasItem(source, "repairkit")) return fail("NO_KIT");
+    if (!(await progressFor(source, { label: t("REPAIRING"), duration: 8000 })))
+      return fail("CANCELLED");
+    inventory.removeItem(source, "repairkit");
+    return { ok: true };
+  },
+);
+```
+
+```lua title="Lua"
+aiLib.onClientCallback('repair', function(source, netId)
+  if not aiLib.inventory.hasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+  if not aiLib.progressFor(source, { label = 'Repairing', duration = 8000 }) then
+    return aiLib.fail('CANCELLED')
+  end
+  aiLib.inventory.removeItem(source, 'repairkit', 1)
+  return { ok = true }
+end, { lock = true })
+```
+
+## Jogadores
+
+| Helper | O quê | Lua |
+| --- | --- | --- |
+| `onCharacter({ loaded(source, character), unloaded(source, charId, reason) })` | Carga e descarga de personagens; também repete os personagens carregados antes de um reinício. | `onCharacter` |
+| `online.sources()`, `online.character(source)`, `online.charId(source)`, `online.name(source, { fallback? })` | Jogadores carregados, espelhados dos eventos do ai-core. | `online.sources`, `character`, `name(src, fallback)` |
+| `online.jobs(source)`, `online.gangs(source)`, `online.jobGrade(source, job)`, `online.gangGrade(source, gang)` | Vínculos; um cargo é null quando não é membro. | mesmos nomes |
+| `online.dutyJob(source)`, `online.onDutyIn(source, jobs)`, `online.onDutyFor(job)`, `online.countOnDuty(jobs)` | Serviço. | `online.dutyJob` |
+| `online.jobMembers(job)`, `online.gangMembers(gang)` | Conjuntos de membros ao vivo (copie antes de um `await`). | |
+| `online.allows(source, rule: AccessRule): boolean` | Se o jogador pode usar um local. | |
+| `notify(source, text, kind = "info", duration?)` | Um cartão de notificação na tela daquele jogador. | `notify(source, text, kind?, duration?)` |
+| `playersNear(source, radius)`, `playersNearEntity(entity, radius)` | Jogadores por perto, do scope OneSync (até cerca de 424 m). | mesmos nomes |
+| `nearestPlayerTo(source, metres, filter?): number \| null` | O outro jogador mais próximo. | `nearestPlayerTo` |
+| `coordsOf(source)`, `entityCoords(entity)`, `isNear(source, point, metres)` | Posições. | |
+| `vehicleOf(source, { driver? }): number` | O veículo em que o jogador está sentado (0 a pé). | |
+| `new PlayerMap({ onDrop? })` | Um Map que se esvazia sozinho quando um jogador sai. | |
+| `new Cooldowns()`, `new KeyedCooldowns()`: `ready`, `start`, `take(key, ms)`, `left`, `clear` | Cooldowns por jogador, ou por qualquer chave (id de personagem, porta). | |
+| `new SourceLock()`: `run(source, busy, task)`, `release` | Uma ação por vez por jogador entre vários callbacks. | |
+| `new RateLimit(count, windowMs)`: `take(source)`, `release(source)` | Um limite de rajadas por jogador. | `RateLimit.new(count, windowMs)` |
+| `new KeyWatchers()`: `watch(source, key)`, `stop`, `of(key)`, `keyOf(source)` | Jogadores que recebem os deltas de uma chave (uma tela aberta). | |
+
+## Pelo AI Core
+
+| Helper | O quê | Lua |
+| --- | --- | --- |
+| `inventory.addItem(inv, item, count = 1, metadata?, slot?)`, `removeItem`, `getItemCount`, `hasItem`, `canCarryItem`, `getItems`, `clearInventory`, `registerStash`, `openInventory`, `registerUsableItem`, `getItemDefinition` | Itens pelo inventário ativo. | `inventory` (mesmos nomes) |
+| `vehicleKeys.give(source, vehicle, purpose = "temporary")`, `remove`, `has` | Chaves pelo sistema de chaves ativo. | `vehicleKeys` |
+| `phone.number`, `sourceOf`, `hasPhone`, `mail`, `message`, `notify` | O telefone do jogador. | `phone` |
+| `dispatch.alert(alert): boolean` | Um alerta policial pelo sistema de alertas ativo. | `dispatch.alert` |
+| `prison.jail(source, minutes, by = 0)`, `release`, `timeLeft` | Penas de prisão. | `prison` |
+| `world.getWeather()`, `setWeather(type)`, `getTime()`, `setTime(hour, minute = 0)`, `setBlackout(on)`, `freezeTime(on)` | Hora e clima do script de clima em execução. | `world` |
+| `medical.revive(source)`, `heal`, `isDead`, `provider()` | O script de morte em execução. | |
+| `appearance.get(charId): Promise<CharacterAppearance \| null>`, `provider()` | A aparência salva de um personagem. | `appearance.get` (aguarda), `provider` |
+| `money.transfer(from, to, amount, reason?, fee?): boolean` | Duas contas em uma transação. | |
+| `buckets.acquire(tag)`, `buckets.release(id)` | Routing buckets, liberados quando o recurso para. | |
+| `characters.setOfflinePosition(charId, { x, y, z, heading? })` | O ponto de surgimento de um personagem salvo. | |
+| `definitions.job(name)`, `definitions.gang(name)` | Definições de empregos e gangues, em cache até o painel mudá-las. | |
+| `isPrimeTime(job?): boolean` | Horário nobre de um emprego. | |
+| `aiLog(channel, message, options?)`, `aiLogChannels(channels)` | Logs pelo ai-core. | `aiLog` |
+
+## Veículos e entidades
+
+| Helper | O quê | Lua |
+| --- | --- | --- |
+| `spawnVehicle({ model, coords, asker \| type, plate?, fuel?, keysTo?, purpose?, driver?, seats?, props?, setup?, locked?, bucket?, persistent?, bags? }): Promise<number \| null>` | Um veículo do servidor com placa, combustível, chaves, aparência, assentos e bucket em uma chamada. | `spawnVehicle` (aguarda) |
+| `vehicleType(model, asker): Promise<string \| null>` | O tipo de spawn de um modelo, null quando o jogo não tem esse veículo. | |
+| `randomPlate(prefix?): string` | Uma placa no estilo do jogo. | |
+| `nearestVehicleTo(source, metres, filter?)`, `nearestVehicleAt(point, metres, filter?)` | O veículo mais próximo (percorre todos os veículos: limite a taxa da ação). | `nearestVehicleTo` |
+| `entityFromNet(netId, type?)`, `pedFromNet(netId)`, `vehicleFromNet(netId)` | Uma entidade viva a partir do net id de um cliente, ou 0. | `vehicleFromNet` |
+| `vehicleNearPlayer(source, netId, { metres = 5, driver? }): number` | O veículo, quando o jogador está perto dele. | `vehicleNearPlayer` |
+
+```ts title="TypeScript"
+const vehicle = await spawnVehicle({
+  model: "taxi",
+  coords: { x: 895.4, y: -179.3, z: 74.7, w: 238 },
+  asker: source,
+  keysTo: source,
+  purpose: "job",
+  driver: source,
+});
+```
+
+## Comandos, painel, dados
+
+| Helper | O quê | Lua |
+| --- | --- | --- |
+| `addCommand(name \| [name, ...aliases], { help, params, restricted }, (source, args, raw) => ...)` | Um comando: parâmetros validados, conferido por ACE, listado no painel. | `addCommand` |
+| `new AdminPanel(schema)`: `get`, `onChange`, `view`, `records`, `onAction`, `rule` | O armazenamento do painel de um script: schema, validação, salvamento, deltas. | |
+| `new DataFile(resource, name, log)` | Conteúdo do painel em `data/*.json` com escritas atômicas. | |
+| `createDatabaseTables(resource, file): Promise<void>` | Instala `sql/main.sql`. | |
+| `new WriteQueue(onError)`: `push(label, task)`, `idle()` | Escritas no banco de dados uma após a outra. | |
+| `new AreaStream({ event, view, cellSize?, range?, chunk?, alsoTo?, extra? })` | Objetos do mundo transmitidos aos jogadores em volta: um snapshot, depois só as mudanças. | |
+| `EntityState`, `PlayerState`, `GlobalKey`, `GlobalGroup` (com `set`) | State bags; as classes do servidor escrevem. | |
+
+```ts title="TypeScript"
+addCommand(
+  "heal",
+  {
+    help: t("CMD_HEAL"),
+    params: [{ name: "id", type: "playerId", optional: true }],
+    restricted: true,
+  },
+  (source, args) => medical.heal(args.id ?? source),
+);
+```

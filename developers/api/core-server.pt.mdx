@@ -1,0 +1,286 @@
+---
+title: Exports de servidor do ai-core
+description: Todo export de servidor do ai-core - assinatura e o que faz, agrupados por área.
+icon: Server
+---
+
+Tipados como `AiCoreServerExports` em `@aicore-fivem/shared` (`exports.ts`). Em TypeScript pegue um handle por arquivo; em Lua chame `exports['ai-core']` diretamente.
+
+```ts title="TypeScript"
+import { resourceExport } from "@aicore-fivem/lib/server";
+const core = resourceExport("ai-core");
+```
+
+Tipos usados abaixo: `CharacterInfo`, `AiPlayerData`, `JobMembership` (`{ job, grade }`), `GangMembership` (`{ gang, grade }`), `InventoryRef` (o id de servidor de um jogador ou o id de outro inventário: nome de stash, placa), `KeyPurpose` (`purchase`, `garage`, `job`, `rental`, `temporary`), todos em `@aicore-fivem/shared`.
+
+## Personagens e jogadores
+
+| Export | O quê |
+| --- | --- |
+| `GetPlayerData(src: number): AiPlayerData \| null` | Tudo o que o ai-core guarda de um jogador carregado: personagem, dinheiro, empregos, serviço, gangues, metadados. |
+| `GetCharacter(src: number): CharacterInfo \| null` | O personagem carregado (id, citizenid, nomes, data de nascimento, sexo, nacionalidade). |
+| `GetSourceByCharId(charId: number): number \| null` | Id de servidor do jogador que usa esse personagem. |
+| `GetSourceByCitizenId(citizenid: string): number \| null` | O mesmo pelo citizen id. |
+| `GetLoadedSources(): number[]` | Ids de servidor de todos os jogadores com um personagem carregado. |
+| `GetFivemId(src: number): string \| null` | O identificador FiveM do jogador. |
+| `SwitchCharacter(src: number): boolean` | Manda o jogador de volta para a tela de personagens. |
+| `SetOfflinePosition(charId: number, position: { x, y, z, heading? }): boolean` | Move o ponto de surgimento de um personagem salvo (não carregado); false enquanto ele está carregado. |
+| `GetPlayersInScope(source: number): number[]` | Jogadores no scope OneSync de um jogador (cerca de 424 m). |
+
+```ts title="TypeScript"
+const character = core.GetCharacter(source);
+if (character) console.log(character.firstname, character.lastname);
+```
+
+```lua title="Lua"
+local character = exports['ai-core']:GetCharacter(source)
+if character then print(character.firstname, character.lastname) end
+```
+
+## Dinheiro
+
+As contas são as da lista Accounts do painel (`cash`, `bank` por padrão). `reason` vai para o extrato.
+
+| Export | O quê |
+| --- | --- |
+| `GetMoney(src: number, account: string): number \| null` | O saldo de um jogador. |
+| `AddMoney(src: number, account: string, amount: number, reason?: string): boolean` | Adiciona dinheiro. |
+| `RemoveMoney(src: number, account: string, amount: number, reason?: string): boolean` | Tira dinheiro; false quando a conta não pode pagar. |
+| `SetMoney(src: number, account: string, amount: number, reason?: string): boolean` | Define um saldo. |
+| `GetSharedMoney(ownerType: "job" \| "gang", ownerId: string, account: string): number \| null` | A conta compartilhada de um emprego ou gangue. |
+| `AddSharedMoney(ownerType, ownerId, account, amount: number, reason?: string): boolean` | Adiciona a uma conta compartilhada. |
+| `RemoveSharedMoney(ownerType, ownerId, account, amount: number, reason?: string): boolean` | Tira de uma conta compartilhada. |
+| `TransferMoney(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean` | Move dinheiro entre duas contas em uma transação com as duas linhas do extrato; `from` também paga `fee`. |
+| `GetAccountTypes(): Record<string, AccountTypeDefinition>` | A lista de contas (`label`, `start`, `allowNegative`). |
+
+`MoneyRef` é `{ source, account }` para um jogador carregado ou `{ owner: "job" \| "gang", id, account }` para uma conta compartilhada.
+
+```ts title="TypeScript"
+if (core.RemoveMoney(source, "bank", 500, "fine")) {
+  core.AddSharedMoney("job", "police", "bank", 500, "fine");
+}
+```
+
+```lua title="Lua"
+if exports['ai-core']:RemoveMoney(source, 'bank', 500, 'fine') then
+  exports['ai-core']:AddSharedMoney('job', 'police', 'bank', 500, 'fine')
+end
+```
+
+## Empregos e gangues
+
+Um personagem pode ter vários empregos e gangues, com no máximo um emprego em serviço e uma gangue ativa.
+
+| Export | O quê |
+| --- | --- |
+| `GetJobs(src: number): JobMembership[] \| null` | Todos os empregos. |
+| `GetCurrentJob(src: number): JobMembership \| null` | O emprego que os outros scripts veem como "o" emprego: em serviço, senão o último em serviço, senão o primeiro. |
+| `GetDutyJob(src: number): string \| null` | O emprego em que o jogador está em serviço. |
+| `SetDuty(src: number, job: string \| null): boolean` | Coloca o jogador em serviço em um emprego, ou fora de serviço (`null`). |
+| `SetJob(src: number, job: string, grade: number): boolean` | Adiciona um emprego ou muda o cargo. |
+| `RemoveJob(src: number, job: string): boolean` | Remove um emprego. |
+| `GetOnDutyCount(job: string): number` | Quantos jogadores estão em serviço em um emprego. |
+| `IsPrimeTime(job?: string): boolean` | Horário nobre de um emprego (as horas do tgiann-policealert enquanto ele roda, senão as do painel). |
+| `GetGangs(src: number): GangMembership[] \| null` | Todas as gangues. |
+| `GetActiveGang(src: number): string \| null` | A gangue ativa. |
+| `SetGang(src: number, gang: string, grade: number): boolean` | Adiciona uma gangue ou muda o cargo. |
+| `RemoveGang(src: number, gang: string): boolean` | Remove uma gangue. |
+| `SetActiveGang(src: number, gang: string \| null): boolean` | Escolhe a gangue ativa. |
+| `GetJobDefinitions(): Record<string, JobDefinition>` | Todas as definições de empregos (uma cópia: para leituras raras). |
+| `GetJobDefinition(job: string): JobDefinition \| null` | Um emprego: `label`, `type`, `defaultDuty`, `listed?`, `grades` (`label`, `salary`, `boss`). |
+| `GetGangDefinitions(): Record<string, GangDefinition>` | Todas as definições de gangues. |
+| `GetGangDefinition(gang: string): GangDefinition \| null` | Uma gangue: `label`, `grades`. |
+
+```ts title="TypeScript"
+if (core.GetDutyJob(source) === "police") {
+  const officers = core.GetOnDutyCount("police");
+}
+```
+
+```lua title="Lua"
+if exports['ai-core']:GetDutyJob(source) == 'police' then
+  local officers = exports['ai-core']:GetOnDutyCount('police')
+end
+```
+
+## Metadados e configurações do servidor
+
+| Export | O quê |
+| --- | --- |
+| `GetMeta(src: number, key: string): unknown` | Um valor da bolsa de metadados do personagem. |
+| `SetMeta(src: number, key: string, value: unknown): boolean` | Define um valor de metadados. |
+| `GetBranding(): Branding` | O nome, subtítulo, slogans e fundo do servidor, das configurações General do painel. |
+| `GetUpdates(): UpdateInfo[]` | Scripts com uma release no GitHub mais nova que a versão em execução. |
+
+## Itens
+
+A camada de inventário do ai-core: o inventário ativo responde (false, 0 ou vazio enquanto nenhum roda).
+
+| Export | O quê |
+| --- | --- |
+| `AddItem(inv: InventoryRef, item: string, count?: number, metadata?: ItemMetadata, slot?: number): boolean` | Adiciona itens. |
+| `RemoveItem(inv: InventoryRef, item: string, count?: number, metadata?: ItemMetadata, slot?: number): boolean` | Remove itens. |
+| `GetItemCount(inv: InventoryRef, item: string, metadata?: ItemMetadata): number` | Quantos de um item. |
+| `HasItem(inv: InventoryRef, item: string, count?: number): boolean` | Se o inventário tem pelo menos `count`. |
+| `CanCarryItem(inv: InventoryRef, item: string, count?: number, metadata?: ItemMetadata): boolean` | Se os itens cabem. |
+| `GetItems(inv: InventoryRef): InventoryStack[]` | Cada pilha (`name`, `label`, `count`, `slot`, `metadata`). |
+| `ClearInventory(inv: InventoryRef): void` | Esvazia um inventário. |
+| `RegisterStash(name: string, label: string, slots: number, maxWeight: number, jobs?: string[]): void` | Um stash; guardado e registrado de novo em todo inventário que fica ativo. |
+| `OpenInventory(source: number, inv: InventoryRef): boolean` | Abre um stash ou outro inventário na tela do jogador. |
+| `RegisterUsableItem(name: string, handler: UsableItemHandler): void` | `handler(source, item)` roda no uso; retornar false mantém o item. Mantido mesmo quando o inventário reinicia. |
+| `GetItemDefinition(name: string): ItemDefinition \| null` | Um item (`name`, `label`, `weight`, `unique`, `close`, `description`, `image?`). |
+| `GetItemDefinitions(): Record<string, ItemDefinition>` | Todos os itens. |
+| `UseItem(source: number, name: string, item?: unknown): unknown` | Roda o handler registrado (a ponte o chama). |
+| `IsUsableItem(name: string): boolean` | Se há um handler registrado. |
+
+```ts title="TypeScript"
+core.RegisterUsableItem("bandage", (source, item) => {
+  // heal, then let the inventory take the item
+});
+if (core.CanCarryItem(source, "water", 2)) core.AddItem(source, "water", 2);
+```
+
+```lua title="Lua"
+exports['ai-core']:RegisterUsableItem('bandage', function(source, item)
+  -- heal, then let the inventory take the item
+end)
+if exports['ai-core']:CanCarryItem(source, 'water', 2) then
+  exports['ai-core']:AddItem(source, 'water', 2)
+end
+```
+
+## Chaves de veículos
+
+Um veículo é um handle de entidade do servidor ou uma placa; `purpose` é `temporary` por padrão.
+
+| Export | O quê |
+| --- | --- |
+| `GiveVehicleKeys(source: number, vehicle: number \| string, purpose?: KeyPurpose): void` | Dá as chaves pelo sistema de chaves ativo. |
+| `RemoveVehicleKeys(source: number, vehicle: number \| string): void` | Tira as chaves. |
+| `HasVehicleKeys(source: number, vehicle: number \| string): boolean` | Se o jogador tem as chaves. |
+
+```lua title="Lua"
+exports['ai-core']:GiveVehicleKeys(source, 'AB12CDE', 'rental')
+```
+
+## Médico
+
+| Export | O quê |
+| --- | --- |
+| `GetMedicalSystem(): string \| null` | O script de morte para o qual o ai-core encaminha. |
+| `RevivePlayer(source: number): boolean` | Levanta um jogador caído onde ele está; false quando não está caído ou nenhum script de morte roda. |
+| `HealPlayer(source: number): boolean` | Vida cheia para um jogador que não está caído. |
+| `IsPlayerDead(source: number): boolean` | Se o jogador está caído. |
+
+## Aparência
+
+| Export | O quê |
+| --- | --- |
+| `GetAppearanceSystem(): string \| null` | O script de roupas de onde o ai-core lê as aparências. |
+| `GetCharacterAppearance(charId: number, done: (look: CharacterAppearance \| null) => void): void` | A aparência salva de um personagem (carregado ou não); `done` recebe `{ model, data }` ou null. |
+
+```lua title="Lua"
+exports['ai-core']:GetCharacterAppearance(charId, function(look)
+  if look then TriggerClientEvent('myscript:dress', source, look) end
+end)
+```
+
+## Telefone
+
+O script de telefone que estiver rodando responde (nenhum: null ou false).
+
+| Export | O quê |
+| --- | --- |
+| `GetPhoneNumber(source: number): string \| null` | O número do jogador. |
+| `GetSourceByPhone(number: string): number \| null` | O jogador com esse número. |
+| `HasPhone(source: number): boolean` | Se o jogador tem um telefone. |
+| `SendPhoneMail(to: number \| string, mail: PhoneMail): boolean` | Um e-mail (`sender`, `subject`, `message`) para um jogador ou número. |
+| `SendPhoneMessage(from: string, to: number \| string, text: string): boolean` | Uma mensagem de texto. |
+| `PhoneNotify(source: number, notification: PhoneNotification): boolean` | Uma notificação do telefone (`title`, `message`, `app?`). |
+
+## Despacho
+
+| Export | O quê |
+| --- | --- |
+| `SendDispatchAlert(alert: DispatchAlert): boolean` | Mostra um alerta aos membros em serviço de `jobs` pelo sistema de alertas ativo; false quando nenhum roda. |
+
+`DispatchAlert`: `title`, e os opcionais `code`, `message`, `coords`, `jobs`, `source` (o suspeito), `blip` (`sprite`, `color?`, `scale?`), `duration` (segundos), `icon`, `priority` (`normal` ou `high`). Os textos já vêm traduzidos.
+
+```ts title="TypeScript"
+core.SendDispatchAlert({
+  code: "10-90",
+  title: "Store robbery",
+  jobs: ["police"],
+  source,
+  priority: "high",
+});
+```
+
+```lua title="Lua"
+exports['ai-core']:SendDispatchAlert({
+  code = '10-90', title = 'Store robbery', jobs = { 'police' }, source = source, priority = 'high',
+})
+```
+
+## Prisão
+
+| Export | O quê |
+| --- | --- |
+| `JailPlayer(source: number, minutes: number, by?: number): boolean` | Prende um jogador pelo script de prisão em execução. |
+| `ReleasePlayer(source: number): boolean` | Solta um jogador. |
+| `GetJailTime(source: number): number` | Minutos restantes. |
+
+## Hora e clima
+
+O contrato do qb-weathersync do script de clima que estiver rodando (null ou false enquanto nenhum roda).
+
+| Export | O quê |
+| --- | --- |
+| `GetWeather(): string \| null` | O tipo de clima atual. |
+| `SetWeather(type: string): boolean` | Define o clima (`EXTRASUNNY`, `RAIN`...). |
+| `GetTime(): { hour, minute } \| null` | A hora do jogo. |
+| `SetTime(hour: number, minute?: number): boolean` | Define a hora do jogo. |
+| `SetBlackout(on: boolean): boolean` | Apagão ligado ou desligado. |
+| `FreezeTime(on: boolean): boolean` | Congela ou descongela o relógio. |
+
+## Routing buckets
+
+| Export | O quê |
+| --- | --- |
+| `AcquireBucket(tag: string): number` | Um routing bucket livre para o recurso que chama (sem população, lockdown estrito); liberado quando ele para. |
+| `ReleaseBucket(id: number): boolean` | Devolve um bucket (só o recurso que o pegou); tire os jogadores dele antes. |
+
+## Logs
+
+| Export | O quê |
+| --- | --- |
+| `Log(channel: string, message: string, options?: LogOptions): void` | Envia um log do recurso que chama a todo provedor ligado (Discord, Fivemanage, FiveM Stats, console). `options`: `level`, `source`, `target`, `metadata`. |
+| `LogChannels(channels: Record<string, LogChannel>): void` | Descreve os canais do recurso que chama (`dataset`, `active`); chame uma vez na inicialização. |
+
+```lua title="Lua"
+exports['ai-core']:Log('sales', 'Sold a car', { source = source, metadata = { price = 25000 } })
+```
+
+## Conexão
+
+| Export | O quê |
+| --- | --- |
+| `AddConnectionCheck(id: string, check: (source, identifiers) => string \| null \| undefined): void` | Uma verificação por que todo jogador passa ao conectar: retorne um texto de recusa, ou null para deixá-lo entrar. |
+| `RegisterReplacement(remove: string \| string[], keep?: string): void` | Declara que `keep` (padrão: quem chama) torna `remove` desnecessário: um aviso no console e entradas recusadas enquanto os dois rodam. |
+| `GetConflicts(): { keep, remove, running, from }[]` | Scripts instalados ao lado do que os substitui. |
+
+## Painel de administração e comandos
+
+| Export | O quê |
+| --- | --- |
+| `RegisterAdminPanel(resource: string): void` | Um recurso com painel se anuncia (o `AdminPanel` da lib faz isso). |
+| `AdminPanelChanged(delta: AdminDelta): void` | Um recurso com painel mudou um registro; o ai-core encaminha aos admins com o painel aberto. |
+| `RegisterCommands(resource: string, commands: CommandInfo[]): void` | O `addCommand` da lib lista os comandos de um recurso na aba Commands. |
+| `GetLookupValues(source: LookupSource): string[]` | Valores de uma lista de consulta (`item`, `job`, `gang`, `account`...) para a validação do painel. |
+| `RegisterExternalPanel(panel: { id?, label, icon?, description?, command?, url? }): void` | Lista a tela de configurações própria de outro script no painel principal (aberta por `command` ou por uma `url` incorporada). |
+
+```lua title="Lua"
+exports['ai-core']:RegisterExternalPanel({
+  label = 'My script', icon = 'gear', description = 'Its own settings', command = 'myscriptconfig',
+})
+```

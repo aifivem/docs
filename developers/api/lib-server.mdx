@@ -1,0 +1,138 @@
+---
+title: "Lib: server"
+description: "@aicore-fivem/lib/server - every server helper with its signature, and the Lua aiLib twin where one exists."
+icon: Server
+---
+
+```ts title="TypeScript"
+import { onClientCallback, inventory, online, fail } from "@aicore-fivem/lib/server";
+```
+
+The server entry also re-exports the `/fivem` helpers: see [Lib: shared and fivem](/docs/developers/api/lib-shared). The last column names the Lua twin on `aiLib` ([Lib for Lua](/docs/developers/api/lua)).
+
+## Client input
+
+Every client request goes through the gate: real player check, rate limit, guards, an argument parser, optionally one call at a time.
+
+| Helper | What | Lua |
+| --- | --- | --- |
+| `onClientCallback(name, handler, options?)` / `onClientCallback(name, { args, guards?, rate?, lock? }, handler)` | Answers `triggerServerCallback`; `args` turns raw values into checked ones (null refuses). | `onClientCallback` (options `rate`, `lock`, `ace`) |
+| `onClientEvent(name, handler, options?)` / `onClientEvent(name, { args, ... }, handler)` | A net event from a client, through the same gate. | `onClientEvent` |
+| `triggerClientCallback(name, source, args = [], timeoutMs?): Promise<unknown>` | Asks a client (`onServerCallback` there). | `triggerClientCallback` |
+| `isAdmin(ace?)`, `hasCharacter()`, `near(point \| (source) => point, metres)` | Guards for `guards: [...]`. | `isAdmin(source, ace?)` |
+| `eventSource(): number` | The player who sent the event (read before the first `await`). | |
+| `isOnline(source): boolean` | Whether the player is connected. | |
+| `progressFor(source, { label, duration, anim?, scenario?, face?, allowVehicle?, canCancel?, freeze?, disable?, minRatio? }): Promise<boolean>` | A timed action the server checks: ai-lib's bar on the player's client, true only when it ran out there and enough time passed here. | `progressFor` (waits) |
+| `minigameFor(source, { game, difficulty?, rounds?, keys?, pins?, picks?, minMs? }): Promise<"won" \| "lost" \| "broken">` | A skill check or lockpick a server flow needs; a win sooner than `minMs` counts as lost. | `minigameFor` (waits) |
+| `new PendingActions({ minRatio? })`: `start(source, data, ms)`, `take(source, token)`, `peek`, `cancel` | Dialogs the server waits for: a token, freed on drop. | |
+
+```ts title="TypeScript"
+onClientCallback(
+  "repair",
+  { args: oneArg(readId), guards: [hasCharacter()], lock: true },
+  async (source, netId) => {
+    if (!inventory.hasItem(source, "repairkit")) return fail("NO_KIT");
+    if (!(await progressFor(source, { label: t("REPAIRING"), duration: 8000 })))
+      return fail("CANCELLED");
+    inventory.removeItem(source, "repairkit");
+    return { ok: true };
+  },
+);
+```
+
+```lua title="Lua"
+aiLib.onClientCallback('repair', function(source, netId)
+  if not aiLib.inventory.hasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+  if not aiLib.progressFor(source, { label = 'Repairing', duration = 8000 }) then
+    return aiLib.fail('CANCELLED')
+  end
+  aiLib.inventory.removeItem(source, 'repairkit', 1)
+  return { ok = true }
+end, { lock = true })
+```
+
+## Players
+
+| Helper | What | Lua |
+| --- | --- | --- |
+| `onCharacter({ loaded(source, character), unloaded(source, charId, reason) })` | Character load and unload; also replays characters loaded before a restart. | `onCharacter` |
+| `online.sources()`, `online.character(source)`, `online.charId(source)`, `online.name(source, { fallback? })` | Loaded players, mirrored from ai-core's events. | `online.sources`, `character`, `name(src, fallback)` |
+| `online.jobs(source)`, `online.gangs(source)`, `online.jobGrade(source, job)`, `online.gangGrade(source, gang)` | Memberships; a grade is null when not a member. | same names |
+| `online.dutyJob(source)`, `online.onDutyIn(source, jobs)`, `online.onDutyFor(job)`, `online.countOnDuty(jobs)` | Duty. | `online.dutyJob` |
+| `online.jobMembers(job)`, `online.gangMembers(gang)` | Live member sets (copy before an `await`). | |
+| `online.allows(source, rule: AccessRule): boolean` | Whether the player may use a place. | |
+| `notify(source, text, kind = "info", duration?)` | A notification card on that player's screen. | `notify(source, text, kind?, duration?)` |
+| `playersNear(source, radius)`, `playersNearEntity(entity, radius)` | Players around, from the OneSync scope (up to about 424 m). | same names |
+| `nearestPlayerTo(source, metres, filter?): number \| null` | The closest other player. | `nearestPlayerTo` |
+| `coordsOf(source)`, `entityCoords(entity)`, `isNear(source, point, metres)` | Positions. | |
+| `vehicleOf(source, { driver? }): number` | The vehicle the player sits in (0 on foot). | |
+| `new PlayerMap({ onDrop? })` | A Map that empties itself when a player drops. | |
+| `new Cooldowns()`, `new KeyedCooldowns()`: `ready`, `start`, `take(key, ms)`, `left`, `clear` | Cooldowns per player, or per any key (character id, door). | |
+| `new SourceLock()`: `run(source, busy, task)`, `release` | One action at a time per player across several callbacks. | |
+| `new RateLimit(count, windowMs)`: `take(source)`, `release(source)` | A per-player burst limit. | `RateLimit.new(count, windowMs)` |
+| `new KeyWatchers()`: `watch(source, key)`, `stop`, `of(key)`, `keyOf(source)` | Players who get one key's deltas (an open screen). | |
+
+## Through AI Core
+
+| Helper | What | Lua |
+| --- | --- | --- |
+| `inventory.addItem(inv, item, count = 1, metadata?, slot?)`, `removeItem`, `getItemCount`, `hasItem`, `canCarryItem`, `getItems`, `clearInventory`, `registerStash`, `openInventory`, `registerUsableItem`, `getItemDefinition` | Items through the active inventory. | `inventory` (same names) |
+| `vehicleKeys.give(source, vehicle, purpose = "temporary")`, `remove`, `has` | Keys through the active key system. | `vehicleKeys` |
+| `phone.number`, `sourceOf`, `hasPhone`, `mail`, `message`, `notify` | The player's phone. | `phone` |
+| `dispatch.alert(alert): boolean` | A police alert through the active alert system. | `dispatch.alert` |
+| `prison.jail(source, minutes, by = 0)`, `release`, `timeLeft` | Jail sentences. | `prison` |
+| `world.getWeather()`, `setWeather(type)`, `getTime()`, `setTime(hour, minute = 0)`, `setBlackout(on)`, `freezeTime(on)` | Time and weather of the running weather script. | `world` |
+| `medical.revive(source)`, `heal`, `isDead`, `provider()` | The running death script. | |
+| `appearance.get(charId): Promise<CharacterAppearance \| null>`, `provider()` | A character's stored look. | `appearance.get` (waits), `provider` |
+| `money.transfer(from, to, amount, reason?, fee?): boolean` | Two accounts in one transaction. | |
+| `buckets.acquire(tag)`, `buckets.release(id)` | Routing buckets, freed when the resource stops. | |
+| `characters.setOfflinePosition(charId, { x, y, z, heading? })` | A stored character's spawn point. | |
+| `definitions.job(name)`, `definitions.gang(name)` | Job and gang definitions, cached until the panel changes them. | |
+| `isPrimeTime(job?): boolean` | Prime time of a job. | |
+| `aiLog(channel, message, options?)`, `aiLogChannels(channels)` | Logs through ai-core. | `aiLog` |
+
+## Vehicles and entities
+
+| Helper | What | Lua |
+| --- | --- | --- |
+| `spawnVehicle({ model, coords, asker \| type, plate?, fuel?, keysTo?, purpose?, driver?, seats?, props?, setup?, locked?, bucket?, persistent?, bags? }): Promise<number \| null>` | A server vehicle with plate, fuel, keys, look, seats and bucket in one call. | `spawnVehicle` (waits) |
+| `vehicleType(model, asker): Promise<string \| null>` | A model's spawn type, null when the game has no such vehicle. | |
+| `randomPlate(prefix?): string` | A game-like plate. | |
+| `nearestVehicleTo(source, metres, filter?)`, `nearestVehicleAt(point, metres, filter?)` | The closest vehicle (walks every vehicle: rate-limit the action). | `nearestVehicleTo` |
+| `entityFromNet(netId, type?)`, `pedFromNet(netId)`, `vehicleFromNet(netId)` | A live entity from a client's net id, or 0. | `vehicleFromNet` |
+| `vehicleNearPlayer(source, netId, { metres = 5, driver? }): number` | The vehicle, when the player is near it. | `vehicleNearPlayer` |
+
+```ts title="TypeScript"
+const vehicle = await spawnVehicle({
+  model: "taxi",
+  coords: { x: 895.4, y: -179.3, z: 74.7, w: 238 },
+  asker: source,
+  keysTo: source,
+  purpose: "job",
+  driver: source,
+});
+```
+
+## Commands, panel, data
+
+| Helper | What | Lua |
+| --- | --- | --- |
+| `addCommand(name \| [name, ...aliases], { help, params, restricted }, (source, args, raw) => ...)` | A command: parsed params, ACE checked, listed in the panel. | `addCommand` |
+| `new AdminPanel(schema)`: `get`, `onChange`, `view`, `records`, `onAction`, `rule` | A script's panel store: schema, validation, save, deltas. | |
+| `new DataFile(resource, name, log)` | Panel content in `data/*.json` with atomic writes. | |
+| `createDatabaseTables(resource, file): Promise<void>` | Installs `sql/main.sql`. | |
+| `new WriteQueue(onError)`: `push(label, task)`, `idle()` | Database writes one after another. | |
+| `new AreaStream({ event, view, cellSize?, range?, chunk?, alsoTo?, extra? })` | World objects streamed to the players around them: a snapshot, then only changes. | |
+| `EntityState`, `PlayerState`, `GlobalKey`, `GlobalGroup` (with `set`) | State bags; the server classes write. | |
+
+```ts title="TypeScript"
+addCommand(
+  "heal",
+  {
+    help: t("CMD_HEAL"),
+    params: [{ name: "id", type: "playerId", optional: true }],
+    restricted: true,
+  },
+  (source, args) => medical.heal(args.id ?? source),
+);
+```

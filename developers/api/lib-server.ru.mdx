@@ -1,0 +1,138 @@
+---
+title: "Библиотека: сервер"
+description: "@aicore-fivem/lib/server - каждая серверная функция с сигнатурой и её аналог в Lua aiLib, если он есть."
+icon: Server
+---
+
+```ts title="TypeScript"
+import { onClientCallback, inventory, online, fail } from "@aicore-fivem/lib/server";
+```
+
+Серверный вход также реэкспортирует функции `/fivem`: см. [Библиотека: shared и fivem](/ru/docs/developers/api/lib-shared). Последний столбец называет аналог в `aiLib` ([Библиотека для Lua](/ru/docs/developers/api/lua)).
+
+## Ввод от клиента
+
+Каждый запрос клиента проходит через шлюз: проверка настоящего игрока, лимит частоты, условия доступа, парсер аргументов, при необходимости один вызов за раз.
+
+| Функция | Что | Lua |
+| --- | --- | --- |
+| `onClientCallback(name, handler, options?)` / `onClientCallback(name, { args, guards?, rate?, lock? }, handler)` | Отвечает на `triggerServerCallback`; `args` превращает сырые значения в проверенные (null отказывает). | `onClientCallback` (опции `rate`, `lock`, `ace`) |
+| `onClientEvent(name, handler, options?)` / `onClientEvent(name, { args, ... }, handler)` | Сетевое событие от клиента через тот же шлюз. | `onClientEvent` |
+| `triggerClientCallback(name, source, args = [], timeoutMs?): Promise<unknown>` | Спрашивает клиента (там `onServerCallback`). | `triggerClientCallback` |
+| `isAdmin(ace?)`, `hasCharacter()`, `near(point \| (source) => point, metres)` | Условия для `guards: [...]`. | `isAdmin(source, ace?)` |
+| `eventSource(): number` | Игрок, отправивший событие (читайте до первого `await`). | |
+| `isOnline(source): boolean` | Подключён ли игрок. | |
+| `progressFor(source, { label, duration, anim?, scenario?, face?, allowVehicle?, canCancel?, freeze?, disable?, minRatio? }): Promise<boolean>` | Действие с таймером, которое проверяет сервер: полоса ai-lib на клиенте игрока, true только если она там дошла до конца и здесь прошло достаточно времени. | `progressFor` (ждёт) |
+| `minigameFor(source, { game, difficulty?, rounds?, keys?, pins?, picks?, minMs? }): Promise<"won" \| "lost" \| "broken">` | Проверка навыка или отмычка для серверного сценария; победа быстрее `minMs` считается поражением. | `minigameFor` (ждёт) |
+| `new PendingActions({ minRatio? })`: `start(source, data, ms)`, `take(source, token)`, `peek`, `cancel` | Диалоги, ответа на которые ждёт сервер: токен, освобождается при выходе. | |
+
+```ts title="TypeScript"
+onClientCallback(
+  "repair",
+  { args: oneArg(readId), guards: [hasCharacter()], lock: true },
+  async (source, netId) => {
+    if (!inventory.hasItem(source, "repairkit")) return fail("NO_KIT");
+    if (!(await progressFor(source, { label: t("REPAIRING"), duration: 8000 })))
+      return fail("CANCELLED");
+    inventory.removeItem(source, "repairkit");
+    return { ok: true };
+  },
+);
+```
+
+```lua title="Lua"
+aiLib.onClientCallback('repair', function(source, netId)
+  if not aiLib.inventory.hasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+  if not aiLib.progressFor(source, { label = 'Repairing', duration = 8000 }) then
+    return aiLib.fail('CANCELLED')
+  end
+  aiLib.inventory.removeItem(source, 'repairkit', 1)
+  return { ok = true }
+end, { lock = true })
+```
+
+## Игроки
+
+| Функция | Что | Lua |
+| --- | --- | --- |
+| `onCharacter({ loaded(source, character), unloaded(source, charId, reason) })` | Загрузка и выгрузка персонажа; также повторяет персонажей, загруженных до перезапуска. | `onCharacter` |
+| `online.sources()`, `online.character(source)`, `online.charId(source)`, `online.name(source, { fallback? })` | Загруженные игроки, зеркало событий ai-core. | `online.sources`, `character`, `name(src, fallback)` |
+| `online.jobs(source)`, `online.gangs(source)`, `online.jobGrade(source, job)`, `online.gangGrade(source, gang)` | Членство; ранг равен null, если игрок не состоит. | те же имена |
+| `online.dutyJob(source)`, `online.onDutyIn(source, jobs)`, `online.onDutyFor(job)`, `online.countOnDuty(jobs)` | Смена. | `online.dutyJob` |
+| `online.jobMembers(job)`, `online.gangMembers(gang)` | Живые множества участников (скопируйте перед `await`). | |
+| `online.allows(source, rule: AccessRule): boolean` | Может ли игрок пользоваться местом. | |
+| `notify(source, text, kind = "info", duration?)` | Карточка уведомления на экране этого игрока. | `notify(source, text, kind?, duration?)` |
+| `playersNear(source, radius)`, `playersNearEntity(entity, radius)` | Игроки рядом, из зоны OneSync (до примерно 424 м). | те же имена |
+| `nearestPlayerTo(source, metres, filter?): number \| null` | Ближайший другой игрок. | `nearestPlayerTo` |
+| `coordsOf(source)`, `entityCoords(entity)`, `isNear(source, point, metres)` | Позиции. | |
+| `vehicleOf(source, { driver? }): number` | Транспорт, в котором сидит игрок (0 пешком). | |
+| `new PlayerMap({ onDrop? })` | Map, который сам очищается при выходе игрока. | |
+| `new Cooldowns()`, `new KeyedCooldowns()`: `ready`, `start`, `take(key, ms)`, `left`, `clear` | Кулдауны на игрока или на любой ключ (id персонажа, дверь). | |
+| `new SourceLock()`: `run(source, busy, task)`, `release` | Одно действие за раз на игрока в нескольких callback. | |
+| `new RateLimit(count, windowMs)`: `take(source)`, `release(source)` | Лимит всплесков на игрока. | `RateLimit.new(count, windowMs)` |
+| `new KeyWatchers()`: `watch(source, key)`, `stop`, `of(key)`, `keyOf(source)` | Игроки, которые получают дельты одного ключа (открытый экран). | |
+
+## Через AI Core
+
+| Функция | Что | Lua |
+| --- | --- | --- |
+| `inventory.addItem(inv, item, count = 1, metadata?, slot?)`, `removeItem`, `getItemCount`, `hasItem`, `canCarryItem`, `getItems`, `clearInventory`, `registerStash`, `openInventory`, `registerUsableItem`, `getItemDefinition` | Предметы через активный инвентарь. | `inventory` (те же имена) |
+| `vehicleKeys.give(source, vehicle, purpose = "temporary")`, `remove`, `has` | Ключи через активную систему ключей. | `vehicleKeys` |
+| `phone.number`, `sourceOf`, `hasPhone`, `mail`, `message`, `notify` | Телефон игрока. | `phone` |
+| `dispatch.alert(alert): boolean` | Полицейское оповещение через активную систему оповещений. | `dispatch.alert` |
+| `prison.jail(source, minutes, by = 0)`, `release`, `timeLeft` | Тюремные сроки. | `prison` |
+| `world.getWeather()`, `setWeather(type)`, `getTime()`, `setTime(hour, minute = 0)`, `setBlackout(on)`, `freezeTime(on)` | Время и погода запущенного скрипта погоды. | `world` |
+| `medical.revive(source)`, `heal`, `isDead`, `provider()` | Запущенный скрипт смерти. | |
+| `appearance.get(charId): Promise<CharacterAppearance \| null>`, `provider()` | Сохранённая внешность персонажа. | `appearance.get` (ждёт), `provider` |
+| `money.transfer(from, to, amount, reason?, fee?): boolean` | Два счёта в одной транзакции. | |
+| `buckets.acquire(tag)`, `buckets.release(id)` | Бакеты маршрутизации, освобождаются при остановке ресурса. | |
+| `characters.setOfflinePosition(charId, { x, y, z, heading? })` | Точка появления сохранённого персонажа. | |
+| `definitions.job(name)`, `definitions.gang(name)` | Определения работ и банд, в кэше, пока панель их не изменит. | |
+| `isPrimeTime(job?): boolean` | Прайм-тайм работы. | |
+| `aiLog(channel, message, options?)`, `aiLogChannels(channels)` | Логи через ai-core. | `aiLog` |
+
+## Транспорт и сущности
+
+| Функция | Что | Lua |
+| --- | --- | --- |
+| `spawnVehicle({ model, coords, asker \| type, plate?, fuel?, keysTo?, purpose?, driver?, seats?, props?, setup?, locked?, bucket?, persistent?, bags? }): Promise<number \| null>` | Серверный транспорт с номером, топливом, ключами, внешним видом, местами и бакетом одним вызовом. | `spawnVehicle` (ждёт) |
+| `vehicleType(model, asker): Promise<string \| null>` | Тип спавна модели, null, если в игре нет такого транспорта. | |
+| `randomPlate(prefix?): string` | Номер как в игре. | |
+| `nearestVehicleTo(source, metres, filter?)`, `nearestVehicleAt(point, metres, filter?)` | Ближайший транспорт (перебирает весь транспорт: ограничьте частоту действия). | `nearestVehicleTo` |
+| `entityFromNet(netId, type?)`, `pedFromNet(netId)`, `vehicleFromNet(netId)` | Живая сущность по net id от клиента или 0. | `vehicleFromNet` |
+| `vehicleNearPlayer(source, netId, { metres = 5, driver? }): number` | Транспорт, если игрок рядом с ним. | `vehicleNearPlayer` |
+
+```ts title="TypeScript"
+const vehicle = await spawnVehicle({
+  model: "taxi",
+  coords: { x: 895.4, y: -179.3, z: 74.7, w: 238 },
+  asker: source,
+  keysTo: source,
+  purpose: "job",
+  driver: source,
+});
+```
+
+## Команды, панель, данные
+
+| Функция | Что | Lua |
+| --- | --- | --- |
+| `addCommand(name \| [name, ...aliases], { help, params, restricted }, (source, args, raw) => ...)` | Команда: разобранные параметры, проверка ACE, видна в панели. | `addCommand` |
+| `new AdminPanel(schema)`: `get`, `onChange`, `view`, `records`, `onAction`, `rule` | Хранилище панели скрипта: схема, проверка, сохранение, дельты. | |
+| `new DataFile(resource, name, log)` | Содержимое панели в `data/*.json` с атомарной записью. | |
+| `createDatabaseTables(resource, file): Promise<void>` | Устанавливает `sql/main.sql`. | |
+| `new WriteQueue(onError)`: `push(label, task)`, `idle()` | Записи в базу одна за другой. | |
+| `new AreaStream({ event, view, cellSize?, range?, chunk?, alsoTo?, extra? })` | Объекты мира, передаваемые игрокам рядом: снимок, затем только изменения. | |
+| `EntityState`, `PlayerState`, `GlobalKey`, `GlobalGroup` (с `set`) | State bag; серверные классы пишут. | |
+
+```ts title="TypeScript"
+addCommand(
+  "heal",
+  {
+    help: t("CMD_HEAL"),
+    params: [{ name: "id", type: "playerId", optional: true }],
+    restricted: true,
+  },
+  (source, args) => medical.heal(args.id ?? source),
+);
+```

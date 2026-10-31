@@ -1,0 +1,138 @@
+---
+title: "Lib: sunucu"
+description: "@aicore-fivem/lib/server - imzasıyla her sunucu yardımcısı ve varsa Lua aiLib karşılığı."
+icon: Server
+---
+
+```ts title="TypeScript"
+import { onClientCallback, inventory, online, fail } from "@aicore-fivem/lib/server";
+```
+
+Sunucu girişi `/fivem` yardımcılarını da yeniden dışa aktarır: bkz. [Lib: shared ve fivem](/tr/docs/developers/api/lib-shared). Son sütun `aiLib` üzerindeki Lua karşılığını verir ([Lua için lib](/tr/docs/developers/api/lua)).
+
+## Client girdisi
+
+Her client isteği kapıdan geçer: gerçek oyuncu kontrolü, hız sınırı, koruyucular, bir argüman ayrıştırıcı, isteğe bağlı olarak aynı anda tek çağrı.
+
+| Yardımcı | Ne | Lua |
+| --- | --- | --- |
+| `onClientCallback(name, handler, options?)` / `onClientCallback(name, { args, guards?, rate?, lock? }, handler)` | `triggerServerCallback`’i cevaplar; `args` ham değerleri kontrol edilmiş değerlere çevirir (null reddeder). | `onClientCallback` (seçenekler `rate`, `lock`, `ace`) |
+| `onClientEvent(name, handler, options?)` / `onClientEvent(name, { args, ... }, handler)` | Bir client’tan net olayı, aynı kapıdan. | `onClientEvent` |
+| `triggerClientCallback(name, source, args = [], timeoutMs?): Promise<unknown>` | Bir client’a sorar (orada `onServerCallback`). | `triggerClientCallback` |
+| `isAdmin(ace?)`, `hasCharacter()`, `near(point \| (source) => point, metres)` | `guards: [...]` için koruyucular. | `isAdmin(source, ace?)` |
+| `eventSource(): number` | Olayı gönderen oyuncu (ilk `await`’ten önce oku). | |
+| `isOnline(source): boolean` | Oyuncu bağlı mı. | |
+| `progressFor(source, { label, duration, anim?, scenario?, face?, allowVehicle?, canCancel?, freeze?, disable?, minRatio? }): Promise<boolean>` | Sunucunun kontrol ettiği süreli eylem: oyuncunun client’ında ai-lib’in çubuğu; sadece orada bittiğinde ve burada yeterli süre geçtiğinde true. | `progressFor` (bekler) |
+| `minigameFor(source, { game, difficulty?, rounds?, keys?, pins?, picks?, minMs? }): Promise<"won" \| "lost" \| "broken">` | Sunucu akışının istediği beceri kontrolü ya da maymuncuk; `minMs`’ten erken bir kazanç kayıp sayılır. | `minigameFor` (bekler) |
+| `new PendingActions({ minRatio? })`: `start(source, data, ms)`, `take(source, token)`, `peek`, `cancel` | Sunucunun beklediği diyaloglar: bir token, oyuncu çıkınca temizlenir. | |
+
+```ts title="TypeScript"
+onClientCallback(
+  "repair",
+  { args: oneArg(readId), guards: [hasCharacter()], lock: true },
+  async (source, netId) => {
+    if (!inventory.hasItem(source, "repairkit")) return fail("NO_KIT");
+    if (!(await progressFor(source, { label: t("REPAIRING"), duration: 8000 })))
+      return fail("CANCELLED");
+    inventory.removeItem(source, "repairkit");
+    return { ok: true };
+  },
+);
+```
+
+```lua title="Lua"
+aiLib.onClientCallback('repair', function(source, netId)
+  if not aiLib.inventory.hasItem(source, 'repairkit') then return aiLib.fail('NO_KIT') end
+  if not aiLib.progressFor(source, { label = 'Repairing', duration = 8000 }) then
+    return aiLib.fail('CANCELLED')
+  end
+  aiLib.inventory.removeItem(source, 'repairkit', 1)
+  return { ok = true }
+end, { lock = true })
+```
+
+## Oyuncular
+
+| Yardımcı | Ne | Lua |
+| --- | --- | --- |
+| `onCharacter({ loaded(source, character), unloaded(source, charId, reason) })` | Karakter yükleme ve bırakma; yeniden başlatmadan önce yüklenmiş karakterleri de tekrar oynatır. | `onCharacter` |
+| `online.sources()`, `online.character(source)`, `online.charId(source)`, `online.name(source, { fallback? })` | Yüklü oyuncular, ai-core’un olaylarından aynalanır. | `online.sources`, `character`, `name(src, fallback)` |
+| `online.jobs(source)`, `online.gangs(source)`, `online.jobGrade(source, job)`, `online.gangGrade(source, gang)` | Üyelikler; üye değilse rütbe null. | aynı adlar |
+| `online.dutyJob(source)`, `online.onDutyIn(source, jobs)`, `online.onDutyFor(job)`, `online.countOnDuty(jobs)` | Mesai. | `online.dutyJob` |
+| `online.jobMembers(job)`, `online.gangMembers(gang)` | Canlı üye kümeleri (`await`’ten önce kopyala). | |
+| `online.allows(source, rule: AccessRule): boolean` | Oyuncu bir yeri kullanabilir mi. | |
+| `notify(source, text, kind = "info", duration?)` | O oyuncunun ekranında bir bildirim kartı. | `notify(source, text, kind?, duration?)` |
+| `playersNear(source, radius)`, `playersNearEntity(entity, radius)` | Çevredeki oyuncular, OneSync kapsamından (yaklaşık 424 m’ye kadar). | aynı adlar |
+| `nearestPlayerTo(source, metres, filter?): number \| null` | En yakın diğer oyuncu. | `nearestPlayerTo` |
+| `coordsOf(source)`, `entityCoords(entity)`, `isNear(source, point, metres)` | Konumlar. | |
+| `vehicleOf(source, { driver? }): number` | Oyuncunun oturduğu araç (yayayken 0). | |
+| `new PlayerMap({ onDrop? })` | Oyuncu çıkınca kendini boşaltan bir Map. | |
+| `new Cooldowns()`, `new KeyedCooldowns()`: `ready`, `start`, `take(key, ms)`, `left`, `clear` | Oyuncu başına ya da herhangi bir anahtara göre (karakter id’si, kapı) bekleme süreleri. | |
+| `new SourceLock()`: `run(source, busy, task)`, `release` | Birden çok callback boyunca oyuncu başına aynı anda tek eylem. | |
+| `new RateLimit(count, windowMs)`: `take(source)`, `release(source)` | Oyuncu başına patlama sınırı. | `RateLimit.new(count, windowMs)` |
+| `new KeyWatchers()`: `watch(source, key)`, `stop`, `of(key)`, `keyOf(source)` | Bir anahtarın değişikliklerini alan oyuncular (açık bir ekran). | |
+
+## AI Core üzerinden
+
+| Yardımcı | Ne | Lua |
+| --- | --- | --- |
+| `inventory.addItem(inv, item, count = 1, metadata?, slot?)`, `removeItem`, `getItemCount`, `hasItem`, `canCarryItem`, `getItems`, `clearInventory`, `registerStash`, `openInventory`, `registerUsableItem`, `getItemDefinition` | Aktif envanterle eşyalar. | `inventory` (aynı adlar) |
+| `vehicleKeys.give(source, vehicle, purpose = "temporary")`, `remove`, `has` | Aktif anahtar sistemiyle anahtarlar. | `vehicleKeys` |
+| `phone.number`, `sourceOf`, `hasPhone`, `mail`, `message`, `notify` | Oyuncunun telefonu. | `phone` |
+| `dispatch.alert(alert): boolean` | Aktif ihbar sistemiyle bir polis ihbarı. | `dispatch.alert` |
+| `prison.jail(source, minutes, by = 0)`, `release`, `timeLeft` | Hapis cezaları. | `prison` |
+| `world.getWeather()`, `setWeather(type)`, `getTime()`, `setTime(hour, minute = 0)`, `setBlackout(on)`, `freezeTime(on)` | Çalışan hava script’inin saati ve havası. | `world` |
+| `medical.revive(source)`, `heal`, `isDead`, `provider()` | Çalışan ölüm script’i. | |
+| `appearance.get(charId): Promise<CharacterAppearance \| null>`, `provider()` | Bir karakterin kayıtlı görünümü. | `appearance.get` (bekler), `provider` |
+| `money.transfer(from, to, amount, reason?, fee?): boolean` | Tek işlemde iki hesap. | |
+| `buckets.acquire(tag)`, `buckets.release(id)` | Routing bucket’lar, resource durunca serbest kalır. | |
+| `characters.setOfflinePosition(charId, { x, y, z, heading? })` | Kayıtlı bir karakterin doğma noktası. | |
+| `definitions.job(name)`, `definitions.gang(name)` | Meslek ve çete tanımları, panel değiştirene kadar önbellekte. | |
+| `isPrimeTime(job?): boolean` | Bir mesleğin yoğun saati. | |
+| `aiLog(channel, message, options?)`, `aiLogChannels(channels)` | ai-core üzerinden loglar. | `aiLog` |
+
+## Araçlar ve entity’ler
+
+| Yardımcı | Ne | Lua |
+| --- | --- | --- |
+| `spawnVehicle({ model, coords, asker \| type, plate?, fuel?, keysTo?, purpose?, driver?, seats?, props?, setup?, locked?, bucket?, persistent?, bags? }): Promise<number \| null>` | Plaka, yakıt, anahtar, görünüm, koltuklar ve bucket ile tek çağrıda bir sunucu aracı. | `spawnVehicle` (bekler) |
+| `vehicleType(model, asker): Promise<string \| null>` | Bir modelin doğma tipi; oyunda böyle bir araç yoksa null. | |
+| `randomPlate(prefix?): string` | Oyundakine benzer bir plaka. | |
+| `nearestVehicleTo(source, metres, filter?)`, `nearestVehicleAt(point, metres, filter?)` | En yakın araç (her aracı gezer: eylemi hız sınırına bağla). | `nearestVehicleTo` |
+| `entityFromNet(netId, type?)`, `pedFromNet(netId)`, `vehicleFromNet(netId)` | Bir client’ın net id’sinden canlı entity ya da 0. | `vehicleFromNet` |
+| `vehicleNearPlayer(source, netId, { metres = 5, driver? }): number` | Oyuncu yakınındaysa araç. | `vehicleNearPlayer` |
+
+```ts title="TypeScript"
+const vehicle = await spawnVehicle({
+  model: "taxi",
+  coords: { x: 895.4, y: -179.3, z: 74.7, w: 238 },
+  asker: source,
+  keysTo: source,
+  purpose: "job",
+  driver: source,
+});
+```
+
+## Komutlar, panel, veri
+
+| Yardımcı | Ne | Lua |
+| --- | --- | --- |
+| `addCommand(name \| [name, ...aliases], { help, params, restricted }, (source, args, raw) => ...)` | Bir komut: ayrıştırılmış parametreler, ACE kontrolü, panelde listelenir. | `addCommand` |
+| `new AdminPanel(schema)`: `get`, `onChange`, `view`, `records`, `onAction`, `rule` | Bir script’in panel deposu: şema, doğrulama, kayıt, değişiklikler. | |
+| `new DataFile(resource, name, log)` | `data/*.json` içindeki panel içeriği, atomik yazmalarla. | |
+| `createDatabaseTables(resource, file): Promise<void>` | `sql/main.sql`’i kurar. | |
+| `new WriteQueue(onError)`: `push(label, task)`, `idle()` | Veritabanı yazmaları sırayla. | |
+| `new AreaStream({ event, view, cellSize?, range?, chunk?, alsoTo?, extra? })` | Dünyadaki nesneler çevredeki oyunculara akar: bir anlık görüntü, sonra sadece değişenler. | |
+| `EntityState`, `PlayerState`, `GlobalKey`, `GlobalGroup` (`set` ile) | State bag’ler; sunucu sınıfları yazar. | |
+
+```ts title="TypeScript"
+addCommand(
+  "heal",
+  {
+    help: t("CMD_HEAL"),
+    params: [{ name: "id", type: "playerId", optional: true }],
+    restricted: true,
+  },
+  (source, args) => medical.heal(args.id ?? source),
+);
+```
