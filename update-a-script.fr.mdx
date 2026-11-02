@@ -1,0 +1,334 @@
+---
+title: Mettre à jour un script
+description: Passez un script ai-*, un package ou un script tiers à sa nouvelle version en gardant vos réglages, les données du panneau, les secrets, les textes et la base de données.
+icon: RefreshCw
+---
+
+Une mise à jour a deux moitiés : installer la nouvelle version exactement telle qu’elle est livrée, puis reporter dessus les modifications propres à votre serveur. Copier vos anciens fichiers par-dessus les nouveaux n’est jamais la bonne méthode : cela ramène l’ancien code, les anciennes clés et les anciens bugs, et la nouvelle version casse d’une façon difficile à trouver.
+
+Cette page s’adresse à deux lecteurs : vous, et l’agent de code IA (Claude Code, Codex, Cursor...) vers lequel vous la pointez. Les deux suivent la même procédure.
+
+## Demandez à votre IA
+
+Ouvrez le dossier de données de votre serveur dans votre agent de code et collez ceci, avec le périmètre rempli :
+
+```text
+Mets à jour des scripts de ce serveur AI Core en suivant https://aifivem.com/docs/update-a-script.md
+Si ce dossier contient .claude/skills/aicore-script-update/, lis son SKILL.md et ses references : même procédure.
+
+Périmètre : <chaque script ai-* et package obsolète | ai-inventory ai-garages | les scripts tiers dans C:\chemin\vers\nouvelles-versions>
+
+- Montre-moi d'abord la liste (nom, chemin, version actuelle -> nouvelle, notes de version qui demandent une action) et attends mon accord.
+- Sauvegarde chaque dossier avant d'y toucher, fichiers ignorés par git comme data/secrets.json compris.
+- Prends trois arbres par script : l'ancien upstream (la version que j'utilise, telle que livrée), le nôtre (le dossier actuel), le nouvel upstream.
+  Fusionne fichier par fichier avec ce modèle à trois voies. Ne copie jamais un ancien fichier par-dessus un nouveau.
+- Garde le contenu de panneau data/*.json, data/secrets.json, mes textes de locale et ma base de données.
+  N'affiche jamais un secret dans le chat et n'en committe jamais un.
+- Pas de SQL sans mon accord et une sauvegarde des tables concernées. security.cfg n'est jamais assoupli.
+- Prends les fichiers générés (dist/, fxmanifest.lua, resource/server/tables.ts, data/schemas/) de la nouvelle version
+  et régénère-les par le build ; ne les modifie jamais à la main.
+- Build, refresh, redémarre et lis le log de la console pour les erreurs, pas seulement "Started resource".
+- Ne committe et ne pousse rien sauf si je le demande.
+- Termine par un rapport par script, dans ma langue : changement de version, ce qui a changé en upstream, ce que tu as
+  reporté et où, ce qui a été abandonné (avec l'ancienne valeur), les nouvelles options laissées par défaut, la base de données,
+  les changements de cfg, le résultat build / redémarrage / log, ce qu'il faut tester en jeu et les décisions que je dois prendre.
+```
+
+<Callout>
+Un dossier serveur qui contient les fichiers du dépôt [aicore-server](https://github.com/aifivem/aicore-server) fournit cette procédure sous forme de skill de projet dans `.claude/skills/aicore-script-update/`. Claude Code le charge tout seul quand vous dites « mets à jour mes scripts » ou « une nouvelle version est sortie » ; demandez aux autres agents de lire son `SKILL.md` et `references/`. La recipe txAdmin ne copie que les fichiers cfg et les scripts : pour avoir le skill et les `tools/` utilisés plus bas, téléchargez les fichiers du dépôt dans votre dossier serveur comme dans [Installer à la main](/fr/docs/installation#installer-à-la-main), en gardant vos propres fichiers cfg.
+</Callout>
+
+## Ce qui reste à vous
+
+| Quoi | Où | Ce que la mise à jour en fait |
+| --- | --- | --- |
+| Réglages et contenu du panneau | `data/*.json` dans chaque script | Gardés. Convertis au nouveau format seulement quand la nouvelle version lit d’autres champs. |
+| Secrets | `data/secrets.json` (ignoré par git) | Restaurés depuis la sauvegarde sans y toucher. Jamais affichés, jamais committés. |
+| Vos textes | `locales/*.json`, le dossier `locales/` ou `languages/` d’un script tiers | Votre formulation reste pour chaque clé qui existe encore ; les nouvelles clés sont ajoutées dans votre langue ; les clés supprimées partent. |
+| Vos modifications de code | Tout fichier source que vous avez modifié | Écrites dans le code de la nouvelle version. Une modification qui n’a plus sa place est signalée. |
+| La base de données | Vos tables et vos lignes | Jamais supprimée. Les nouvelles tables et colonnes sont ajoutées au démarrage ; le reste attend votre accord. |
+| Réglages de sécurité | `security.cfg` | Jamais assouplis. Si une version ou un éditeur le demande, la mise à jour s’arrête et vous décidez. |
+
+## D’où vient la nouvelle version
+
+| Script | Nouvelle version | Ce que vous fournissez |
+| --- | --- | --- |
+| Les ressources `ai-*` de `resources/[ai]/` (ai-core, ai-lib, ai-mysql compris) | La release GitHub du dépôt indiqué dans son `package.json` (`"repository": "github:aifivem/<name>"`) | Rien |
+| Les packages `@aicore-fivem/*` de `packages/` | npm (`npm view @aicore-fivem/<pkg> version`) | Rien |
+| Toute autre ressource (en général dans `resources/[standalone]/`) | L’éditeur | Le nouveau dossier ou le zip |
+
+ai-core vérifie chaque script démarré qui a un dépôt GitHub (toutes les 6 heures par script) et écrit `<name> <current> is outdated: <latest> is out (<url>)` dans la console ; la même liste est sur le dashboard admin. Les vérifications de mise à jour et les scripts ignorés se règlent dans le [panneau d’administration](/fr/docs/admin-panel) sous **General** (`updates.check`, `updates.ignore` dans `data/settings.json` d’ai-core).
+
+## Le report à trois voies
+
+Chaque mise à jour compare trois versions de chaque fichier :
+
+- **Ancien upstream** : la version que votre serveur utilise, telle qu’elle a été livrée.
+- **Le nôtre** : le dossier tel qu’il est maintenant, modifications non committées comprises.
+- **Nouvel upstream** : la nouvelle version, telle qu’elle est livrée.
+
+| Ancien -> nôtre | Ancien -> nouveau | Résultat |
+| --- | --- | --- |
+| identique | modifié ou identique | prendre le nouveau |
+| modifié | identique | garder le nôtre |
+| modifié | modifié | `git merge-file -p ours old new`, puis chaque conflit est résolu en lisant les deux côtés ; le résultat suit la structure du nouveau fichier (clés renommées, sections déplacées, nouveaux commentaires et valeurs par défaut restent) |
+| absent de l’ancien, présent dans le nôtre | absent du nouveau | fichier propre au serveur : gardé s’il sert encore, sinon signalé |
+| présent dans l’ancien | absent du nouveau | supprimé ; si vous l’aviez modifié, le rapport dit ce qui a été perdu |
+
+`git merge-file` et `git diff --no-index <a> <b>` fonctionnent sur deux dossiers quelconques, sans dépôt. Retirez les `\r` avant de comparer (les fichiers Windows sont souvent en CRLF). Si l’ancien upstream est introuvable, le nôtre est comparé directement au nouveau : les valeurs isolées (coordonnées, prix, noms, textes, interrupteurs) sont celles du serveur, les changements larges dans le style de l’éditeur sont ceux de l’éditeur, et le rapport indique que l’ancienne version manquait.
+
+## Les règles sans exception
+
+1. **Ne copiez jamais un ancien fichier par-dessus un nouveau.** Un fichier modifié des deux côtés est reconstruit à partir du nouveau fichier, vos modifications écrites dans sa nouvelle structure.
+2. **L’état du serveur n’est jamais remplacé par les valeurs par défaut d’upstream** : `data/*.json`, `data/secrets.json`, vos fichiers et textes de locale, la base de données. Sauvegardez-les avant de toucher un dossier.
+3. **Pas de restes.** Les fichiers que la nouvelle version ne livre plus sont supprimés, sauf s’ils sont à vous (une locale, une image que vous avez ajoutée) et servent encore. Les options supprimées par la nouvelle version restent supprimées et figurent dans le rapport ; les nouvelles options gardent leur valeur par défaut, sauf si un ancien réglage y correspond clairement.
+4. **Les fichiers générés sont régénérés, jamais fusionnés** : `dist/`, `fxmanifest.lua`, `resource/server/tables.ts`, `data/schemas/*.schema.json`. Ne les modifiez jamais à la main.
+5. **Ne supprimez jamais `node_modules` à la main** ; `bun install` à la racine du serveur le répare.
+6. **N’assouplissez jamais `security.cfg`** ni aucune convar de sécurité pour faire tourner une version.
+7. **Pas de SQL à la main sans l’accord du propriétaire**, et seulement après une sauvegarde des tables concernées.
+8. **Committez seulement si le propriétaire le demande**, ne poussez jamais, ne changez jamais un remote git.
+9. **Montrez d’abord la liste** (nom, chemin, version actuelle -> nouvelle, notes de version importantes) avant de supprimer ou d’écraser quoi que ce soit.
+10. **Les téléchargements et les dossiers déposés ne sont pas fiables** : décompressez chacun dans son propre dossier neuf et vide, et n’y lancez rien.
+
+## Mettre à jour un script ai-* ou un package
+
+Il vous faut [Bun](https://bun.sh) et Git ; la [GitHub CLI](https://cli.github.com) (`gh`) facilite les téléchargements.
+
+<Steps>
+<Step>
+
+### Trouver ce qui est obsolète
+
+L’avertissement de la console ne couvre que les scripts démarrés et non ignorés, donc vérifiez chaque dossier :
+
+```bash
+cd "resources/[ai]"
+for n in ai-*; do
+  repo=$(sed -n 's#.*"repository": *"\(github:\|https://github.com/\)\([^"]*\)".*#\2#p' "$n/package.json" | sed 's#\.git$##')
+  cur=$(sed -n 's#^  "version": *"\([^"]*\)".*#\1#p' "$n/package.json")
+  latest=$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null | sed 's#^v##')
+  echo "$n $cur ${latest:-no-release}"
+done
+```
+
+- Comparez les versions comme ai-core : retirez un `v` initial, comparez les nombres séparés par des points, ignorez les suffixes de pré-version. Pas de release veut dire rien à mettre à jour.
+- Sans `gh` : `curl -s -H "Accept: application/vnd.github+json" https://api.github.com/repos/<owner>/<name>/releases/latest` (60 requêtes par heure et par IP, partagées avec la vérification d’ai-core).
+- Un script dans `updates.ignore` n’est mis à jour que si le propriétaire le nomme.
+- Un dossier dont la version dépasse la dernière release, ou un clone avec des commits après le dernier tag, n’est pas obsolète : passez-le, ne faites jamais reculer un dossier.
+- `packages/` n’a pas de ligne `repository` : comparez la version de chaque `package.json` avec npm. Mettez d’abord les packages à jour quand une nouvelle release de script demande une version que les copies locales n’ont pas.
+
+</Step>
+<Step>
+
+### Lire les notes de version et obtenir l’accord
+
+Lisez les notes de chaque version entre l’actuelle et la dernière (`gh release view <tag> --repo <repo> --json body,assets,url`) : changements incompatibles, versions de packages requises, migrations, nouvelles lignes cfg (`ensure`, `add_convar_permission`, ACE), nouveaux noms `provide`, étapes manuelles.
+
+Montrez la liste au propriétaire et attendez son accord. Mettez à jour dans l’ordre des dépendances : packages, ai-mysql, ai-core, ai-lib, puis le reste.
+
+</Step>
+<Step>
+
+### Télécharger l’ancien et le nouvel upstream
+
+Pour chaque script, deux nouveaux dossiers vides hors du serveur (par exemple `update/<name>/old` et `update/<name>/new`) :
+
+```bash
+gh release download <tag> --repo <owner>/<name> --archive zip --dir update/<name>/new     # source du tag
+gh release download <tag> --repo <owner>/<name> --pattern '*.zip' --dir update/<name>/new # un asset de release, s'il y en a un
+unzip -q update/<name>/new/*.zip -d update/<name>/new/x
+```
+
+- Préférez un asset de release quand la release en a un ; sinon la source du tag (elle contient le `dist/` et le `fxmanifest.lua` committés). Le dossier racine du zip source est `<owner>-<name>-<sha>/`.
+- **L’ancien upstream** est le tag de la version que le serveur utilise (le style des tags se voit avec `gh release list --repo <owner>/<name>`). Il est toujours téléchargeable, donc la comparaison à trois voies a toujours sa base.
+- Rien dans ces dossiers n’est lancé, installé ou buildé.
+
+</Step>
+<Step>
+
+### Sauvegarder
+
+- Copiez tout le dossier du script sauf `node_modules` dans `update/<name>/ours` (sous Windows `robocopy "<src>" "<dst>" /E /XD node_modules` ; les codes de sortie de robocopy inférieurs à 8 signifient la réussite). C’est « le nôtre » pour la fusion et le chemin du retour.
+- Les fichiers ignorés par git n’existent que dans cette copie : `data/secrets.json`, `data/*.json.bak`. Dans un clone git, `git ls-files --others --ignored --exclude-standard` les liste.
+- Les modifications non committées d’un clone (`git status --porcelain`) sont aussi des modifications du serveur. Prévenez le propriétaire ; ne les committez que s’il le demande.
+
+</Step>
+<Step>
+
+### Fusionner, fichier par fichier
+
+Appliquez le modèle à trois voies à l’ancien, au nôtre et au nouveau, et écrivez le résultat dans le dossier du script :
+
+| Fichier | Règle |
+| --- | --- |
+| `resource/**`, `web/src/**`, `bridge/**`, `sql/**`, Lua et autres sources | Trois voies. Une modification locale dont le code a bougé ou dont le contrat a changé est adaptée au nouveau code ; celle qui n’a plus sa place est signalée. |
+| `package.json` | Le nouvel upstream, plus les ajouts locaux qui ont encore du sens. `version` finit à la version de la nouvelle release, sinon la vérification de mise à jour continue d’avertir. |
+| `dist/`, `fxmanifest.lua`, `resource/server/tables.ts`, `data/schemas/*.schema.json` | Prendre le nouveau ; le build les régénère. |
+| `data/<file>.json` (contenu du panneau) | Garder le nôtre (voir plus bas). |
+| `data/secrets.json`, `data/*.json.bak` | Restaurer depuis la sauvegarde sans y toucher. |
+| `locales/en.json` | Trois voies : nouvelles clés et placeholders d’upstream, la formulation du serveur pour les clés qui existent encore. |
+| `locales/<lang>.json` que la release ne livre pas | Garder. Ajouter les nouvelles clés traduites dans cette langue sur le même ton, retirer les clés supprimées, suivre les placeholders modifiés (`{0}`, `{1}`). |
+| `CLAUDE.md`, docs | Prendre le nouveau, remettre les notes propres au serveur. |
+
+**Le contenu du panneau (`data/*.json`)** est le contenu vivant du serveur, modifié dans le panneau ; la release ne livre que des valeurs par défaut.
+
+- Même schéma (le nouveau `schema.ts` ou loader lit les mêmes champs) : gardez le nôtre tel quel. Un fichier que la nouvelle version ajoute : prenez celui livré.
+- Schéma modifié : cherchez la migration propre au script, lancée au démarrage (notes de version, une migration appelée au démarrage). S’il y en a une, laissez le nôtre en place ; elle le convertit au démarrage. Sinon, convertissez à la main en suivant le nouveau loader et le schéma : mêmes noms de champs, types et format d’id que le fichier livré, chaque valeur gardée, nouveaux champs à la valeur livrée par défaut, champs supprimés retirés et signalés. Vérifiez que chaque fichier se parse.
+
+**Base de données.** Chaque script crée ses tables depuis `sql/main.sql` au démarrage : il crée les tables manquantes et ajoute les colonnes manquantes, et ne supprime, ne renomme, ne modifie jamais une colonne et n’ajoute jamais de clé. Comparez l’ancien et le nouveau `sql/main.sql` :
+
+- Nouvelles tables et colonnes : le redémarrage les applique.
+- Un type de colonne modifié, un nouvel index ou une nouvelle clé, une colonne renommée ou supprimée : la release doit apporter sa propre migration (notes de version, code serveur), qui tourne au démarrage ; vérifiez le log. Sinon, écrivez le SQL, montrez-le au propriétaire, sauvegardez les tables concernées et ne le lancez qu’avec son accord.
+
+**Fichiers cfg hors du dossier.**
+
+- `server.cfg` : un nouveau script reçoit sa ligne `ensure` dans l’ordre des dépendances ; un script retiré la perd (demandez d’abord).
+- `env.cfg` et `env.example.cfg` : un script qui commence à utiliser la base de données a besoin de `add_convar_permission <resource> read mysql_connection_string`.
+- `permission.cfg` : les lignes ACE que demandent les notes de version.
+- `security.cfg` : jamais assoupli.
+
+</Step>
+<Step>
+
+### Builder, redémarrer, vérifier
+
+1. `bun install` à la racine du serveur quand un `package.json` a changé.
+2. Dans chaque script mis à jour : `bun run typecheck`, `bun run lint`, `bun run build` (ou `bun tools/run.ts build ai-x ai-y` depuis la racine du serveur). Buildez toujours : `dist/` doit venir de la source fusionnée. Corrigez les erreurs dans les modifications reportées du serveur ; une erreur dans du code upstream non touché est signalée, pas corrigée.
+3. Comparez le résultat avec le nouvel upstream : `diff -r --strip-trailing-cr -x node_modules -x dist -x data update/<name>/new/x/<top> "<script folder>"`. Chaque différence restante doit être une modification du serveur.
+4. Refresh et redémarrage :
+
+   ```bash
+   bun tools/rcon.ts --log ../default/logs/fxserver.log --wait 3 "refresh"
+   bun tools/restart.ts --from ai-inventory   # un seul script
+   bun tools/restart.ts                       # après une mise à jour d'ai-core, ai-lib, ai-mysql ou des packages
+   ```
+
+   `bun tools/restart.ts` redémarre ai-core, lance `ensure` pour chaque `ai-*` qui suit et vérifie que chacun a démarré. Les scripts tiers qui dépendent d’ai-mysql s’arrêtent avec lui : relancez-les par leur nom avec `ensure`. Une nouvelle ligne `provide` demande un démarrage complet du serveur : `bun tools/rcon.ts "quit \"<reason>\""`.
+
+5. Lisez le log de la console pour `SCRIPT ERROR`, `Failed to load script`, `[client error]`, les erreurs de chargement ou de validation du panneau et les erreurs de base de données, pas seulement `Started resource`. L’avertissement `is outdated` doit avoir disparu après la vérification suivante du script.
+
+</Step>
+</Steps>
+
+## Mettre à jour un script tiers
+
+Le propriétaire fournit la nouvelle version (un dossier ou un zip). Installez-la telle que livrée, reportez dessus les modifications du serveur, puis vérifiez qu’ai-core lui parle toujours correctement.
+
+<Steps>
+<Step>
+
+### Associer la livraison à ce qui est installé
+
+- Chaque dossier de premier niveau avec un `fxmanifest.lua` (ou `__resource.lua`) est une ressource ; un dossier `[category]` en contient plusieurs. Décompressez les zips dans un dossier neuf et vide et n’y lancez rien.
+- Trouvez la copie installée par nom de dossier dans `resources/` (par exemple `find resources -maxdepth 3 -type d -name <name>`). Gardez l’emplacement installé, pas la catégorie de la livraison. Aucune correspondance ou plusieurs : demandez au propriétaire. Un script pas encore installé n’est installé que si le propriétaire le dit.
+- Un dossier `ai-*` dans la livraison ne suit pas cette procédure : les scripts `ai-*` se mettent à jour depuis GitHub (plus haut). Demandez au propriétaire ce qu’est ce dossier.
+- Lisez les deux manifestes : `version`, `files`, scripts, `dependencies`, `provide`, `escrow_ignore`, `ai_replaces`. Une version qui baisse, ou une livraison à laquelle il manque des fichiers de la copie installée, peut être un build plus ancien : comparez et signalez au lieu d’installer.
+- Nouvelles dépendances : oxmysql est servi par ai-mysql (n’installez jamais oxmysql à côté) ; ox_lib et les autres bibliothèques sont à installer par le propriétaire ; une dépendance à ce qu’ai-core remplace (`es_extended`, `qb-core`, `qbx_core`, `pma-voice`, `ox_inventory`...) est déjà satisfaite.
+- Montrez la liste associée (nom, chemin, version actuelle -> nouvelle) et attendez l’accord.
+
+</Step>
+<Step>
+
+### Sauvegarder
+
+- Copiez tout le dossier installé dans un dossier de sauvegarde hors du serveur (`robocopy "<src>" "<dst>" /E`). Pour un dossier qu’aucun dépôt git ne suit, cette sauvegarde est la seule copie de la version du serveur.
+- Si git suit le dossier : `git status --porcelain -- <path>` montre les modifications non committées (elles comptent comme le nôtre ; prévenez le propriétaire) et `git ls-files --others --ignored --exclude-standard -- <path>` montre les fichiers d’exécution ignorés par git (JSON enregistré, caches), qui sont dans la sauvegarde.
+
+</Step>
+<Step>
+
+### Trouver les modifications du serveur
+
+Obtenez l’ancien upstream, dans cet ordre :
+
+1. Le propriétaire a encore l’ancien zip ou dossier de l’éditeur.
+2. Un script open source sur GitHub : la release ou le tag de la version installée.
+3. L’historique git, quand le dossier est suivi : le commit qui a posé la `version` installée (`git log -S"version '<old>'" -- <path>/fxmanifest.lua`). Si ce commit a aussi réappliqué des personnalisations antérieures, ses fichiers de config comptent comme le nôtre et la version d’origine pure se trouve un commit plus tôt.
+4. Rien de tout cela : comparez le nôtre directement avec la nouvelle version, et dites-le dans le rapport.
+
+Lisez ensuite chaque différence ancien -> nôtre (les modifications du serveur : configs, `locales/*` ou `languages/*`, fichiers editable, `data/*.json`, `fxmanifest.lua`, SQL, images, sons, fichiers streamés, correctifs de code) et ancien -> nouveau (les changements de l’éditeur : fichiers ajoutés et supprimés, clés renommées, sections déplacées, fonctions editable modifiées). Dans un script sous escrow (`.fxap` présent), seuls les fichiers de `escrow_ignore` se lisent et se modifient ; une modification dans un fichier que la nouvelle version met sous escrow ne peut pas être reportée et est signalée.
+
+</Step>
+<Step>
+
+### Installer la nouvelle version
+
+Supprimez entièrement le dossier installé, puis copiez le nouveau dossier au même chemin, fichiers cachés (`.fxap`) compris. Les anciens restes sont des bugs ; l’ancienne version reste dans la sauvegarde. Ne restaurez les fichiers d’exécution sauvegardés que si la nouvelle version les utilise encore dans le même format ; sinon convertissez-les ou abandonnez-les, et signalez-le.
+
+</Step>
+<Step>
+
+### Réappliquer les modifications du serveur
+
+Pour chaque modification, trouvez où ce réglage se trouve dans la nouvelle version et écrivez-y la valeur, au nouveau format :
+
+- **Même clé, même fichier :** mettez la valeur dans le nouveau fichier ; gardez ses commentaires et sa mise en page.
+- **Clé renommée ou déplacée :** trouvez la nouvelle clé en lisant le code qui l’utilise (cherchez l’ancien nom, son commentaire, sa valeur par défaut, sa clé de texte) et convertissez la valeur à la nouvelle forme.
+- **Config déplacée vers un fichier de données** (JSON modifié par le panneau propre au script) : lisez le nouveau loader et le fichier livré, écrivez les anciennes valeurs dans exactement ce schéma (noms de champs, types, format d’id, indentation) et vérifiez qu’il se parse. Ne comptez pas sur un convertisseur que le script lancerait peut-être.
+- **Les fichiers de données existants du serveur :** reportez-les, convertissez champ par champ si le schéma a changé, ne les remplacez jamais par l’exemple de l’éditeur.
+- **Option supprimée :** plus aucun code ne la lit (une recherche le confirme) : retirez-la et signalez-la avec l’ancienne valeur.
+- **Fichiers editable** (`client/editable.lua`, `server/editable.lua`...) : partez du nouveau fichier et réappliquez chaque corps de fonction modifié, adapté à une signature ou une valeur de retour qui a changé ; les nouvelles fonctions gardent leur version par défaut.
+- **Langues :** gardez la formulation du serveur pour chaque clé qui existe encore ; ajoutez les nouvelles clés à chaque fichier de langue que le serveur utilise, traduites sur le ton des textes existants ; retirez les clés supprimées ; suivez les placeholders modifiés.
+- **fxmanifest :** le nouveau, plus seulement les ajouts propres au serveur qui ont encore du sens. Ne changez jamais `version`.
+- **SQL** (`*.sql`, dossiers d’installation) : comparez l’ancien et le nouveau ; les nouvelles tables, colonnes et index vont dans le rapport comme SQL que le propriétaire lance. Rien ne tourne sans son accord.
+- **Identifiants** (tokens de bot, clés d’API, URL de webhooks dans les configs) : ne les affichez jamais. Reportez-les depuis la sauvegarde ; si ce n’est pas possible, laissez la nouvelle valeur par défaut et listez le fichier et la clé pour le propriétaire.
+- **Assets** (`stream/`, images, sons) : ceux de l’éditeur, plus les fichiers ajoutés par le serveur qui servent encore.
+- Coordonnées, items, prix, textes et comportement sont reportés à l’identique ; rien ne change en dehors des modifications propres au serveur.
+
+</Step>
+<Step>
+
+### Vérifier la compatibilité avec ai-core
+
+Le script peut faire partie de ceux avec lesquels ai-core communique. Trouvez chaque endroit qui le nomme :
+
+```bash
+grep -rln "<name>" "resources/[ai]/ai-core/resource" "resources/[ai]/ai-core/bridge" docs/compat
+```
+
+| Catégorie | Adapters d’ai-core | Note |
+| --- | --- | --- |
+| Inventaire | `resource/server/inventory/adapters/`, `resource/client/inventory/adapters/` | `docs/compat/inventory.md` |
+| Clés de véhicule | `resource/server/vehicleKeys/adapters/`, `resource/client/vehicleKeys/adapters/` | `docs/compat/vehicle-keys.md` |
+| Téléphone | `resource/server/phone/adapters/` | `docs/compat/phone.md` |
+| Alertes police | `resource/server/dispatch/adapters/` | `docs/compat/dispatch.md` |
+| Menu radial | `resource/client/radial/adapters/` | `docs/compat/radial.md` |
+| Emotes, mains en l’air | `resource/client/gestures.ts` | `docs/compat/gestures.md` |
+| Heure et météo | `resource/server/world.ts`, `resource/client/world.ts` | `docs/compat/weather.md` |
+| HUD | `resource/client/hud.ts` | |
+| Voix, chat | ai-voice (API pma-voice), ai-chat (API `chat`) | `docs/compat/voice.md`, `docs/compat/chat.md` |
+| Usage ESX / QB / Qbox | `bridge/` | `docs/compat/bridge.md`, `docs/compat/frameworks.md` |
+
+- Pour chaque export, event et callback qu’un adapter utilise, vérifiez la nouvelle version : toujours là, mêmes arguments, même forme de retour, même timing. Dans du code sous escrow, vérifiez les fichiers lisibles et la documentation de l’éditeur, et listez ce qui ne peut pas être vérifié.
+- Une incompatibilité se corrige uniquement dans le fichier de l’adapter (une traduction fine), avec sa version testée relevée ; puis typecheck, lint et build d’ai-core et redémarrage (`bun tools/restart.ts`).
+- Une nouvelle ligne `ai_replaces` ou `provide` peut amener ai-core à refuser les connexions tant qu’un remplaçant `ai-*` tourne encore (voir [Remplacer un script ai-*](/fr/docs/compatibility#remplacer-un-script-ai-)) : nommez le dossier que le propriétaire doit retirer.
+- Mettez à jour `docs/compat/<script>.md` (version testée, statut, config ou correctif exact, limites connues) ; un script pris en charge sans note en reçoit une.
+
+</Step>
+<Step>
+
+### Vérifier et redémarrer
+
+- Comparez le résultat installé avec la nouvelle version : chaque différence est une modification du serveur, et aucun ancien fichier que la nouvelle version ne livre pas ne reste (fichiers d’exécution restaurés à part).
+- Le Lua modifié se parse, le JSON se parse, chaque clé de config réglée existe dans le nouveau code.
+- Sauf si du SQL attend le propriétaire : `bun tools/rcon.ts --log ../default/logs/fxserver.log --wait 3 "refresh"`, puis la même chose avec `"ensure <name>"`, et lisez le log pour `SCRIPT ERROR`, `Failed to load script` et les erreurs propres au script. Les scripts qui en dépendent et qui se sont arrêtés sont relancés.
+
+</Step>
+</Steps>
+
+## Le rapport final
+
+La mise à jour se termine par un rapport dans la langue du propriétaire, une section par script :
+
+- nom, chemin, version actuelle -> nouvelle, source (tag de release ou dossier du propriétaire)
+- ce qui a changé en upstream et compte pour ce serveur
+- reporté : modifications de code, textes et réglages, et où chacun est allé dans la nouvelle version
+- gardé tel quel : `data/*.json`, `data/secrets.json`, fichiers de locale propres ; conversions de schéma faites (par la migration du script ou à la main)
+- abandonné ou non reporté : options supprimées et modifications sans place, avec l’ancienne valeur pour que le propriétaire décide
+- nouvelles options laissées par défaut que le propriétaire voudra peut-être régler
+- base de données : tables ou colonnes ajoutées au démarrage, migrations lancées par la release, SQL en attente du propriétaire
+- changements de cfg nécessaires ou faits (lignes `ensure` de `server.cfg`, droits de convar dans `env.cfg`, `permission.cfg`)
+- compatibilité : adapters et notes `docs/compat` vérifiés ou modifiés (scripts tiers)
+- résultat du build, du redémarrage et du log, et ce qu’il faut tester en jeu
+
+Il se termine par les décisions que le propriétaire doit prendre. Voir aussi [Travailler avec l’IA](/fr/docs/working-with-ai).
