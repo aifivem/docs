@@ -54,8 +54,10 @@ Toda pasta de servidor do AI Core tem este procedimento como skill do projeto em
 | Script | Nova versão | O que você fornece |
 | --- | --- | --- |
 | Os resources `ai-*` em `resources/[ai]/` (incluindo ai-core, ai-lib e ai-mysql) | A release no GitHub do repositório indicado no `package.json` dele (`"repository": "github:aifivem/<name>"`) | Nada |
-| Os pacotes `@aifivem/*` em `packages/` | npm (`npm view @aifivem/<pkg> version`) | Nada |
+| Os pacotes `@aifivem/*` em `packages/` (só em uma instalação de desenvolvimento) | npm (`npm view @aifivem/<pkg> version`) | Nada |
 | Qualquer outro resource (geralmente em `resources/[standalone]/`) | O vendedor | A pasta nova ou o zip |
+
+Um servidor instalado com a receita recebeu cada script `ai-*` como o zip da sua release: cada script compila na própria pasta e pega os pacotes `@aifivem/*` do npm. Uma instalação de desenvolvimento (`bun run setup`) tem `packages/` e compila todos os scripts a partir da pasta do servidor.
 
 O ai-core verifica cada script iniciado que tem repositório no GitHub (a cada 6 horas por script) e escreve `<name> <current> is outdated: <latest> is out (<url>)` no console; a mesma lista aparece no dashboard de admin. As verificações de atualização e os scripts ignorados ficam no [painel de administração](/pt/docs/admin-panel) em **General** (`updates.check`, `updates.ignore` no `data/settings.json` do ai-core).
 
@@ -83,7 +85,7 @@ Cada atualização compara três versões de cada arquivo:
 2. **O estado do servidor nunca é trocado pelos padrões do upstream**: `data/*.json`, `data/secrets.json`, seus arquivos e textos de locale, o banco de dados. Faça backup antes de mexer numa pasta.
 3. **Sem sobras.** Arquivos que a nova versão não traz mais são apagados, a menos que sejam seus (uma locale, uma imagem que você adicionou) e ainda usados. Opções que a nova versão removeu continuam removidas e entram no relatório; opções novas ficam no padrão, a menos que uma configuração antiga corresponda claramente.
 4. **Arquivos gerados são gerados de novo, nunca passam por merge**: `dist/`, `fxmanifest.lua`, `resource/server/tables.ts`, `data/schemas/*.schema.json`. Nunca edite à mão.
-5. **Nunca apague `node_modules` à mão**; `bun install` na raiz do servidor conserta.
+5. **Nunca apague `node_modules` à mão**; `bun install` conserta (na pasta do script em uma instalação com a receita, na raiz do servidor em uma instalação de desenvolvimento).
 6. **Nunca afrouxe o `security.cfg`** nem qualquer convar de segurança para uma versão rodar.
 7. **Nada de SQL à mão sem o ok do dono**, e só depois de um backup das tabelas afetadas.
 8. **Commit só quando o dono pedir**, nunca push, nunca mude um remote do git.
@@ -115,7 +117,7 @@ done
 - Sem `gh`: `curl -s -H "Accept: application/vnd.github+json" https://api.github.com/repos/<owner>/<name>/releases/latest` (60 requisições por hora por IP, divididas com a verificação do próprio ai-core).
 - Um script em `updates.ignore` só é atualizado quando o dono o cita.
 - Uma pasta com versão acima da última release, ou um clone com commits depois da última tag, não está desatualizada: pule, nunca leve uma pasta para trás.
-- `packages/` não tem linha `repository`: compare a versão de cada `package.json` com o npm. Atualize os pacotes primeiro quando uma nova release de script precisar de uma versão que as cópias locais não têm.
+- Em uma instalação de desenvolvimento, `packages/` não tem linha `repository`: compare a versão de cada `package.json` com o npm. Atualize os pacotes primeiro quando uma nova release de um script precisar de uma versão que as cópias locais não têm. Uma instalação com a receita não tem `packages/`: o zip de cada script fixa as versões de que precisa.
 
 </Step>
 <Step>
@@ -134,12 +136,14 @@ Mostre a lista ao dono e espere o ok. Atualize na ordem das dependências: pacot
 Para cada script, duas pastas novas e vazias fora do servidor (por exemplo `update/<name>/old` e `update/<name>/new`):
 
 ```bash
-gh release download <tag> --repo <owner>/<name> --archive zip --dir update/<name>/new     # código-fonte da tag
-gh release download <tag> --repo <owner>/<name> --pattern '*.zip' --dir update/<name>/new # um asset da release, se houver
+gh release download <new tag> --repo <owner>/<name> --pattern '<name>-<new tag>.zip' --dir update/<name>/new  # o zip da release: build e código-fonte
+gh release download <old tag> --repo <owner>/<name> --archive zip --dir update/<name>/old                     # código-fonte da tag antiga
 unzip -q update/<name>/new/*.zip -d update/<name>/new/x
+unzip -q update/<name>/old/*.zip -d update/<name>/old/x
 ```
 
-- Prefira um asset da release quando a release tiver um; senão, o código-fonte da tag (ele inclui o `dist/` e o `fxmanifest.lua` com commit). A pasta de cima do zip de código é `<owner>-<name>-<sha>/`.
+- **O upstream novo** é o zip da release `<name>-<tag>.zip`: o build e o código-fonte, pasta de cima `<name>/`. Releases anteriores a novembro de 2026 anexam só o build; nesse caso, pegue o código-fonte da tag (pasta de cima `<owner>-<name>-<sha>/`).
+- O `package.json` do zip da release fixa os pacotes `@aifivem/*` (`^x.y.z` em vez de `workspace:*`) e adiciona `"workspaces": ["web"]`. Isso não é uma mudança sua: deixe esses campos fora da comparação em três vias e mantenha a forma do seu servidor (instalação com a receita: a do zip; instalação de desenvolvimento: `workspace:*`, sem `workspaces`).
 - **O upstream antigo** é a tag da versão que o servidor usa (o padrão das tags aparece com `gh release list --repo <owner>/<name>`). Ela sempre pode ser baixada, então a comparação em três vias sempre tem sua base.
 - Nada nessas pastas é executado, instalado ou compilado.
 
@@ -162,7 +166,7 @@ Aplique o modelo de três vias ao antigo, ao nosso e ao novo, e escreva o result
 | Arquivo | Regra |
 | --- | --- |
 | `resource/**`, `web/src/**`, `bridge/**`, `sql/**`, Lua e outro código-fonte | Três vias. Uma mudança local cujo código se moveu ou cujo contrato mudou é adaptada ao código novo; uma sem lugar é informada. |
-| `package.json` | O upstream novo, mais os acréscimos locais que ainda fazem sentido. `version` termina na versão da nova release, senão a verificação de atualização continua avisando. |
+| `package.json` | O upstream novo, mais os acréscimos locais que ainda fazem sentido; as versões de `@aifivem/*` e `workspaces` mantêm a forma do seu servidor (veja a etapa de download). `version` termina na versão da nova release, senão a verificação de atualização continua avisando. |
 | `dist/`, `fxmanifest.lua`, `resource/server/tables.ts`, `data/schemas/*.schema.json` | Pegar o novo; o build gera de novo. |
 | `data/<file>.json` (conteúdo do painel) | Manter o nosso (veja abaixo). |
 | `data/secrets.json`, `data/*.json.bak` | Restaurar do backup sem alteração. |
@@ -192,7 +196,7 @@ Aplique o modelo de três vias ao antigo, ao nosso e ao novo, e escreva o result
 
 ### Compile, reinicie, confira
 
-1. `bun install` na raiz do servidor quando algum `package.json` mudar.
+1. `bun install` quando algum `package.json` mudar: na pasta do script em uma instalação com a receita (pacotes do npm), na raiz do servidor em uma instalação de desenvolvimento.
 2. Em cada script atualizado: `bun run typecheck`, `bun run lint`, `bun run build` (ou `bun tools/run.ts build ai-x ai-y` na raiz do servidor). Sempre faça o build: o `dist/` precisa vir do código após o merge. Corrija erros nas mudanças do servidor que você levou; um erro em código do upstream que ninguém tocou é informado, não remendado.
 3. Compare o resultado com o upstream novo: `diff -r --strip-trailing-cr -x node_modules -x dist -x data update/<name>/new/x/<top> "<script folder>"`. Cada diferença que sobrar precisa ser uma das mudanças do servidor.
 4. Faça o refresh e reinicie:

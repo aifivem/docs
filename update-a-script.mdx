@@ -54,8 +54,10 @@ Every AI Core server folder has this procedure as a project skill in `.claude/sk
 | Script | New version | You provide |
 | --- | --- | --- |
 | `ai-*` resources in `resources/[ai]/` (ai-core, ai-lib, ai-mysql included) | The GitHub release of the repository named in its `package.json` (`"repository": "github:aifivem/<name>"`) | Nothing |
-| The `@aifivem/*` packages in `packages/` | npm (`npm view @aifivem/<pkg> version`) | Nothing |
+| The `@aifivem/*` packages in `packages/` (development setup only) | npm (`npm view @aifivem/<pkg> version`) | Nothing |
 | Any other resource (usually in `resources/[standalone]/`) | The vendor | The new folder or zip |
+
+A server installed with the recipe got every `ai-*` script as its release zip: each script builds in its own folder and takes the `@aifivem/*` packages from npm. A development setup (`bun run setup`) has `packages/` and builds every script from the server folder.
 
 ai-core checks every started script that has a GitHub repository (once every 6 hours per script) and prints `<name> <current> is outdated: <latest> is out (<url>)` in the console; the same list is on the admin dashboard. Update checks and the scripts they skip are set in the [admin panel](/docs/admin-panel) under **General** (`updates.check`, `updates.ignore` in ai-core's `data/settings.json`).
 
@@ -83,7 +85,7 @@ Every update compares three versions of each file:
 2. **Your state is never replaced by upstream defaults**: `data/*.json`, `data/secrets.json`, your locale files and texts, the database. Back them up before touching a folder.
 3. **No leftovers.** Files the new version no longer ships are deleted, unless they are yours (a locale, an image you added) and still used. Options the new version removed stay removed and are listed in the report; new options keep their default unless an old setting clearly maps to them.
 4. **Generated files are rebuilt, never merged**: `dist/`, `fxmanifest.lua`, `resource/server/tables.ts`, `data/schemas/*.schema.json`. Never edit them by hand.
-5. **Never delete `node_modules` by hand**; `bun install` at the server root repairs it.
+5. **Never delete `node_modules` by hand**; `bun install` repairs it (in the script's folder on a recipe install, at the server root on a development setup).
 6. **Never loosen `security.cfg`** or any security convar to make a version run.
 7. **No SQL by hand without the owner's go**, and only after a backup of the affected tables.
 8. **Commit only when the owner asks**, never push, never change a git remote.
@@ -115,7 +117,7 @@ done
 - Without `gh`: `curl -s -H "Accept: application/vnd.github+json" https://api.github.com/repos/<owner>/<name>/releases/latest` (60 requests per hour per IP, shared with ai-core's own check).
 - A script in `updates.ignore` is updated only when the owner names it.
 - A folder whose version is above the latest release, or a clone with commits after the latest tag, is not outdated: skip it, never move a folder backwards.
-- `packages/` has no `repository` line: compare each `package.json` version with npm. Update the packages first when a new script release needs a version the local copies do not have.
+- On a development setup, `packages/` has no `repository` line: compare each `package.json` version with npm. Update the packages first when a new script release needs a version the local copies do not have. A recipe install has no `packages/`: each script's zip pins the versions it needs.
 
 </Step>
 <Step>
@@ -134,12 +136,14 @@ Show the owner the list and wait for the go. Update in dependency order: package
 For each script, two new empty folders outside the server (for example `update/<name>/old` and `update/<name>/new`):
 
 ```bash
-gh release download <tag> --repo <owner>/<name> --archive zip --dir update/<name>/new     # the tag's source
-gh release download <tag> --repo <owner>/<name> --pattern '*.zip' --dir update/<name>/new # a release asset, when there is one
+gh release download <new tag> --repo <owner>/<name> --pattern '<name>-<new tag>.zip' --dir update/<name>/new  # the release zip: build and source
+gh release download <old tag> --repo <owner>/<name> --archive zip --dir update/<name>/old                     # the old tag's source
 unzip -q update/<name>/new/*.zip -d update/<name>/new/x
+unzip -q update/<name>/old/*.zip -d update/<name>/old/x
 ```
 
-- Prefer a release asset when the release has one; otherwise the tag's source (it includes the committed `dist/` and `fxmanifest.lua`). The source zip's top folder is `<owner>-<name>-<sha>/`.
+- **New upstream** is the release zip `<name>-<tag>.zip`: the build and the source, top folder `<name>/`. Releases before November 2026 attach the build only; take the tag's source then (top folder `<owner>-<name>-<sha>/`).
+- The release zip's `package.json` pins the `@aifivem/*` packages (`^x.y.z` instead of `workspace:*`) and adds `"workspaces": ["web"]`. That is not a change of yours: leave these fields out of the three-way and keep your server's form (recipe install: the zip's; development setup: `workspace:*`, no `workspaces`).
 - **Old upstream** is the tag of the version the server runs (see the tag style with `gh release list --repo <owner>/<name>`). It can always be downloaded, so the three-way always has its base.
 - Nothing in these folders is run, installed or built.
 
@@ -162,7 +166,7 @@ Run the three-way model over old, ours and new, and write the result into the sc
 | File | Rule |
 | --- | --- |
 | `resource/**`, `web/src/**`, `bridge/**`, `sql/**`, Lua and other source | Three-way. A local change whose code moved or whose contract changed is adapted to the new code; one with no place left is reported. |
-| `package.json` | New upstream, plus local additions that still make sense. `version` ends at the new release's version, or the update check keeps warning. |
+| `package.json` | New upstream, plus local additions that still make sense; the `@aifivem/*` versions and `workspaces` keep your server's form (see the download step). `version` ends at the new release's version, or the update check keeps warning. |
 | `dist/`, `fxmanifest.lua`, `resource/server/tables.ts`, `data/schemas/*.schema.json` | Take new; the build regenerates them. |
 | `data/<file>.json` (panel content) | Keep ours (see below). |
 | `data/secrets.json`, `data/*.json.bak` | Restore from the backup untouched. |
@@ -192,7 +196,7 @@ Run the three-way model over old, ours and new, and write the result into the sc
 
 ### Build, restart, check
 
-1. `bun install` at the server root when any `package.json` changed.
+1. `bun install` when any `package.json` changed: in the script's folder on a recipe install (packages from npm), at the server root on a development setup.
 2. In each updated script: `bun run typecheck`, `bun run lint`, `bun run build` (or `bun tools/run.ts build ai-x ai-y` from the server root). Always build: `dist/` must come from the merged source. Fix errors in the server's carried changes; an error in untouched upstream code is reported, not patched.
 3. Compare the result with new upstream: `diff -r --strip-trailing-cr -x node_modules -x dist -x data update/<name>/new/x/<top> "<script folder>"`. Every remaining difference must be one of the server's changes.
 4. Refresh and restart:
