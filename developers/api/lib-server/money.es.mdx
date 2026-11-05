@@ -8,9 +8,188 @@ icon: Wallet
 import { money, banking, billing } from "@aifivem/lib/server";
 ```
 
-Los cambios en una sola cuenta de un jugador (añadir, quitar, leer un saldo) son exports de ai-core (`AddMoney`, `RemoveMoney`, `GetMoney`; consulta [exports de servidor de ai-core](/es/docs/developers/api/core-server)). La lib añade lo que necesita más de un cambio de cuenta, y las capas de banca y facturación.
+`money` es todo saldo del servidor: las cuentas de un jugador cargado, la cuenta compartida de un trabajo o una banda, una transferencia que mueve el dinero en una sola transacción, y el registro. Un personaje que **no** está conectado se maneja con [`characters`](/es/docs/developers/api/lib-server/characters#charactersaddmoney-charactersremovemoney-and-characterssetmoney). `banking` y `billing` son las capas para los scripts de banco y de facturas del servidor.
 
 ## money
+
+### money.get
+
+El saldo de un jugador cargado en una cuenta.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+money.get(source: number, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.money.get(source, account)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    account: { type: 'string', description: 'Nombre de cuenta del panel (`cash`, `bank`...). Ver [Nombres de cuenta](/es/docs/developers/api/types#nombres-de-cuenta).', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`number | null`: el saldo, o `null` cuando el jugador no tiene personaje cargado o el tipo de cuenta no existe. Los saldos de un personaje guardado vienen de [`characters.get`](/es/docs/developers/api/lib-server/characters#charactersget).
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, notify } from "@aifivem/lib/server";
+
+export function tellBalance(source: number): void {
+  const bank = money.get(source, "bank");
+  notify(source, bank === null ? "Sin personaje" : `Banco: $${bank}`, bank === null ? "error" : "inform");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local bank = aiLib.money.get(source, 'bank')
+aiLib.notify(source, bank and ('Banco: $%d'):format(bank) or 'Sin personaje', bank and 'inform' or 'error')
+```
+</Tab>
+</Tabs>
+
+### money.add, money.remove and money.set
+
+Cambia una cuenta de un jugador cargado, con una fila de registro. Son las llamadas para una recompensa, un precio, un sueldo que paga tu script.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+money.add(source: number, account: string, amount: number, reason?: string): boolean
+money.remove(source: number, account: string, amount: number, reason?: string): boolean
+money.set(source: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.money.add(source, account, amount, reason)
+local ok = aiLib.money.remove(source, account, amount, reason)
+local ok = aiLib.money.set(source, account, amount, reason)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    account: { type: 'string', description: 'Nombre de cuenta del panel.', required: true },
+    amount: { type: 'number', description: 'Dólares enteros, mayores que 0 para `add` y `remove`. `set` toma el nuevo saldo (0 permitido).', required: true },
+    reason: { type: 'string', description: 'Lo que dice la fila del registro (`"shop:tools"`).', default: 'el nombre del resource que llama' },
+  }}
+/>
+
+#### Devuelve
+
+`boolean`: `true` cuando el cambio se hizo. `false` cuando el jugador no tiene personaje cargado, la cuenta no existe, la cantidad no es un entero mayor que 0, o - en `remove` - el saldo no puede pagar (salvo que el tipo de cuenta permita bajar de cero).
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, onClientCallback } from "@aifivem/lib/server";
+import { fail } from "@aifivem/lib/shared";
+
+onClientCallback("myshop:buyTools", { lock: true }, (source) => {
+  if (!money.remove(source, "cash", 150, "shop:tools")) return fail("NOT_ENOUGH_CASH");
+  // entrega el objeto aquí
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myshop:buyTools', function(source)
+    if not aiLib.money.remove(source, 'cash', 150, 'shop:tools') then return aiLib.fail('NOT_ENOUGH_CASH') end
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Que un jugador pague a otro **no** es un `remove` más un `add`: un fallo a medio camino haría aparecer o desaparecer dinero. Usa [`money.transfer`](#moneytransfer), que es una sola transacción.
+</Callout>
+
+### money.sharedGet
+
+El saldo de la cuenta de un trabajo o una banda - `bank` es lo que otros frameworks llaman dinero de sociedad.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+money.sharedGet(type: "job" | "gang", id: string, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.money.sharedGet(type, id, account)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    type: { type: '"job" | "gang"', description: 'De quién es la cuenta.', required: true },
+    id: { type: 'string', description: 'El nombre del trabajo o de la banda (`"mechanic"`).', required: true },
+    account: { type: 'string', description: 'Nombre de cuenta; `bank` es el dinero de sociedad.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`number | null`: el saldo, o `null` cuando ese trabajo o banda no tiene esa cuenta (un trabajo desconocido, o un tipo de cuenta que el servidor no tiene).
+
+### money.sharedAdd and money.sharedRemove
+
+Cambia la cuenta de un trabajo o una banda, con una fila de registro - los ingresos y los costes de una empresa.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+money.sharedAdd(type: "job" | "gang", id: string, account: string, amount: number, reason?: string): boolean
+money.sharedRemove(type: "job" | "gang", id: string, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.money.sharedAdd(type, id, account, amount, reason)
+local ok = aiLib.money.sharedRemove(type, id, account, amount, reason)
+```
+
+#### Devuelve
+
+`boolean`: `true` cuando el cambio se hizo, `false` para un trabajo o banda desconocidos, una cuenta que falta, una cantidad errónea, o una cuenta que no puede pagar.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money } from "@aifivem/lib/server";
+
+/** Un contrato de la ciudad que gana el taller, y lo que paga por las piezas. */
+export function contractDone(job: string, pay: number, parts: number): boolean {
+  if (!money.sharedAdd("job", job, "bank", pay, "city contract")) return false;
+  return money.sharedRemove("job", job, "bank", parts, "parts");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local ok = aiLib.money.sharedAdd('job', 'mechanic', 'bank', 500, 'repair')
+```
+</Tab>
+</Tabs>
 
 ### money.transfer
 
@@ -22,7 +201,9 @@ Mueve dinero de una cuenta a otra en una sola transacción de base de datos, con
 money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
 ```
 
-Sin equivalente en Lua: llama al export de ai-core `exports['ai-core']:TransferMoney(from, to, amount, reason, fee)`.
+```lua title="Lua"
+local ok = aiLib.money.transfer(from, to, amount, reason, fee)
+```
 
 #### Parámetros
 
@@ -55,6 +236,59 @@ onClientCallback("my-cash:give", { args: oneArg((v) => readInt(v, 1, 100_000)), 
   return { ok: true };
 });
 ```
+
+### money.history
+
+Las filas del registro de una cuenta, las más nuevas primero: qué se movió, el saldo después, el motivo, quién lo hizo y cuándo. Funciona para la cuenta de un jugador, la de un trabajo o banda, y la de un personaje guardado.
+
+**Lado:** Servidor · **Espera:** sí
+
+```ts title="Firma"
+money.history(account: LedgerRef, query?: LedgerQuery): Promise<LedgerPage>
+```
+
+```lua title="Lua"
+local page = aiLib.money.history(account, query)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    account: { type: 'LedgerRef', typeDescriptionLink: '/es/docs/developers/api/types#ledgerref', description: 'El registro de quién: `{ source, account }`, `{ owner: "job" | "gang", id, account }`, o un personaje guardado con `{ owner: "character", id, account }` (`id` es el id del personaje como texto).', required: true },
+    query: { type: 'LedgerQuery', typeDescriptionLink: '/es/docs/developers/api/types#ledgerquery', description: 'Qué filas: `before` (el `next` de la página que acabas de leer), `since` (segundos unix), `limit` (1-200, por defecto 50).' },
+  }}
+/>
+
+#### Devuelve
+
+Una [LedgerPage](/es/docs/developers/api/types#ledgerpage): `rows` y el `next` que pasas como `before` (`null` en la última página). ai-core escribe una fila un momento después del cambio, así que la más nueva puede ir unos milisegundos detrás del saldo.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money } from "@aifivem/lib/server";
+
+/** Las últimas 20 filas de banco de un personaje guardado. */
+export async function statement(charId: number) {
+  const page = await money.history({ owner: "character", id: String(charId), account: "bank" }, { limit: 20 });
+  return page.rows.map((r) => `${r.at}: ${r.amount} (${r.reason})`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local page = aiLib.money.history({ source = source, account = 'bank' }, { limit = 20 })
+    for _, row in ipairs(page.rows) do
+        print(('%d: %d (%s)'):format(row.at, row.amount, row.reason))
+    end
+end)
+```
+</Tab>
+</Tabs>
 
 ## banking
 

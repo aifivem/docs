@@ -8,9 +8,188 @@ icon: Wallet
 import { money, banking, billing } from "@aifivem/lib/server";
 ```
 
-Изменения одного счёта игрока (добавить, снять, прочитать баланс) это экспорты ai-core (`AddMoney`, `RemoveMoney`, `GetMoney`; см. [Серверные экспорты ai-core](/ru/docs/developers/api/core-server)). Lib добавляет то, что требует изменения более одного счёта, а также слои банка и счетов.
+`money` - это любой баланс на сервере: счета загруженного игрока, общий счёт работы или банды, перевод, который двигает деньги одной транзакцией, и журнал. Персонаж, который **не** подключён, идёт через [`characters`](/ru/docs/developers/api/lib-server/characters#charactersaddmoney-charactersremovemoney-and-characterssetmoney). `banking` и `billing` - слои для банковского и счётного скриптов сервера.
 
 ## money
+
+### money.get
+
+Баланс загруженного игрока на одном счёте.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+money.get(source: number, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.money.get(source, account)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    account: { type: 'string', description: 'Имя счёта из панели (`cash`, `bank`...). См. [Имена счетов](/ru/docs/developers/api/types#имена-счетов).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number | null`: баланс или `null`, если у игрока нет загруженного персонажа либо такого типа счёта не существует. Балансы сохранённого персонажа берутся из [`characters.get`](/ru/docs/developers/api/lib-server/characters#charactersget).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, notify } from "@aifivem/lib/server";
+
+export function tellBalance(source: number): void {
+  const bank = money.get(source, "bank");
+  notify(source, bank === null ? "Нет персонажа" : `Банк: $${bank}`, bank === null ? "error" : "inform");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local bank = aiLib.money.get(source, 'bank')
+aiLib.notify(source, bank and ('Банк: $%d'):format(bank) or 'Нет персонажа', bank and 'inform' or 'error')
+```
+</Tab>
+</Tabs>
+
+### money.add, money.remove and money.set
+
+Меняет один счёт загруженного игрока, со строкой журнала. Это вызовы для награды, цены, зарплаты, которую платит ваш скрипт.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+money.add(source: number, account: string, amount: number, reason?: string): boolean
+money.remove(source: number, account: string, amount: number, reason?: string): boolean
+money.set(source: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.money.add(source, account, amount, reason)
+local ok = aiLib.money.remove(source, account, amount, reason)
+local ok = aiLib.money.set(source, account, amount, reason)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Серверный id игрока.', required: true },
+    account: { type: 'string', description: 'Имя счёта из панели.', required: true },
+    amount: { type: 'number', description: 'Целые доллары, больше 0 для `add` и `remove`. `set` принимает новый баланс (0 допустим).', required: true },
+    reason: { type: 'string', description: 'Что будет в строке журнала (`"shop:tools"`).', default: 'имя вызывающего ресурса' },
+  }}
+/>
+
+#### Возвращает
+
+`boolean`: `true`, когда изменение прошло. `false`, если у игрока нет загруженного персонажа, счёта не существует, сумма не целая больше 0, либо - у `remove` - баланс не может заплатить (если тип счёта не разрешает уходить ниже нуля).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, onClientCallback } from "@aifivem/lib/server";
+import { fail } from "@aifivem/lib/shared";
+
+onClientCallback("myshop:buyTools", { lock: true }, (source) => {
+  if (!money.remove(source, "cash", 150, "shop:tools")) return fail("NOT_ENOUGH_CASH");
+  // здесь выдайте предмет
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myshop:buyTools', function(source)
+    if not aiLib.money.remove(source, 'cash', 150, 'shop:tools') then return aiLib.fail('NOT_ENOUGH_CASH') end
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Оплата одного игрока другому - это **не** `remove` плюс `add`: сбой на середине создал бы или уничтожил деньги. Берите [`money.transfer`](#moneytransfer), это одна транзакция базы.
+</Callout>
+
+### money.sharedGet
+
+Баланс счёта работы или банды - `bank` это то, что другие фреймворки называют деньгами организации.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+money.sharedGet(type: "job" | "gang", id: string, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.money.sharedGet(type, id, account)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    type: { type: '"job" | "gang"', description: 'Чей это счёт.', required: true },
+    id: { type: 'string', description: 'Название работы или банды (`"mechanic"`).', required: true },
+    account: { type: 'string', description: 'Имя счёта; `bank` - это деньги организации.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`number | null`: баланс или `null`, если у этой работы либо банды нет такого счёта (неизвестная работа или тип счёта, которого нет на сервере).
+
+### money.sharedAdd and money.sharedRemove
+
+Меняет счёт работы или банды, со строкой журнала - доходы и расходы компании.
+
+**Сторона:** Сервер · **Ждёт:** нет
+
+```ts title="Сигнатура"
+money.sharedAdd(type: "job" | "gang", id: string, account: string, amount: number, reason?: string): boolean
+money.sharedRemove(type: "job" | "gang", id: string, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.money.sharedAdd(type, id, account, amount, reason)
+local ok = aiLib.money.sharedRemove(type, id, account, amount, reason)
+```
+
+#### Возвращает
+
+`boolean`: `true`, когда изменение прошло, `false` при неизвестной работе или банде, отсутствующем счёте, неверной сумме либо счёте, который не может заплатить.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money } from "@aifivem/lib/server";
+
+/** Городской контракт, который зарабатывает мастерская, и плата за запчасти. */
+export function contractDone(job: string, pay: number, parts: number): boolean {
+  if (!money.sharedAdd("job", job, "bank", pay, "city contract")) return false;
+  return money.sharedRemove("job", job, "bank", parts, "parts");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local ok = aiLib.money.sharedAdd('job', 'mechanic', 'bank', 500, 'repair')
+```
+</Tab>
+</Tabs>
 
 ### money.transfer
 
@@ -22,7 +201,9 @@ import { money, banking, billing } from "@aifivem/lib/server";
 money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
 ```
 
-Lua-аналога нет: вызывайте экспорт ai-core `exports['ai-core']:TransferMoney(from, to, amount, reason, fee)`.
+```lua title="Lua"
+local ok = aiLib.money.transfer(from, to, amount, reason, fee)
+```
 
 #### Параметры
 
@@ -55,6 +236,59 @@ onClientCallback("my-cash:give", { args: oneArg((v) => readInt(v, 1, 100_000)), 
   return { ok: true };
 });
 ```
+
+### money.history
+
+Строки журнала счёта, самые новые первыми: что сдвинулось, баланс после, причина, кто это сделал и когда. Работает для счёта игрока, счёта работы или банды и счёта сохранённого персонажа.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+money.history(account: LedgerRef, query?: LedgerQuery): Promise<LedgerPage>
+```
+
+```lua title="Lua"
+local page = aiLib.money.history(account, query)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    account: { type: 'LedgerRef', typeDescriptionLink: '/ru/docs/developers/api/types#ledgerref', description: 'Чей журнал: `{ source, account }`, `{ owner: "job" | "gang", id, account }` или сохранённый персонаж через `{ owner: "character", id, account }` (`id` - id персонажа текстом).', required: true },
+    query: { type: 'LedgerQuery', typeDescriptionLink: '/ru/docs/developers/api/types#ledgerquery', description: 'Какие строки: `before` (`next` страницы, которую вы только что прочитали), `since` (unix-секунды), `limit` (1-200, по умолчанию 50).' },
+  }}
+/>
+
+#### Возвращает
+
+[LedgerPage](/ru/docs/developers/api/types#ledgerpage): `rows` и `next`, который вы передаёте как `before` (`null` на последней странице). ai-core пишет строку через мгновение после изменения, так что самая новая может отставать от баланса на несколько миллисекунд.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money } from "@aifivem/lib/server";
+
+/** Последние 20 банковских строк сохранённого персонажа. */
+export async function statement(charId: number) {
+  const page = await money.history({ owner: "character", id: String(charId), account: "bank" }, { limit: 20 });
+  return page.rows.map((r) => `${r.at}: ${r.amount} (${r.reason})`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local page = aiLib.money.history({ source = source, account = 'bank' }, { limit = 20 })
+    for _, row in ipairs(page.rows) do
+        print(('%d: %d (%s)'):format(row.at, row.amount, row.reason))
+    end
+end)
+```
+</Tab>
+</Tabs>
 
 ## banking
 

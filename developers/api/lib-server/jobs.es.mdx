@@ -5,10 +5,261 @@ icon: Siren
 ---
 
 ```ts title="TypeScript"
-import { dispatch, prison, mdt, ems, medical, stress, needs, definitions, isPrimeTime } from "@aifivem/lib/server";
+import { jobs, dispatch, prison, mdt, ems, medical, stress, needs, definitions, isPrimeTime } from "@aifivem/lib/server";
 ```
 
-Cada objeto de esta página pasa por una de las capas de ai-core: responde el script que usa el servidor para esa tarea (un sistema de alertas, una prisión, un MDT, un script de muerte, un HUD). Tu script sigue funcionando cuando el dueño lo cambia. Mientras no haya un script así en marcha, las llamadas fallan en silencio (`false`, `0`, `null`).
+`jobs` y `definitions` son ai-core en sí: los trabajos y bandas de un personaje, y las definiciones de trabajos del servidor. Todo lo demás de aquí pasa por una de las capas de ai-core, donde responde el script que el servidor usa para esa tarea (un sistema de avisos, una cárcel, un MDT, un script de muerte, un HUD). Tu script sigue funcionando cuando el propietario lo cambia. Mientras no corra ninguno, esas llamadas fallan en silencio (`false`, `0`, `null`).
+
+## jobs
+
+`jobs` son los trabajos y bandas propios de un jugador cargado a través de ai-core: un personaje puede tener varios trabajos, está de servicio en uno como máximo, y actúa por una banda a la vez. Leer **muchos** jugadores a la vez es el espejo de la lib ([`online`](/es/docs/developers/api/lib-server/players#onlinejobs)); cambiar un personaje **no conectado** es [`characters`](/es/docs/developers/api/lib-server/characters#characterssetjob-and-charactersremovejob).
+
+### jobs.current
+
+El trabajo que los demás scripts ven como "el" trabajo de un jugador: el que tiene de servicio, si no el último en el que estuvo de servicio, si no el primero que tiene, si no el trabajo de desempleado.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.current(source: number): JobMembership | null
+```
+
+```lua title="Lua"
+local current = aiLib.jobs.current(source)
+```
+
+#### Devuelve
+
+Un [JobMembership](/es/docs/developers/api/types#jobmembership) (`{ job, grade }`), o `null` cuando el jugador no tiene personaje cargado.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { jobs } from "@aifivem/lib/server";
+
+export function isOfficer(source: number): boolean {
+  return jobs.current(source)?.job === "police";
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local current = aiLib.jobs.current(source)
+local officer = current and current.job == 'police'
+```
+</Tab>
+</Tabs>
+
+### jobs.list
+
+Todos los trabajos que tiene el jugador.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.list(source: number): JobMembership[]
+```
+
+```lua title="Lua"
+local list = aiLib.jobs.list(source)
+```
+
+#### Devuelve
+
+Un array de [JobMembership](/es/docs/developers/api/types#jobmembership). Vacío cuando el jugador no tiene personaje cargado o no tiene ningún trabajo.
+
+### jobs.duty and jobs.setDuty
+
+En qué trabajo está de servicio el jugador, y entrar o salir de servicio. Muchos scripts comprueban el servicio en vez de la pertenencia: un agente fuera de servicio es un civil.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.duty(source: number): string | null
+jobs.setDuty(source: number, job: string | null): boolean
+```
+
+```lua title="Lua"
+local onDutyIn = aiLib.jobs.duty(source)
+local ok = aiLib.jobs.setDuty(source, job)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    job: { type: 'string | null', description: 'Un trabajo que el jugador tiene, para entrar de servicio en él. `null` (en Lua `nil`) sale de servicio.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`jobs.duty`: el nombre del trabajo, o `null` fuera de servicio (o sin personaje). `jobs.setDuty`: `true` cuando el cambio se hizo, `false` para un trabajo que el jugador no tiene.
+
+### jobs.set
+
+Añade un trabajo al jugador, o cambia el grado de uno que ya tiene. Se aplican las reglas del panel: cuántos trabajos puede tener un personaje y si se permite un segundo.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.set(source: number, job: string, grade: number): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.jobs.set(source, job, grade)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id de servidor del jugador.', required: true },
+    job: { type: 'string', description: 'El nombre del trabajo tal como está en el panel (o en una definición de script).', required: true },
+    grade: { type: 'number', description: 'El grado en ese trabajo, desde 0. Un grado que el trabajo no tiene se rechaza.', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`boolean`: `true` cuando el jugador tiene después ese trabajo en ese grado. `false` sin personaje cargado, con un trabajo desconocido, un grado desconocido, o al topar con el límite de trabajos del panel.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { jobs, notify } from "@aifivem/lib/server";
+
+export function hire(source: number, job: string): void {
+  if (!jobs.set(source, job, 0)) return notify(source, "No se pudo contratar", "error");
+  notify(source, `Bienvenido a ${job}`, "success");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+if aiLib.jobs.set(source, 'mechanic', 0) then
+    aiLib.notify(source, 'Bienvenido a mechanic', 'success')
+end
+```
+</Tab>
+</Tabs>
+
+### jobs.remove
+
+Quita un trabajo. Un personaje sin trabajos cuenta como desempleado: el trabajo de desempleado nunca se guarda.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.remove(source: number, job: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.jobs.remove(source, job)
+```
+
+#### Devuelve
+
+`boolean`: `true` cuando el trabajo se quitó, `false` cuando el jugador no lo tenía (o no tiene personaje cargado).
+
+### jobs.unemployed
+
+El nombre del trabajo que tiene un personaje sin trabajo, como está definido en el panel. Nunca asumas `"unemployed"`: un servidor puede llamarlo como quiera.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.unemployed(): string
+```
+
+```lua title="Lua"
+local name = aiLib.jobs.unemployed()
+```
+
+#### Devuelve
+
+`string`: el nombre del trabajo según el panel.
+
+### jobs.onDutyCount
+
+Cuántos jugadores están de servicio en un trabajo ahora mismo - el número que normalmente quiere un dispatch o una puerta de trabajo.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.onDutyCount(job: string): number
+```
+
+```lua title="Lua"
+local count = aiLib.jobs.onDutyCount(job)
+```
+
+#### Devuelve
+
+`number`: cuántos jugadores conectados están de servicio en ese trabajo, 0 si ninguno.
+
+### jobs.gangs
+
+Todas las bandas del jugador.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.gangs(source: number): GangMembership[]
+```
+
+```lua title="Lua"
+local list = aiLib.jobs.gangs(source)
+```
+
+#### Devuelve
+
+Un array de [GangMembership](/es/docs/developers/api/types#gangmembership), vacío si no está en ninguna.
+
+### jobs.activeGang and jobs.setActiveGang
+
+Un personaje puede estar en varias bandas pero actúa por una a la vez: esa es la banda activa, y es la que debería leer un script de territorio o de drogas.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.activeGang(source: number): string | null
+jobs.setActiveGang(source: number, gang: string | null): boolean
+```
+
+```lua title="Lua"
+local active = aiLib.jobs.activeGang(source)
+local ok = aiLib.jobs.setActiveGang(source, gang)
+```
+
+#### Devuelve
+
+`jobs.activeGang`: el nombre de la banda, o `null` si ninguna está activa. `jobs.setActiveGang`: `true` cuando el cambio se hizo, `false` para una banda en la que el jugador no está (`null` la borra).
+
+### jobs.setGang and jobs.removeGang
+
+Añade, cambia el grado o quita una banda del jugador.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+jobs.setGang(source: number, gang: string, grade: number): boolean
+jobs.removeGang(source: number, gang: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.jobs.setGang(source, gang, grade)
+local ok = aiLib.jobs.removeGang(source, gang)
+```
+
+#### Devuelve
+
+`boolean`, como en las llamadas de trabajo: `false` sin personaje cargado, con una banda desconocida o un grado desconocido.
 
 ## dispatch
 
@@ -544,7 +795,9 @@ La definición de un trabajo tal como está en el panel de ai-core. Cada una se 
 definitions.job(name: string): JobDefinition | null
 ```
 
-Sin equivalente en Lua: llama al export de ai-core `GetJobDefinition(name)`.
+```lua title="Lua"
+local definition = aiLib.definitions.job(name)
+```
 
 **Devuelve** [`JobDefinition`](/es/docs/developers/api/types#jobdefinition) (`label`, `type`, `defaultDuty`, `listed?`, `grades`), o `null` cuando no existe ese trabajo.
 
@@ -560,7 +813,9 @@ const label = definitions.job("police")?.label ?? "police";
 definitions.gang(name: string): GangDefinition | null
 ```
 
-Sin equivalente en Lua: llama al export de ai-core `GetGangDefinition(name)`.
+```lua title="Lua"
+local definition = aiLib.definitions.gang(name)
+```
 
 **Devuelve** [`GangDefinition`](/es/docs/developers/api/types#gangdefinition) (`label`, `grades`), o `null`.
 
@@ -568,6 +823,89 @@ Sin equivalente en Lua: llama al export de ai-core `GetGangDefinition(name)`.
 const gang = definitions.gang("ballas");
 if (!gang) return fail("UNKNOWN_GANG");
 ```
+
+### definitions.registerJob and definitions.removeJob
+
+Un trabajo que trae tu script sin que el propietario lo añada en el panel: un trabajo del resource que llama, que desaparece cuando el resource para y nunca se escribe en el archivo del panel.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+definitions.registerJob(name: string, definition: JobDefinition): CharacterResult
+definitions.removeJob(name: string): boolean
+```
+
+```lua title="Lua"
+local result = aiLib.definitions.registerJob(name, definition)
+local ok = aiLib.definitions.removeJob(name)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'El nombre de trabajo que usa tu script (`"my-garbagejob"`).', required: true },
+    definition: { type: 'JobDefinition', typeDescriptionLink: '/es/docs/developers/api/types#jobdefinition', description: 'El trabajo en sí: `label`, `type`, `defaultDuty`, `listed`, y sus `grades` (cada uno con `label`, `salary`, `boss`).', required: true },
+  }}
+/>
+
+#### Devuelve
+
+`registerJob` responde [ActionResult](/es/docs/developers/api/types#actionresult): `{ ok: true }`, o `{ ok: false, error }` con una clave de idioma cuando el panel ya tiene un trabajo con ese nombre o otro resource lo registró - el panel del propietario siempre gana. `removeJob` responde `true` solo para un trabajo que registró este resource.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { definitions } from "@aifivem/lib/server";
+
+// Una vez al arrancar: el trabajo existe mientras este resource corra.
+const result = definitions.registerJob("garbage", {
+  label: "Garbage",
+  type: "job",
+  defaultDuty: true,
+  grades: [{ label: "Driver", salary: 60, boss: false }],
+});
+if (!result.ok) console.log(`trabajo no registrado: ${result.error}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local result = aiLib.definitions.registerJob('garbage', {
+    label = 'Garbage',
+    type = 'job',
+    defaultDuty = true,
+    grades = { { label = 'Driver', salary = 60, boss = false } },
+})
+if not result.ok then print(('trabajo no registrado: %s'):format(result.error)) end
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Un trabajo que el propietario del servidor deba poder editar pertenece al panel, no aquí. Registra uno cuando el trabajo es parte de tu script y no significa nada sin él.
+</Callout>
+
+### definitions.registerGang and definitions.removeGang
+
+Lo mismo para bandas.
+
+**Lado:** Servidor · **Espera:** no
+
+```ts title="Firma"
+definitions.registerGang(name: string, definition: GangDefinition): CharacterResult
+definitions.removeGang(name: string): boolean
+```
+
+```lua title="Lua"
+local result = aiLib.definitions.registerGang(name, definition)
+local ok = aiLib.definitions.removeGang(name)
+```
+
+#### Devuelve
+
+Como con los trabajos: [ActionResult](/es/docs/developers/api/types#actionresult) para el registro, `boolean` para quitarlo.
 
 ## Horas punta
 

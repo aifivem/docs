@@ -81,7 +81,7 @@ end)
 
 Le métier que les autres scripts doivent traiter comme « le » métier du joueur : le métier en service, sinon le dernier métier où le joueur était en service, sinon le premier métier, sinon le métier chômeur du panneau. Les scripts ESX et QB voient ce métier via le pont.
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.current`](/fr/docs/developers/api/lib-server/jobs#jobscurrent)
 
 ```ts title="Signature"
 GetCurrentJob(src: number): JobMembership | null
@@ -184,7 +184,7 @@ end)
 
 Met un joueur en service pour l’un de ses métiers (et hors service dans tous les autres), ou hors service.
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.setDuty`](/fr/docs/developers/api/lib-server/jobs#jobsduty-and-jobssetduty)
 
 ```ts title="Signature"
 SetDuty(src: number, job: string | null): boolean
@@ -247,7 +247,7 @@ Le service n’est pas enregistré : un joueur qui se connecte est hors service,
 
 Donne un métier à un joueur, ou change le grade d’un métier qu’il a déjà.
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.set`](/fr/docs/developers/api/lib-server/jobs#jobsset)
 
 ```ts title="Signature"
 SetJob(src: number, job: string, grade: number): boolean
@@ -311,7 +311,7 @@ end)
 
 Retire un métier à un joueur. Un joueur en service pour ce métier quitte d’abord son service.
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.remove`](/fr/docs/developers/api/lib-server/jobs#jobsremove)
 
 ```ts title="Signature"
 RemoveJob(src: number, job: string): boolean
@@ -360,6 +360,49 @@ end)
 ```
 </Tab>
 </Tabs>
+
+### GetUnemployedJob
+
+Le nom du métier d'un personnage sans métier, tel qu'il est défini dans le panneau admin.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.unemployed()`](/fr/docs/developers/api/lib-server/jobs#jobsunemployed)
+
+```ts title="Signature"
+GetUnemployedJob(): string
+```
+
+```lua title="Lua"
+local name = exports['ai-core']:GetUnemployedJob()
+```
+
+#### Retour
+
+`string` : le nom du métier. Ne supposez jamais `"unemployed"` - un propriétaire peut le renommer, et ai-core ne le stocke jamais comme appartenance : un personnage sans ligne de métier **est** sans emploi.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { jobs } from "@aifivem/lib/server";
+
+/** « Ce joueur est-il sans emploi ? », sans deviner le nom. */
+export function isJobless(source: number): boolean {
+  return jobs.current(source)?.job === jobs.unemployed();
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local current = exports['ai-core']:GetCurrentJob(source)
+local jobless = current and current.job == exports['ai-core']:GetUnemployedJob()
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Mettre un joueur au métier de chômeur n'est pas un `SetJob` : retirez-lui ses métiers avec [RemoveJob](#removejob) (ou [RemoveOfflineJob](/fr/docs/developers/api/core-server/stored-characters#setofflinejob-and-removeofflinejob) pour un personnage non connecté).
+</Callout>
 
 ### GetOnDutyCount
 
@@ -588,6 +631,66 @@ end)
 </Tab>
 </Tabs>
 
+### RegisterJobDefinition and RemoveJobDefinition
+
+Un métier qui vient avec votre script au lieu du panneau : il appartient à la resource appelante, n'est jamais écrit dans le fichier du panneau, et disparaît quand votre resource s'arrête.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`definitions.registerJob`](/fr/docs/developers/api/lib-server/jobs#definitionsregisterjob-and-definitionsremovejob)
+
+```ts title="Signature"
+RegisterJobDefinition(name: string, definition: JobDefinition): CharacterResult
+RemoveJobDefinition(name: string): boolean
+```
+
+```lua title="Lua"
+local result = exports['ai-core']:RegisterJobDefinition(name, definition)
+local ok = exports['ai-core']:RemoveJobDefinition(name)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Le nom de métier que votre script utilise.', required: true },
+    definition: { type: 'JobDefinition', typeDescriptionLink: '/fr/docs/developers/api/types#jobdefinition', description: 'Le métier : `label`, `type`, `defaultDuty`, `listed` et `grades` (chacun avec `label`, `salary`, `boss`).', required: true },
+  }}
+/>
+
+#### Retour
+
+`RegisterJobDefinition` répond [ActionResult](/fr/docs/developers/api/types#actionresult) : `{ ok: true }`, ou `{ ok: false, error }` avec une clé de langue quand le panneau a déjà un métier de ce nom, ou qu'une autre resource l'a enregistré - le panneau du propriétaire gagne toujours. `RemoveJobDefinition` répond `true` seulement pour un métier de cette resource.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+const result = core.RegisterJobDefinition("garbage", {
+  label: "Garbage",
+  type: "job",
+  defaultDuty: true,
+  grades: [{ label: "Driver", salary: 60, boss: false }],
+});
+if (!result.ok) console.log(`métier non enregistré : ${result.error}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local result = exports['ai-core']:RegisterJobDefinition('garbage', {
+    label = 'Garbage',
+    type = 'job',
+    defaultDuty = true,
+    grades = { { label = 'Driver', salary = 60, boss = false } },
+})
+if not result.ok then print(('métier non enregistré : %s'):format(result.error)) end
+```
+</Tab>
+</Tabs>
+
 ### GetGangs
 
 Chaque appartenance à un gang du personnage d’un joueur.
@@ -643,7 +746,7 @@ end
 
 Le gang que le joueur a actif en ce moment. Les territoires de gang, les coffres de gang et les chats de gang doivent utiliser le gang actif.
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.activeGang`](/fr/docs/developers/api/lib-server/jobs#jobsactivegang-and-jobssetactivegang)
 
 ```ts title="Signature"
 GetActiveGang(src: number): string | null
@@ -698,7 +801,7 @@ end)
 
 Ajoute un joueur à un gang, ou change son grade dans un gang dont il fait partie. Un personnage sans gang actif reçoit le nouveau gang comme gang actif.
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.setGang`](/fr/docs/developers/api/lib-server/jobs#jobssetgang-and-jobsremovegang)
 
 ```ts title="Signature"
 SetGang(src: number, gang: string, grade: number): boolean
@@ -757,7 +860,7 @@ end)
 
 Retire un joueur d’un gang. Quand c’était le gang actif, le gang restant suivant devient actif (ou aucun).
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.removeGang`](/fr/docs/developers/api/lib-server/jobs#jobssetgang-and-jobsremovegang)
 
 ```ts title="Signature"
 RemoveGang(src: number, gang: string): boolean
@@ -811,7 +914,7 @@ end)
 
 Choisit lequel des gangs du joueur est actif, ou aucun.
 
-**Côté :** Serveur · **Attend :** non · **Lib :** aucune
+**Côté :** Serveur · **Attend :** non · **Lib :** [`jobs.setActiveGang`](/fr/docs/developers/api/lib-server/jobs#jobsactivegang-and-jobssetactivegang)
 
 ```ts title="Signature"
 SetActiveGang(src: number, gang: string | null): boolean
@@ -961,3 +1064,32 @@ end
 ```
 </Tab>
 </Tabs>
+
+### RegisterGangDefinition and RemoveGangDefinition
+
+Comme [RegisterJobDefinition](#registerjobdefinition-and-removejobdefinition), pour un gang que votre script apporte.
+
+**Côté :** Serveur · **Attend :** non · **Lib :** [`definitions.registerGang`](/fr/docs/developers/api/lib-server/jobs#definitionsregistergang-and-definitionsremovegang)
+
+```ts title="Signature"
+RegisterGangDefinition(name: string, definition: GangDefinition): CharacterResult
+RemoveGangDefinition(name: string): boolean
+```
+
+```lua title="Lua"
+local result = exports['ai-core']:RegisterGangDefinition(name, definition)
+local ok = exports['ai-core']:RemoveGangDefinition(name)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Le nom de gang que votre script utilise.', required: true },
+    definition: { type: 'GangDefinition', typeDescriptionLink: '/fr/docs/developers/api/types#gangdefinition', description: 'Le gang : `label` et `grades`.', required: true },
+  }}
+/>
+
+#### Retour
+
+[ActionResult](/fr/docs/developers/api/types#actionresult) pour l'enregistrement (refusé quand le panneau a ce gang ou qu'une autre resource le possède), `boolean` pour le retrait.

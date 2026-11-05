@@ -8,9 +8,188 @@ icon: Wallet
 import { money, banking, billing } from "@aifivem/lib/server";
 ```
 
-Bir oyuncunun tek hesaplık değişiklikleri (ekleme, çıkarma, bakiye okuma) ai-core’un export’larıdır (`AddMoney`, `RemoveMoney`, `GetMoney`; bkz. [ai-core server export’ları](/tr/docs/developers/api/core-server)). Lib, birden fazla hesap değişikliği gerektiren şeyleri ve bankacılık ile fatura katmanlarını ekler.
+`money`, sunucudaki her bakiyedir: yüklü bir oyuncunun hesapları, bir mesleğin ya da çetenin ortak hesabı, parayı tek transaction'da taşıyan bir transfer ve defter. **Bağlı olmayan** bir karakter [`characters`](/tr/docs/developers/api/lib-server/characters#charactersaddmoney-charactersremovemoney-and-characterssetmoney) ile yapılır. `banking` ve `billing`, sunucunun banka ve fatura script'leri için katmanlardır.
 
 ## money
+
+### money.get
+
+Yüklü bir oyuncunun tek bir hesaptaki bakiyesi.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="İmza"
+money.get(source: number, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.money.get(source, account)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    account: { type: 'string', description: 'Paneldeki hesap adı (`cash`, `bank`...). Bkz. [Hesap adları](/tr/docs/developers/api/types#hesap-isimleri).', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number | null`: bakiye ya da oyuncunun yüklü karakteri yoksa / hesap tipi yoksa `null`. Kayıtlı bir karakterin bakiyeleri [`characters.get`](/tr/docs/developers/api/lib-server/characters#charactersget) ile gelir.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, notify } from "@aifivem/lib/server";
+
+export function tellBalance(source: number): void {
+  const bank = money.get(source, "bank");
+  notify(source, bank === null ? "Karakter yok" : `Banka: $${bank}`, bank === null ? "error" : "inform");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local bank = aiLib.money.get(source, 'bank')
+aiLib.notify(source, bank and ('Banka: $%d'):format(bank) or 'Karakter yok', bank and 'inform' or 'error')
+```
+</Tab>
+</Tabs>
+
+### money.add, money.remove and money.set
+
+Yüklü bir oyuncunun tek bir hesabını defter satırıyla değiştirir. Bir ödül, bir fiyat, script'inin ödediği bir maaş için çağrılar bunlardır.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="İmza"
+money.add(source: number, account: string, amount: number, reason?: string): boolean
+money.remove(source: number, account: string, amount: number, reason?: string): boolean
+money.set(source: number, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.money.add(source, account, amount, reason)
+local ok = aiLib.money.remove(source, account, amount, reason)
+local ok = aiLib.money.set(source, account, amount, reason)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    account: { type: 'string', description: 'Paneldeki hesap adı.', required: true },
+    amount: { type: 'number', description: 'Tam sayı dolar; `add` ve `remove` için 0’dan büyük. `set` yeni bakiyeyi alır (0 olabilir).', required: true },
+    reason: { type: 'string', description: 'Defter satırında ne yazacağı (`"shop:tools"`).', default: 'çağıran resource adı' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`boolean`: değişiklik yapıldıysa `true`. Oyuncunun yüklü karakteri yoksa, hesap yoksa, miktar 0’dan büyük tam sayı değilse ya da - `remove` için - bakiye ödemeye yetmiyorsa (hesap tipi sıfırın altına inemiyorsa) `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money, onClientCallback } from "@aifivem/lib/server";
+import { fail } from "@aifivem/lib/shared";
+
+onClientCallback("myshop:buyTools", { lock: true }, (source) => {
+  if (!money.remove(source, "cash", 150, "shop:tools")) return fail("NOT_ENOUGH_CASH");
+  // eşyayı burada ver
+  return { ok: true };
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myshop:buyTools', function(source)
+    if not aiLib.money.remove(source, 'cash', 150, 'shop:tools') then return aiLib.fail('NOT_ENOUGH_CASH') end
+    return { ok = true }
+end, { lock = true })
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+Bir oyuncudan diğerine ödeme **bir `remove` artı bir `add` değildir**: ortada bir hata para yaratır ya da yok eder. Tek bir veritabanı transaction'ı olan [`money.transfer`](#moneytransfer) kullan.
+</Callout>
+
+### money.sharedGet
+
+Bir mesleğin ya da çetenin hesabındaki bakiye - `bank`, diğer framework'lerin society parası dediği şeydir.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="İmza"
+money.sharedGet(type: "job" | "gang", id: string, account: string): number | null
+```
+
+```lua title="Lua"
+local balance = aiLib.money.sharedGet(type, id, account)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    type: { type: '"job" | "gang"', description: 'Hesabın kime ait olduğu.', required: true },
+    id: { type: 'string', description: 'Meslek ya da çete adı (`"mechanic"`).', required: true },
+    account: { type: 'string', description: 'Hesap adı; `bank` society parasıdır.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number | null`: bakiye ya da o meslek / çetede böyle bir hesap yoksa `null` (bilinmeyen bir meslek ya da sunucuda olmayan bir hesap tipi).
+
+### money.sharedAdd and money.sharedRemove
+
+Bir mesleğin ya da çetenin hesabını defter satırıyla değiştirir - bir şirketin geliri ve gideri.
+
+**Taraf:** Server · **Bekler:** hayır
+
+```ts title="İmza"
+money.sharedAdd(type: "job" | "gang", id: string, account: string, amount: number, reason?: string): boolean
+money.sharedRemove(type: "job" | "gang", id: string, account: string, amount: number, reason?: string): boolean
+```
+
+```lua title="Lua"
+local ok = aiLib.money.sharedAdd(type, id, account, amount, reason)
+local ok = aiLib.money.sharedRemove(type, id, account, amount, reason)
+```
+
+#### Dönüş değeri
+
+`boolean`: değişiklik yapıldıysa `true`; bilinmeyen meslek ya da çete, olmayan hesap, hatalı miktar veya ödemeye yetmeyen hesap için `false`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money } from "@aifivem/lib/server";
+
+/** Tamirci dükkânının kazandığı bir şehir sözleşmesi ve parçalar için ödediği ücret. */
+export function contractDone(job: string, pay: number, parts: number): boolean {
+  if (!money.sharedAdd("job", job, "bank", pay, "city contract")) return false;
+  return money.sharedRemove("job", job, "bank", parts, "parts");
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local ok = aiLib.money.sharedAdd('job', 'mechanic', 'bank', 500, 'repair')
+```
+</Tab>
+</Tabs>
 
 ### money.transfer
 
@@ -22,7 +201,9 @@ Parayı tek bir veritabanı transaction’ında, iki tarafta da bir defter satı
 money.transfer(from: MoneyRef, to: MoneyRef, amount: number, reason?: string, fee?: number): boolean
 ```
 
-Lua karşılığı yok: ai-core’un `exports['ai-core']:TransferMoney(from, to, amount, reason, fee)` export’unu çağır.
+```lua title="Lua"
+local ok = aiLib.money.transfer(from, to, amount, reason, fee)
+```
 
 #### Parametreler
 
@@ -55,6 +236,59 @@ onClientCallback("my-cash:give", { args: oneArg((v) => readInt(v, 1, 100_000)), 
   return { ok: true };
 });
 ```
+
+### money.history
+
+Bir hesabın defter satırları, en yeni başta: ne hareket etti, sonraki bakiye, sebep, kim yaptı ve ne zaman. Bir oyuncunun hesabı, bir mesleğin / çetenin hesabı ve kayıtlı bir karakterin hesabı için çalışır.
+
+**Taraf:** Server · **Bekler:** evet
+
+```ts title="İmza"
+money.history(account: LedgerRef, query?: LedgerQuery): Promise<LedgerPage>
+```
+
+```lua title="Lua"
+local page = aiLib.money.history(account, query)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    account: { type: 'LedgerRef', typeDescriptionLink: '/tr/docs/developers/api/types#ledgerref', description: 'Kimin defteri: `{ source, account }`, `{ owner: "job" | "gang", id, account }` ya da `{ owner: "character", id, account }` ile kayıtlı bir karakter (`id`, karakter id’si metin olarak).', required: true },
+    query: { type: 'LedgerQuery', typeDescriptionLink: '/tr/docs/developers/api/types#ledgerquery', description: 'Hangi satırlar: `before` (yeni okuduğun sayfanın `next` değeri), `since` (unix saniye), `limit` (1-200, varsayılan 50).' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Bir [LedgerPage](/tr/docs/developers/api/types#ledgerpage): `rows` ve `before` olarak göndereceğin `next` (son sayfada `null`). ai-core bir satırı değişiklikten bir an sonra yazar, yani en yeni satır bakiyenin birkaç milisaniye gerisinde olabilir.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money } from "@aifivem/lib/server";
+
+/** Kayıtlı bir karakterin son 20 banka satırı. */
+export async function statement(charId: number) {
+  const page = await money.history({ owner: "character", id: String(charId), account: "bank" }, { limit: 20 });
+  return page.rows.map((r) => `${r.at}: ${r.amount} (${r.reason})`);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local page = aiLib.money.history({ source = source, account = 'bank' }, { limit = 20 })
+    for _, row in ipairs(page.rows) do
+        print(('%d: %d (%s)'):format(row.at, row.amount, row.reason))
+    end
+end)
+```
+</Tab>
+</Tabs>
 
 ## banking
 

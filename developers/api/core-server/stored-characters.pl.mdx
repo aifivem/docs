@@ -1,0 +1,646 @@
+---
+title: Zapisane postacie
+description: Czytaj i zmieniaj dowolną postać, wczytaną albo nie - znajdź ją, przeczytaj, zmień jej pieniądze, prace, gangi, metadane i imię, zapisz ją, usuń ją.
+icon: Users
+---
+
+Eksporty na stronie [Postacie](/pl/docs/developers/api/core-server/characters) odpowiadają o graczu **połączonym z wczytaną postacią**. Te tutaj odpowiadają o **każdej** postaci, połączonej albo nie: ai-core czyta wczytaną postać z pamięci, a zapisaną z bazy danych, a zapis trafia do żywej postaci, gdy jest wczytana, i do wiersza, gdy nie jest.
+
+Trzy rzeczy na początek:
+
+- **Postać adresuje się jej id postaci** (`charId`, liczba - `CharacterInfo.id`). citizenid to tekst i należy do bridge'y frameworków; przelicz jedno na drugie przez [GetCharIdByCitizenId](#getcharidbycitizenid), nigdy ręcznie.
+- **Te eksporty odpowiadają przez callback** (`done`), bo zapisana postać wymaga czytania z bazy, a żadna Promise nie przekracza granicy resource'ów. W TypeScripcie moduł [characters](/pl/docs/developers/api/lib-server/characters) z liba daje Promise; w Lua `aiLib.characters` czeka za Ciebie.
+- **Każdy zapis odpowiada [ActionResult](/pl/docs/developers/api/types#actionresult)**: `{ ok: true }` albo `{ ok: false, error: "LANG_KEY" }` z jednym z kluczy językowych ai-core (`locales/en.json`), który pokażesz przez `callAction` albo przetłumaczysz sam.
+
+<Callout type="warn">
+Nigdy nie czytaj i nie zapisuj tabel ai-core (`ai_core_characters`, `ai_core_accounts`, `ai_core_character_jobs`...) własnymi zapytaniami. Postacie żyją w pamięci i są zapisywane w rytmie ai-core, więc bezpośredni `SELECT` może być przedawniony, a kolumny są wewnętrzne.
+</Callout>
+
+### GetCharIdByCitizenId
+
+Id postaci stojące za citizenid, wczytanej albo nie. Wczytana postać odpowiada z pamięci, zapisana jednym indeksowanym czytaniem.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.idOf`](/pl/docs/developers/api/lib-server/characters#charactersidof)
+
+```ts title="Sygnatura"
+GetCharIdByCitizenId(citizenid: string, done: (charId: number | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetCharIdByCitizenId(citizenid, function(charId) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    citizenid: { type: 'string', description: 'Tekst citizenid postaci.', required: true },
+    done: { type: '(charId: number | null) => void', description: 'Wołany z id postaci albo z `null`, gdy żadna postać nie ma tego citizenid albo została usunięta.', required: true },
+  }}
+/>
+
+#### Zwraca
+
+Nic. Odpowiedź przychodzi w `done`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+// Lib zawija callback w Promise.
+export async function fine(citizenid: string, amount: number): Promise<boolean> {
+  const charId = await characters.idOf(citizenid);
+  if (charId === null) return false;
+  const result = await characters.removeMoney(charId, "bank", amount, "Mandat");
+  return result.ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- aiLib.characters nie ma idOf: drogą jest eksport, a on odpowiada w callbacku.
+local function charIdOf(citizenid)
+    local p = promise.new()
+    exports['ai-core']:GetCharIdByCitizenId(citizenid, function(charId) p:resolve(charId) end)
+    return Citizen.Await(p)
+end
+
+CreateThread(function()
+    local charId = charIdOf('12')
+    if charId then print(('id postaci: %d'):format(charId)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### GetOfflineCharacter
+
+Wszystko, co ai-core trzyma o postaci: imię i data urodzenia, pieniądze na konto, prace, gangi, metadane, zapisana pozycja, ostatni zapis i id serwera, gdy jest wczytana.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.get`](/pl/docs/developers/api/lib-server/characters#charactersget)
+
+```ts title="Sygnatura"
+GetOfflineCharacter(charId: number, done: (character: OfflineCharacter | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetOfflineCharacter(charId, function(character) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id postaci.', required: true },
+    done: { type: '(character: OfflineCharacter | null) => void', description: 'Wołany z postacią albo z `null`, gdy id jest nieznane albo postać została usunięta.', required: true, typeDescriptionLink: '/pl/docs/developers/api/types#offlinecharacter' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje [OfflineCharacter](/pl/docs/developers/api/types#offlinecharacter) albo `null`. Wczytana postać odpowiada z pamięci, więc jej pieniądze i przynależności są aktualne, a `source` to gracz.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+export async function describe(charId: number): Promise<string> {
+  const c = await characters.get(charId);
+  if (!c) return "nieznana postać";
+  const where = c.source === null ? "offline" : `online jako ${c.source}`;
+  return `${c.info.firstname} ${c.info.lastname} (${where}), bank ${c.money.bank ?? 0}`;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local c = aiLib.characters.get(12) -- czeka: wewnątrz wątku
+    if not c then return print('nieznana postać') end
+    print(('%s %s, bank %d'):format(c.info.firstname, c.info.lastname, c.money.bank or 0))
+end)
+```
+</Tab>
+</Tabs>
+
+### SearchCharacters
+
+Postacie po wpisanym tekście, wczytane albo nie: prefiksy imienia lub nazwiska (`"jane doe"` też), citizenid, id fivem / license / discord. 25 na stronę, najnowsza postać pierwsza.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.search`](/pl/docs/developers/api/lib-server/characters#characterssearch)
+
+```ts title="Sygnatura"
+SearchCharacters(text: string, done: (page: CharacterSearchPage) => void, cursor?: number): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SearchCharacters(text, function(page) end, cursor)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    text: { type: 'string', description: 'To, co wpisano. Prefiks imienia, pełne `"imię nazwisko"`, citizenid albo id fivem / license / discord.', required: true },
+    done: { type: '(page: CharacterSearchPage) => void', description: 'Wołany ze stroną trafień.', required: true, typeDescriptionLink: '/pl/docs/developers/api/types#charactersearchpage' },
+    cursor: { type: 'number', description: 'Pole `next` strony, którą właśnie przeczytałeś, by dostać następną. Pomiń dla pierwszej strony.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje [CharacterSearchPage](/pl/docs/developers/api/types#charactersearchpage): do 25 trafień i kursor `next` (`null` na ostatniej stronie). Pusty tekst odpowiada najnowszymi postaciami, więc ekran przeglądania działa bez frazy.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, onClientCallback } from "@aifivem/lib/server";
+import { oneArg, readText } from "@aifivem/lib/shared";
+
+onClientCallback(
+  "myscript:searchPeople",
+  { args: oneArg((v) => readText(v, 64)), rate: { count: 10, windowMs: 10_000 } },
+  async (_source, text) => {
+    const page = await characters.search(text);
+    return { ok: true, people: page.characters, next: page.next };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:searchPeople', function(source, text)
+    if type(text) ~= 'string' then return aiLib.fail('CORE_ERR_ARGS') end
+    local page = aiLib.characters.search(text) -- czeka; handler i tak działa w wątku
+    return { ok = true, people = page.characters, next = page.next }
+end, { rate = { count = 10, windowMs = 10000 } })
+```
+</Tab>
+</Tabs>
+
+### GetCharactersOfUser
+
+Wszystkie postacie jednego konta, po slocie. Do ekranu, który pokazuje graczowi wszystkie jego postacie, albo do narzędzia admina działającego na koncie.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.ofUser`](/pl/docs/developers/api/lib-server/characters#charactersofuser)
+
+```ts title="Sygnatura"
+GetCharactersOfUser(user: number | string, done: (characters: StoredCharacter[]) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetCharactersOfUser(user, function(characters) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    user: { type: 'number | string', description: 'Id konta (`ai_core_users.id`) albo license (`"license:abc"` lub samo `"abc"`). License należąca do kilku kont odpowiada postaciami wszystkich.', required: true },
+    done: { type: '(characters: StoredCharacter[]) => void', description: 'Wołany z postaciami, w kolejności slotów. Puste dla nieznanego konta.', required: true, typeDescriptionLink: '/pl/docs/developers/api/types#storedcharacter' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje tablicę [StoredCharacter](/pl/docs/developers/api/types#storedcharacter).
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, resourceExport } from "@aifivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+export async function slotsOf(source: number): Promise<number[]> {
+  const userId = core.GetUserId(source);
+  if (userId === null) return [];
+  return (await characters.ofUser(userId)).map((c) => c.slot);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local userId = exports['ai-core']:GetUserId(source)
+    if not userId then return end
+    for _, c in ipairs(aiLib.characters.ofUser(userId)) do
+        print(('slot %d: %s %s'):format(c.slot, c.firstname, c.lastname))
+    end
+end)
+```
+</Tab>
+</Tabs>
+
+### GetJobMembers and GetGangMembers
+
+Wszyscy, którzy mają pracę (albo są w gangu), wczytani albo nie, strona po stronie i ze swoim stopniem. To właśnie kadra, jakiej potrzebuje ekran zarządzania: lustro [online](/pl/docs/developers/api/lib-server/players#onlinejobmembers) z liba zna tylko graczy połączonych.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.jobMembers`](/pl/docs/developers/api/lib-server/characters#charactersjobmembers-and-charactersgangmembers)
+
+```ts title="Sygnatura"
+GetJobMembers(job: string, done: (page: MembersPage) => void, after?: number, limit?: number): void
+GetGangMembers(gang: string, done: (page: MembersPage) => void, after?: number, limit?: number): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetJobMembers(job, function(page) end, after, limit)
+exports['ai-core']:GetGangMembers(gang, function(page) end, after, limit)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Nazwa pracy jak w panelu (`"police"`). `GetGangMembers` bierze nazwę gangu.', required: true },
+    done: { type: '(page: MembersPage) => void', description: 'Wołany ze stroną członków, w kolejności id postaci.', required: true, typeDescriptionLink: '/pl/docs/developers/api/types#memberspage' },
+    after: { type: 'number', description: 'Pole `next` strony, którą właśnie przeczytałeś, by dostać następną. Pomiń dla pierwszej strony.' },
+    limit: { type: 'number', description: 'Ilu członków mieści strona, 1-500.', default: '100' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje [MembersPage](/pl/docs/developers/api/types#memberspage): członków i `after` następnej strony (`null` na ostatniej). Każdy członek nosi `source`, więc połączeni to wpisy, w których `source` nie jest `null`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Wszyscy członkowie pracy, strona po stronie. */
+export async function roster(job: string) {
+  const all = [];
+  let after: number | undefined;
+  do {
+    const page = await characters.jobMembers(job, after);
+    all.push(...page.members);
+    after = page.next ?? undefined;
+  } while (after !== undefined);
+  return all;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local all, after = {}, nil
+    repeat
+        local page = aiLib.characters.jobMembers('police', after)
+        for _, m in ipairs(page.members) do all[#all + 1] = m end
+        after = page.next
+    until not after
+    print(('police ma %d członków'):format(#all))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Samo pytanie "czy ktokolwiek ma tę pracę?" czyta jeden wiersz: lib [`characters.hasJobMember`](/pl/docs/developers/api/lib-server/characters#charactershasjobmember) woła ten eksport z `limit = 1`.
+</Callout>
+
+### AddOfflineMoney, RemoveOfflineMoney and SetOfflineMoney
+
+Pieniądze postaci, wczytanej albo nie. Wczytana postać idzie przez swój żywy portfel (gracz widzi to od razu), zapisana jest zapisywana w bazie z tymi samymi regułami i tym samym wierszem księgi.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.addMoney`](/pl/docs/developers/api/lib-server/characters#charactersaddmoney-charactersremovemoney-and-characterssetmoney)
+
+```ts title="Sygnatura"
+AddOfflineMoney(charId: number, account: string, amount: number, reason?: string, done?: (result: CharacterResult) => void): void
+RemoveOfflineMoney(charId: number, account: string, amount: number, reason?: string, done?: (result: CharacterResult) => void): void
+SetOfflineMoney(charId: number, account: string, amount: number, reason?: string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:AddOfflineMoney(charId, account, amount, reason, function(result) end)
+exports['ai-core']:RemoveOfflineMoney(charId, account, amount, reason, function(result) end)
+exports['ai-core']:SetOfflineMoney(charId, account, amount, reason, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id postaci.', required: true },
+    account: { type: 'string', description: 'Nazwa konta z panelu (`cash`, `bank`...). Zobacz [Nazwy kont](/pl/docs/developers/api/types#nazwy-kont).', required: true },
+    amount: { type: 'number', description: 'Całkowita liczba dolarów, powyżej 0 dla add i remove (`SetOfflineMoney` bierze nowy stan konta, 0 włącznie).', required: true },
+    reason: { type: 'string', description: 'Co mówi wiersz księgi.', default: 'nazwa wołającego resource' },
+    done: { type: '(result: CharacterResult) => void', description: 'Wołany z wynikiem. Pomiń, jeśli nie czytasz odpowiedzi.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje `{ ok: true }` albo `{ ok: false, error }` z kluczem językowym: nieznana postać, konto, którego serwer nie ma, kwota niecałkowita lub ujemna, albo - w `RemoveOfflineMoney` - stan konta, który nie może zapłacić (chyba że typ konta może zejść poniżej zera).
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Wypłaca sprzedaż, czy sprzedający jest online, czy nie. */
+export async function payOut(charId: number, amount: number): Promise<boolean> {
+  const result = await characters.addMoney(charId, "bank", amount, "Pojazd sprzedany");
+  if (!result.ok) console.log(`wypłata odrzucona: ${result.error}`);
+  return result.ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local result = aiLib.characters.addMoney(12, 'bank', 2500, 'Pojazd sprzedany')
+    if not result.ok then print(('wypłata odrzucona: %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### SetOfflineJob and RemoveOfflineJob
+
+Zatrudnia postać, zmienia jej stopień albo ją zwalnia, połączoną albo nie. Obowiązują reguły prac z panelu (ile prac może mieć postać, czy druga jest dozwolona), a praca bezrobotnego nigdy nie jest zapisywana: zabranie ostatniej pracy czyni postać bezrobotną.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.setJob`](/pl/docs/developers/api/lib-server/characters#characterssetjob-and-charactersremovejob)
+
+```ts title="Sygnatura"
+SetOfflineJob(charId: number, job: string, grade: number, done?: (result: CharacterResult) => void): void
+RemoveOfflineJob(charId: number, job: string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetOfflineJob(charId, job, grade, function(result) end)
+exports['ai-core']:RemoveOfflineJob(charId, job, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id postaci.', required: true },
+    job: { type: 'string', description: 'Nazwa pracy jak w panelu (albo w definicji ze skryptu).', required: true },
+    grade: { type: 'number', description: 'Stopień w tej pracy, od 0. Stopień, którego praca nie ma, jest odrzucany.', required: true },
+    done: { type: '(result: CharacterResult) => void', description: 'Wołany z wynikiem.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje `{ ok: true }` albo `{ ok: false, error }` z kluczem językowym: nieznana postać, nieznana praca, stopień, który nie istnieje, albo limit prac z panelu.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Zwalnia członka, online albo nie. */
+export async function fire(charId: number, job: string): Promise<boolean> {
+  return (await characters.removeJob(charId, job)).ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local result = aiLib.characters.removeJob(12, 'police')
+    print(result.ok and 'zwolniony' or ('odrzucone: ' .. tostring(result.error)))
+end)
+```
+</Tab>
+</Tabs>
+
+### SetOfflineGang and RemoveOfflineGang
+
+To samo dla gangów. Postać może być w kilku gangach, ale działa dla jednego naraz ([SetActiveGang](/pl/docs/developers/api/core-server/jobs-gangs#setactivegang) wybiera go dla połączonego gracza).
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.setGang`](/pl/docs/developers/api/lib-server/characters#characterssetgang-and-charactersremovegang)
+
+```ts title="Sygnatura"
+SetOfflineGang(charId: number, gang: string, grade: number, done?: (result: CharacterResult) => void): void
+RemoveOfflineGang(charId: number, gang: string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetOfflineGang(charId, gang, grade, function(result) end)
+exports['ai-core']:RemoveOfflineGang(charId, gang, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id postaci.', required: true },
+    gang: { type: 'string', description: 'Nazwa gangu jak w panelu.', required: true },
+    grade: { type: 'number', description: 'Stopień w tym gangu, od 0.', required: true },
+    done: { type: '(result: CharacterResult) => void', description: 'Wołany z wynikiem.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje `{ ok: true }` albo `{ ok: false, error }`, jak przy pracach.
+
+### SetOfflineMeta
+
+Jedna wartość metadanych postaci, wczytanej albo nie. Wczytana postać dostaje ją jako deltę na własnej grze, więc HUD i interfejs od razu nadążają.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.setMeta`](/pl/docs/developers/api/lib-server/characters#characterssetmeta)
+
+```ts title="Sygnatura"
+SetOfflineMeta(charId: number, key: string, value: unknown, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetOfflineMeta(charId, key, value, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id postaci.', required: true },
+    key: { type: 'string', description: 'Klucz metadanych. Użyj własnego prefiksu (`myscript_points`), żeby dwa skrypty nigdy nie walczyły o jeden klucz.', required: true },
+    value: { type: 'unknown', description: 'Cokolwiek, co JSON uniesie: liczba, tekst, boolean, tablica. `null` usuwa klucz.', required: true },
+    done: { type: '(result: CharacterResult) => void', description: 'Wołany z wynikiem.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje `{ ok: true }` albo `{ ok: false, error }` przy nieznanej postaci lub wartości, której JSON nie uniesie.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+await characters.setMeta(12, "myscript_licence", { kind: "drive", since: Date.now() });
+await characters.setMeta(12, "myscript_licence", null); // zabiera ją
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.characters.setMeta(12, 'myscript_licence', { kind = 'drive' })
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Dla gracza **połączonego** krótszą drogą jest [GetMeta / SetMeta](/pl/docs/developers/api/core-server/metadata-settings#setmeta), i tylko tam da się metadane czytać (ta strona nie ma `GetOfflineMeta`: przeczytaj całą postać przez [GetOfflineCharacter](#getofflinecharacter) i weź `metadata`).
+</Callout>
+
+### SetCharacterInfo
+
+Zmienia własne pola postaci: imię, datę urodzenia, narodowość, płeć i wzrost. Każde pole jest sprawdzane tak, jak sprawdza je formularz tworzenia postaci, więc narzędzie admina nie zapisze imienia, które tworzenie by odrzuciło.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.setInfo`](/pl/docs/developers/api/lib-server/characters#characterssetinfo)
+
+```ts title="Sygnatura"
+SetCharacterInfo(charId: number, patch: CharacterInfoPatch, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetCharacterInfo(charId, patch, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id postaci.', required: true },
+    patch: { type: 'CharacterInfoPatch', description: 'Pola do zmiany; pomiń jedno, by je zachować. Każde pole i jego reguły: [CharacterInfoPatch](/pl/docs/developers/api/types#characterinfopatch).', required: true, typeDescriptionLink: '/pl/docs/developers/api/types#characterinfopatch' },
+    done: { type: '(result: CharacterResult) => void', description: 'Wołany z wynikiem.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje `{ ok: true }` albo `{ ok: false, error }` z kluczem językowym. `sex` jest odrzucany, dopóki postać jest wczytana, bo model peda za nim idzie; wszystko inne trafia do wczytanej postaci jako delta.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+const result = await characters.setInfo(12, { lastname: "Doe-Smith", height: 174 });
+if (!result.ok) console.log(`zmiana nazwiska odrzucona: ${result.error}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local result = aiLib.characters.setInfo(12, { lastname = 'Doe-Smith', height = 174 })
+    if not result.ok then print(('odrzucone: %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### DeleteCharacter
+
+Usuwa postać. To miękkie usunięcie: wiersz zostaje dla logów, a postać znika z każdej listy i z każdego wyszukiwania.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.remove`](/pl/docs/developers/api/lib-server/characters#charactersremove)
+
+```ts title="Sygnatura"
+DeleteCharacter(charId: number, by?: number | string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:DeleteCharacter(charId, by, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id postaci.', required: true },
+    by: { type: 'number | string', description: 'Kto usunął, do logu: id serwera albo nazwa. Pomiń, gdy usuwa skrypt.' },
+    done: { type: '(result: CharacterResult) => void', description: 'Wołany z wynikiem.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje `{ ok: true }` albo `{ ok: false, error }` przy nieznanej postaci lub **postaci wczytanej w tej chwili** - gracz musi najpierw wrócić na ekran postaci. Po sukcesie ai-core wywołuje swoje zdarzenie `characterDeleted`; zobacz [Zdarzenia i stan](/pl/docs/developers/api/events).
+
+### GetPlayTime
+
+Ile postać była grana, w sekundach: zapisana suma plus trwająca sesja.
+
+**Strona:** Serwer · **Czeka:** nie dla połączonego gracza · **Lib:** [`characters.playTime`](/pl/docs/developers/api/lib-server/characters#charactersplaytime)
+
+```ts title="Sygnatura"
+GetPlayTime(target: number | { charId: number }, done?: (seconds: number | null) => void): number | null
+```
+
+```lua title="Lua"
+local seconds = exports['ai-core']:GetPlayTime(source) -- połączony gracz: odpowiada od razu
+exports['ai-core']:GetPlayTime({ charId = 12 }, function(seconds) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    target: { type: 'number | { charId: number }', description: 'Id serwera połączonego gracza albo id postaci jako `{ charId }` (wczytanej albo nie).', required: true },
+    done: { type: '(seconds: number | null) => void', description: 'Potrzebny dla postaci, która nie jest wczytana: dostaje zapisaną wartość. Jest wołany też wtedy, gdy odpowiedź przyszła od razu.' },
+  }}
+/>
+
+#### Zwraca
+
+`number | null`: sekundy, gdy są znane bez czytania z bazy (id serwera albo wczytane `{ charId }`). `null` znaczy "nie tutaj, czekaj na `done`" - albo, przy id serwera, że gracz nie ma wczytanej postaci.
+
+### SavePlayer
+
+Zapisuje teraz pozycję i metadane połączonego gracza i czeka na jego zakolejkowane zapisy. Użyj przed czymś, co nie może stracić ostatnich minut: restart, przekazanie, akcja admina, którą logujesz.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`) · **Lib:** [`characters.save`](/pl/docs/developers/api/lib-server/characters#characterssave)
+
+```ts title="Sygnatura"
+SavePlayer(source: number, done?: (ok: boolean) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SavePlayer(source, function(ok) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Id serwera gracza.', required: true },
+    done: { type: '(ok: boolean) => void', description: 'Wołany z `true`, gdy wszystko jest zapisane, z `false`, gdy gracz nie ma wczytanej postaci.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. ai-core zapisuje sam (okresowo, przy wyładowaniu i przy wyłączaniu), więc potrzebujesz tego tylko wtedy, gdy zapis ma się wydarzyć **przed** Twoim następnym krokiem.
+
+<Callout type="info">
+Postać, która nie jest wczytana, jest już zapisana: nie ma czego opróżniać. Żeby przesunąć punkt spawnu zapisanej postaci, użyj [`characters.setOfflinePosition`](/pl/docs/developers/api/lib-server/world#characterssetofflineposition) ([SetOfflinePosition](/pl/docs/developers/api/core-server/characters#setofflineposition)).
+</Callout>

@@ -1,0 +1,646 @@
+---
+title: Kayıtlı karakterler
+description: Yüklü olsun olmasın her karakteri oku ve değiştir - bul, oku, parasını, mesleklerini, çetelerini, metadata'sını ve adını değiştir, kaydet, sil.
+icon: Users
+---
+
+[Karakterler](/tr/docs/developers/api/core-server/characters) sayfasındaki export'lar **yüklü karakteriyle bağlı olan** bir oyuncu hakkında cevap verir. Buradakiler **her** karakter hakkında cevap verir, bağlı olsun ya da olmasın: ai-core yüklü bir karakteri bellekten, kayıtlı olanı veritabanından okur; bir yazma işlemi karakter yüklüyse canlı karaktere, değilse satıra ulaşır.
+
+Kullanmadan önce bilinmesi gereken üç şey:
+
+- **Bir karakter, karakter id'si ile adreslenir** (`charId`, bir sayı - `CharacterInfo.id`). citizenid metindir ve framework köprülerine aittir; birini diğerine [GetCharIdByCitizenId](#getcharidbycitizenid) ile çevir, asla değeri kendin dönüştürerek değil.
+- **Bu export'lar bir callback ile cevap verir** (`done`), çünkü kayıtlı bir karakter için veritabanı okuması gerekir ve resource sınırını hiçbir promise geçmez. TypeScript'te lib'in [characters](/tr/docs/developers/api/lib-server/characters) modülü bunun yerine Promise verir; Lua'da `aiLib.characters` bir thread içinde senin yerine bekler.
+- **Her yazma işlemi [ActionResult](/tr/docs/developers/api/types#actionresult) döner**: `{ ok: true }` ya da ai-core'un kendi dil anahtarlarından biriyle (`locales/en.json`) `{ ok: false, error: "LANG_KEY" }`; böylece `callAction` ile gösterebilir ya da kendin çevirebilirsin.
+
+<Callout type="warn">
+ai-core'un tablolarını (`ai_core_characters`, `ai_core_accounts`, `ai_core_character_jobs`...) kendi sorgularınla asla okuma ve yazma. Karakterler bellekte durur ve ai-core'un takvimiyle yazılır; doğrudan bir `SELECT` eski veri verebilir ve kolonlar içeridir.
+</Callout>
+
+### GetCharIdByCitizenId
+
+Bir citizenid'nin arkasındaki karakter id'si, yüklü olsun olmasın. Yüklü bir karakter bellekten, kayıtlı olan tek indeksli okumayla cevap verir.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.idOf`](/tr/docs/developers/api/lib-server/characters#charactersidof)
+
+```ts title="İmza"
+GetCharIdByCitizenId(citizenid: string, done: (charId: number | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetCharIdByCitizenId(citizenid, function(charId) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    citizenid: { type: 'string', description: 'Karakterin citizenid metni.', required: true },
+    done: { type: '(charId: number | null) => void', description: 'Karakter id’si ile çağrılır; o citizenid’ye sahip karakter yoksa ya da silinmişse `null`.', required: true },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. Cevap `done` içinde gelir.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+// Lib callback'i bir Promise'e sarar.
+export async function fine(citizenid: string, amount: number): Promise<boolean> {
+  const charId = await characters.idOf(citizenid);
+  if (charId === null) return false;
+  const result = await characters.removeMoney(charId, "bank", amount, "Hız cezası");
+  return result.ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+-- aiLib.characters'ta idOf yok: yol export'tur ve callback ile cevap verir.
+local function charIdOf(citizenid)
+    local p = promise.new()
+    exports['ai-core']:GetCharIdByCitizenId(citizenid, function(charId) p:resolve(charId) end)
+    return Citizen.Await(p)
+end
+
+CreateThread(function()
+    local charId = charIdOf('12')
+    if charId then print(('karakter id: %d'):format(charId)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### GetOfflineCharacter
+
+ai-core'un bir karakter hakkında tuttuğu her şey: ad ve doğum tarihi, hesap başına para, meslekler, çeteler, metadata, kayıtlı konum, son kayıt ve karakter yüklüyse server id'si.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.get`](/tr/docs/developers/api/lib-server/characters#charactersget)
+
+```ts title="İmza"
+GetOfflineCharacter(charId: number, done: (character: OfflineCharacter | null) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetOfflineCharacter(charId, function(character) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Karakter id’si.', required: true },
+    done: { type: '(character: OfflineCharacter | null) => void', description: 'Karakterle çağrılır; id bilinmiyorsa ya da karakter silinmişse `null`.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#offlinecharacter' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [OfflineCharacter](/tr/docs/developers/api/types#offlinecharacter) ya da `null` alır. Yüklü bir karakter bellekten cevap verir; yani parası ve üyelikleri canlı olanlardır ve `source` oyuncudur.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+export async function describe(charId: number): Promise<string> {
+  const c = await characters.get(charId);
+  if (!c) return "bilinmeyen karakter";
+  const where = c.source === null ? "çevrimdışı" : `çevrimiçi, server id ${c.source}`;
+  return `${c.info.firstname} ${c.info.lastname} (${where}), banka ${c.money.bank ?? 0}`;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local c = aiLib.characters.get(12) -- bekler: bir thread içinde
+    if not c then return print('bilinmeyen karakter') end
+    print(('%s %s, banka %d'):format(c.info.firstname, c.info.lastname, c.money.bank or 0))
+end)
+```
+</Tab>
+</Tabs>
+
+### SearchCharacters
+
+Yazılan bir metne göre karakterler, yüklü olsun olmasın: ad ya da soyad başlangıcı (`"jane doe"` da olur), citizenid, fivem / license / discord id. Sayfa başına 25, en yeni karakter başta.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.search`](/tr/docs/developers/api/lib-server/characters#characterssearch)
+
+```ts title="İmza"
+SearchCharacters(text: string, done: (page: CharacterSearchPage) => void, cursor?: number): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SearchCharacters(text, function(page) end, cursor)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    text: { type: 'string', description: 'Yazılan şey. Bir ad başlangıcı, tam bir `"ad soyad"`, bir citizenid ya da bir fivem / license / discord id.', required: true },
+    done: { type: '(page: CharacterSearchPage) => void', description: 'Eşleşme sayfasıyla çağrılır.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#charactersearchpage' },
+    cursor: { type: 'number', description: 'Yeni okuduğun sayfanın `next` değeri; sonrakini almak için. İlk sayfa için verme.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [CharacterSearchPage](/tr/docs/developers/api/types#charactersearchpage) alır: en çok 25 eşleşme ve `next` cursor'ı (son sayfada `null`). Boş metin en yeni karakterleri döner, yani bir listeleme ekranı arama terimi olmadan da çalışır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, onClientCallback } from "@aifivem/lib/server";
+import { oneArg, readText } from "@aifivem/lib/shared";
+
+onClientCallback(
+  "myscript:searchPeople",
+  { args: oneArg((v) => readText(v, 64)), rate: { count: 10, windowMs: 10_000 } },
+  async (_source, text) => {
+    const page = await characters.search(text);
+    return { ok: true, people: page.characters, next: page.next };
+  },
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:searchPeople', function(source, text)
+    if type(text) ~= 'string' then return aiLib.fail('CORE_ERR_ARGS') end
+    local page = aiLib.characters.search(text) -- bekler; handler zaten bir thread içinde çalışır
+    return { ok = true, people = page.characters, next = page.next }
+end, { rate = { count = 10, windowMs = 10000 } })
+```
+</Tab>
+</Tabs>
+
+### GetCharactersOfUser
+
+Bir hesabın her karakteri, slot sırasıyla. Bir oyuncuya bütün karakterlerini gösteren bir ekran ya da hesap üzerinde çalışan bir admin aracı için.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.ofUser`](/tr/docs/developers/api/lib-server/characters#charactersofuser)
+
+```ts title="İmza"
+GetCharactersOfUser(user: number | string, done: (characters: StoredCharacter[]) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetCharactersOfUser(user, function(characters) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    user: { type: 'number | string', description: 'Hesap id’si (`ai_core_users.id`) ya da bir license (`"license:abc"` veya düz `"abc"`). Birkaç hesaba ait bir license hepsinin karakterlerini döner.', required: true },
+    done: { type: '(characters: StoredCharacter[]) => void', description: 'Karakterlerle çağrılır, slot sırasıyla. Bilinmeyen hesap için boş.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#storedcharacter' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [StoredCharacter](/tr/docs/developers/api/types#storedcharacter) dizisi alır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, resourceExport } from "@aifivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+export async function slotsOf(source: number): Promise<number[]> {
+  const userId = core.GetUserId(source);
+  if (userId === null) return [];
+  return (await characters.ofUser(userId)).map((c) => c.slot);
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local userId = exports['ai-core']:GetUserId(source)
+    if not userId then return end
+    for _, c in ipairs(aiLib.characters.ofUser(userId)) do
+        print(('slot %d: %s %s'):format(c.slot, c.firstname, c.lastname))
+    end
+end)
+```
+</Tab>
+</Tabs>
+
+### GetJobMembers and GetGangMembers
+
+Bir mesleği tutan (ya da bir çetede olan) herkes, yüklü olsun olmasın, sayfa sayfa ve derecesiyle. Bir yönetim ekranının ihtiyaç duyduğu kadro budur: lib'in [online](/tr/docs/developers/api/lib-server/players#onlinejobmembers) aynası yalnızca bağlı oyuncuları bilir.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.jobMembers`](/tr/docs/developers/api/lib-server/characters#charactersjobmembers-and-charactersgangmembers)
+
+```ts title="İmza"
+GetJobMembers(job: string, done: (page: MembersPage) => void, after?: number, limit?: number): void
+GetGangMembers(gang: string, done: (page: MembersPage) => void, after?: number, limit?: number): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetJobMembers(job, function(page) end, after, limit)
+exports['ai-core']:GetGangMembers(gang, function(page) end, after, limit)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Paneldeki meslek adı (`"police"`). `GetGangMembers` bunun yerine bir çete adı alır.', required: true },
+    done: { type: '(page: MembersPage) => void', description: 'Üye sayfasıyla çağrılır, karakter id sırasıyla.', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#memberspage' },
+    after: { type: 'number', description: 'Yeni okuduğun sayfanın `next` değeri; sonrakini almak için. İlk sayfa için verme.' },
+    limit: { type: 'number', description: 'Bir sayfanın tuttuğu üye sayısı, 1-500.', default: '100' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [MembersPage](/tr/docs/developers/api/types#memberspage) alır: üyeler ve sonraki sayfanın `after` değeri (son sayfada `null`). Her üye `source` taşır, yani bağlı olanlar `source` değeri `null` olmayan kayıtlardır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Bir mesleğin bütün üyeleri, sayfa sayfa. */
+export async function roster(job: string) {
+  const all = [];
+  let after: number | undefined;
+  do {
+    const page = await characters.jobMembers(job, after);
+    all.push(...page.members);
+    after = page.next ?? undefined;
+  } while (after !== undefined);
+  return all;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local all, after = {}, nil
+    repeat
+        local page = aiLib.characters.jobMembers('police', after)
+        for _, m in ipairs(page.members) do all[#all + 1] = m end
+        after = page.next
+    until not after
+    print(('police mesleğinin %d üyesi var'):format(#all))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Yalnızca "bu mesleği tutan var mı?" sorusu tek satır okur: lib [`characters.hasJobMember`](/tr/docs/developers/api/lib-server/characters#charactershasjobmember), bu export'u `limit = 1` ile çağırır.
+</Callout>
+
+### AddOfflineMoney, RemoveOfflineMoney and SetOfflineMoney
+
+Bir karakterin parası, yüklü olsun olmasın. Yüklü bir karakter canlı cüzdanından geçer (oyuncu anında görür), kayıtlı olan aynı kurallarla ve aynı defter satırıyla veritabanında yazılır.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.addMoney`](/tr/docs/developers/api/lib-server/characters#charactersaddmoney-charactersremovemoney-and-characterssetmoney)
+
+```ts title="İmza"
+AddOfflineMoney(charId: number, account: string, amount: number, reason?: string, done?: (result: CharacterResult) => void): void
+RemoveOfflineMoney(charId: number, account: string, amount: number, reason?: string, done?: (result: CharacterResult) => void): void
+SetOfflineMoney(charId: number, account: string, amount: number, reason?: string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:AddOfflineMoney(charId, account, amount, reason, function(result) end)
+exports['ai-core']:RemoveOfflineMoney(charId, account, amount, reason, function(result) end)
+exports['ai-core']:SetOfflineMoney(charId, account, amount, reason, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Karakter id’si.', required: true },
+    account: { type: 'string', description: 'Paneldeki hesap adı (`cash`, `bank`...). Bkz. [Hesap adları](/tr/docs/developers/api/types#hesap-isimleri).', required: true },
+    amount: { type: 'number', description: 'Tam sayı dolar; add ve remove için 0’dan büyük (`SetOfflineMoney` yeni bakiyeyi alır, 0 dahil).', required: true },
+    reason: { type: 'string', description: 'Defter satırında ne yazacağı.', default: 'çağıran resource adı' },
+    done: { type: '(result: CharacterResult) => void', description: 'Sonuçla çağrılır. Cevabı okumuyorsan verme.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` `{ ok: true }` ya da bir dil anahtarıyla `{ ok: false, error }` alır: bilinmeyen karakter, sunucuda olmayan bir hesap, ondalıklı ya da negatif miktar, veya `RemoveOfflineMoney` için ödemeye yetmeyen bakiye (hesap tipi sıfırın altına inmeye izin vermiyorsa).
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Satıcı çevrimiçi olsun olmasın satış ödemesini yapar. */
+export async function payOut(charId: number, amount: number): Promise<boolean> {
+  const result = await characters.addMoney(charId, "bank", amount, "Araç satıldı");
+  if (!result.ok) console.log(`ödeme reddedildi: ${result.error}`);
+  return result.ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local result = aiLib.characters.addMoney(12, 'bank', 2500, 'Araç satıldı')
+    if not result.ok then print(('ödeme reddedildi: %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### SetOfflineJob and RemoveOfflineJob
+
+Bir karakteri işe alır, derecesini değiştirir ya da işten çıkarır; bağlı olsun olmasın. Panelin meslek kuralları geçerlidir (bir karakterin kaç meslek tutabileceği, ikinci mesleğe izin verilip verilmediği) ve işsizlik mesleği asla kaydedilmez: son mesleği kaldırmak bir karakteri işsiz yapar.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.setJob`](/tr/docs/developers/api/lib-server/characters#characterssetjob-and-charactersremovejob)
+
+```ts title="İmza"
+SetOfflineJob(charId: number, job: string, grade: number, done?: (result: CharacterResult) => void): void
+RemoveOfflineJob(charId: number, job: string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetOfflineJob(charId, job, grade, function(result) end)
+exports['ai-core']:RemoveOfflineJob(charId, job, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Karakter id’si.', required: true },
+    job: { type: 'string', description: 'Panelde (ya da bir script tanımında) olduğu gibi meslek adı.', required: true },
+    grade: { type: 'number', description: 'O meslekteki derece, 0’dan başlar. Mesleğin sahip olmadığı bir derece reddedilir.', required: true },
+    done: { type: '(result: CharacterResult) => void', description: 'Sonuçla çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` `{ ok: true }` ya da bir dil anahtarıyla `{ ok: false, error }` alır: bilinmeyen karakter, bilinmeyen meslek, olmayan bir derece ya da panelin meslek sınırı.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Bir üyeyi meslekten çıkarır, çevrimiçi olsun olmasın. */
+export async function fire(charId: number, job: string): Promise<boolean> {
+  return (await characters.removeJob(charId, job)).ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local result = aiLib.characters.removeJob(12, 'police')
+    print(result.ok and 'çıkarıldı' or ('reddedildi: ' .. tostring(result.error)))
+end)
+```
+</Tab>
+</Tabs>
+
+### SetOfflineGang and RemoveOfflineGang
+
+Çeteler için aynısı. Bir karakter birkaç çetede olabilir ama bir seferde biri adına hareket eder ([SetActiveGang](/tr/docs/developers/api/core-server/jobs-gangs#setactivegang) bağlı bir oyuncu için onu seçer).
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.setGang`](/tr/docs/developers/api/lib-server/characters#characterssetgang-and-charactersremovegang)
+
+```ts title="İmza"
+SetOfflineGang(charId: number, gang: string, grade: number, done?: (result: CharacterResult) => void): void
+RemoveOfflineGang(charId: number, gang: string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetOfflineGang(charId, gang, grade, function(result) end)
+exports['ai-core']:RemoveOfflineGang(charId, gang, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Karakter id’si.', required: true },
+    gang: { type: 'string', description: 'Paneldeki çete adı.', required: true },
+    grade: { type: 'number', description: 'O çetedeki derece, 0’dan başlar.', required: true },
+    done: { type: '(result: CharacterResult) => void', description: 'Sonuçla çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done`, mesleklerde olduğu gibi `{ ok: true }` ya da `{ ok: false, error }` alır.
+
+### SetOfflineMeta
+
+Bir karakterin tek bir metadata değeri, yüklü olsun olmasın. Yüklü bir karakter bunu kendi oyununda bir delta olarak alır, yani HUD'u ve arayüzü anında takip eder.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.setMeta`](/tr/docs/developers/api/lib-server/characters#characterssetmeta)
+
+```ts title="İmza"
+SetOfflineMeta(charId: number, key: string, value: unknown, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetOfflineMeta(charId, key, value, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Karakter id’si.', required: true },
+    key: { type: 'string', description: 'Metadata anahtarı. Kendi ön adını kullan (`myscript_points`); böylece iki script aynı anahtar için çekişmez.', required: true },
+    value: { type: 'unknown', description: 'JSON’un tutabildiği her şey: sayı, metin, boolean, tablo. `null` anahtarı siler.', required: true },
+    done: { type: '(result: CharacterResult) => void', description: 'Sonuçla çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` `{ ok: true }` ya da bilinmeyen karakter veya JSON'un tutamadığı bir değer için `{ ok: false, error }` alır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+await characters.setMeta(12, "myscript_licence", { kind: "drive", since: Date.now() });
+await characters.setMeta(12, "myscript_licence", null); // geri alır
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    aiLib.characters.setMeta(12, 'myscript_licence', { kind = 'drive' })
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+**Bağlı** bir oyuncu için [GetMeta / SetMeta](/tr/docs/developers/api/core-server/metadata-settings#setmeta) daha kısa yoldur ve metadata okumak yalnızca orada mümkündür (bu sayfada `GetOfflineMeta` yok: karakterin tamamını [GetOfflineCharacter](#getofflinecharacter) ile oku ve `metadata` alanını al).
+</Callout>
+
+### SetCharacterInfo
+
+Karakterin kendi alanlarını değiştirir: ad, doğum tarihi, uyruk, cinsiyet ve boy. Her alan, karakter oluşturma formunun kontrol ettiği gibi kontrol edilir; yani bir admin aracı, oluşturucunun reddedeceği bir adı yazamaz.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.setInfo`](/tr/docs/developers/api/lib-server/characters#characterssetinfo)
+
+```ts title="İmza"
+SetCharacterInfo(charId: number, patch: CharacterInfoPatch, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SetCharacterInfo(charId, patch, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Karakter id’si.', required: true },
+    patch: { type: 'CharacterInfoPatch', description: 'Değişecek alanlar; birini vermezsen aynı kalır. Her alan ve kuralları: [CharacterInfoPatch](/tr/docs/developers/api/types#characterinfopatch).', required: true, typeDescriptionLink: '/tr/docs/developers/api/types#characterinfopatch' },
+    done: { type: '(result: CharacterResult) => void', description: 'Sonuçla çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` `{ ok: true }` ya da bir dil anahtarıyla `{ ok: false, error }` alır. Karakter yüklüyken `sex` reddedilir, çünkü ped modeli onu takip eder; geri kalan her şey yüklü karaktere delta olarak ulaşır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+const result = await characters.setInfo(12, { lastname: "Doe-Smith", height: 174 });
+if (!result.ok) console.log(`ad değişikliği reddedildi: ${result.error}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local result = aiLib.characters.setInfo(12, { lastname = 'Doe-Smith', height = 174 })
+    if not result.ok then print(('reddedildi: %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+### DeleteCharacter
+
+Bir karakteri siler. Bu yumuşak bir silmedir: satır loglar için kalır, karakter her listeden ve her aramadan kaybolur.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.remove`](/tr/docs/developers/api/lib-server/characters#charactersremove)
+
+```ts title="İmza"
+DeleteCharacter(charId: number, by?: number | string, done?: (result: CharacterResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:DeleteCharacter(charId, by, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Karakter id’si.', required: true },
+    by: { type: 'number | string', description: 'Log için kimin sildiği: bir server id ya da bir ad. Script’in kendi sildiği durumda verme.' },
+    done: { type: '(result: CharacterResult) => void', description: 'Sonuçla çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` `{ ok: true }` ya da bilinmeyen karakter veya **şu anda yüklü olan** bir karakter için `{ ok: false, error }` alır - oyuncunun önce karakter ekranına dönmesi gerekir. Başarıda ai-core `characterDeleted` event'ini tetikler; bkz. [Event'ler ve durum](/tr/docs/developers/api/events).
+
+### GetPlayTime
+
+Bir karakterin ne kadar oynandığı, saniye cinsinden: kayıtlı toplam artı süren oturum.
+
+**Taraf:** Server · **Bekler:** bağlı bir oyuncu için hayır · **Lib:** [`characters.playTime`](/tr/docs/developers/api/lib-server/characters#charactersplaytime)
+
+```ts title="İmza"
+GetPlayTime(target: number | { charId: number }, done?: (seconds: number | null) => void): number | null
+```
+
+```lua title="Lua"
+local seconds = exports['ai-core']:GetPlayTime(source) -- bağlı bir oyuncu: anında cevap verir
+exports['ai-core']:GetPlayTime({ charId = 12 }, function(seconds) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    target: { type: 'number | { charId: number }', description: 'Bağlı bir oyuncunun server id’si ya da `{ charId }` olarak bir karakter id’si (yüklü olsun olmasın).', required: true },
+    done: { type: '(seconds: number | null) => void', description: 'Yüklü olmayan bir karakter için gerekir: kayıtlı değeri alır. Cevap anında geldiğinde de çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+`number | null`: veritabanı okuması olmadan bilinebiliyorsa saniye (bir server id ya da yüklü bir `{ charId }`). `null` "burada yok, `done`'ı bekle" demektir - ya da bir server id için oyuncunun yüklü karakteri olmadığını.
+
+### SavePlayer
+
+Bağlı bir oyuncunun konumunu ve metadata'sını hemen yazar ve bekleyen yazmalarını bekler. Son dakikaları kaybetmemesi gereken bir şeyden önce kullan: bir restart, bir devir, loglanan bir admin işlemi.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir) · **Lib:** [`characters.save`](/tr/docs/developers/api/lib-server/characters#characterssave)
+
+```ts title="İmza"
+SavePlayer(source: number, done?: (ok: boolean) => void): void
+```
+
+```lua title="Lua"
+exports['ai-core']:SavePlayer(source, function(ok) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    source: { type: 'number', description: 'Oyuncunun server id’si.', required: true },
+    done: { type: '(ok: boolean) => void', description: 'Her şey yazıldığında `true`, oyuncunun yüklü karakteri yoksa `false` ile çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. ai-core kendi kendine kaydeder (periyodik olarak, karakter çıkarken ve kapanışta); buna yalnızca yazmanın sıradaki adımından **önce** olmuş olmasını istediğinde ihtiyacın var.
+
+<Callout type="info">
+Yüklü olmayan bir karakter zaten yazılmıştır: boşaltılacak bir şey yoktur. Kayıtlı bir karakterin doğma noktasını değiştirmek için [`characters.setOfflinePosition`](/tr/docs/developers/api/lib-server/world#characterssetofflineposition) ([SetOfflinePosition](/tr/docs/developers/api/core-server/characters#setofflineposition)) kullan.
+</Callout>

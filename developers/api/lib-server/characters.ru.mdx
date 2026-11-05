@@ -1,0 +1,548 @@
+---
+title: Персонажи, загруженные или нет
+description: "Модуль characters: найдите, прочитайте и измените любого персонажа через ai-core - деньги, работы, банды, метаданные, имя, время игры - с Promise в TypeScript и простым ожиданием в Lua."
+icon: Users
+---
+
+```ts title="TypeScript"
+import { characters } from "@aifivem/lib/server";
+```
+
+```lua title="Lua"
+-- aiLib.characters, после shared_script '@ai-lib/init.lua'
+```
+
+`characters` - это дверь библиотеки к [экспортам сохранённых персонажей ai-core](/ru/docs/developers/api/core-server/stored-characters). Он существует потому, что те экспорты отвечают через колбэк: библиотека превращает каждый в **Promise** в TypeScript и в **простое ожидание** в Lua, так что код читается сверху вниз.
+
+- Персонаж называется своим **id персонажа** (`charId`, число). Из citizenid: [`characters.idOf`](#charactersidof).
+- Загруженный персонаж отвечает из памяти (актуальные деньги и принадлежности); сохранённый читается из базы, пока ai-core его держит, поэтому он не загрузится посреди записи.
+- Каждая запись отвечает [ActionResult](/ru/docs/developers/api/types#actionresult): `{ ok: true }` или `{ ok: false, error }` с языковым ключом ai-core.
+- Каждая функция здесь **ждёт**. В Lua это значит вызывать её из потока; см. [Функции, которые ждут](/ru/docs/developers/api/lua#функции-которые-ждут).
+
+<Callout type="info">
+Для игрока, о котором идёт речь, короче путь напрямую через ai-core: [GetCharacter](/ru/docs/developers/api/core-server/characters#getcharacter), [money](/ru/docs/developers/api/lib-server/money#moneyget), [jobs](/ru/docs/developers/api/lib-server/jobs#jobsset). Берите `characters`, когда цель может быть офлайн или когда нужен весь персонаж сразу.
+</Callout>
+
+## characters
+
+### characters.idOf
+
+Id персонажа за citizenid.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.idOf(citizenid: string): Promise<number | null>
+```
+
+Двойника в Lua нет: вызовите экспорт [GetCharIdByCitizenId](/ru/docs/developers/api/core-server/stored-characters#getcharidbycitizenid) у ai-core и дождитесь его колбэка.
+
+#### Параметры
+
+<TypeTable
+  type={{
+    citizenid: { type: 'string', description: 'Текст citizenid.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`Promise<number | null>`: id персонажа или `null`, если ни у одного персонажа нет такого citizenid либо он удалён.
+
+#### Пример
+
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Штраф, который работает, онлайн водитель или нет. */
+export async function fine(citizenid: string, amount: number): Promise<boolean> {
+  const charId = await characters.idOf(citizenid);
+  if (charId === null) return false;
+  return (await characters.removeMoney(charId, "bank", amount, "Штраф")).ok;
+}
+```
+
+### characters.get
+
+Один персонаж со всем, что ai-core о нём хранит: данные, деньги по счетам, работы, банды, метаданные, сохранённая позиция, последнее сохранение и серверный id, когда он загружен.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.get(charId: number): Promise<OfflineCharacter | null>
+```
+
+```lua title="Lua"
+local character = aiLib.characters.get(charId) -- таблица или nil
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+[OfflineCharacter](/ru/docs/developers/api/types#offlinecharacter) или `null` / `nil`, если id неизвестен либо персонаж удалён.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+export async function bankOf(charId: number): Promise<number> {
+  const c = await characters.get(charId);
+  return c?.money.bank ?? 0;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local c = aiLib.characters.get(12)
+    if not c then return end
+    print(('%s %s, банк %d'):format(c.info.firstname, c.info.lastname, c.money.bank or 0))
+end)
+```
+</Tab>
+</Tabs>
+
+### characters.search
+
+Персонажи по набранному тексту, загруженные или нет: начала имён (`"jane doe"` тоже), citizenid, id fivem / license / discord. 25 на страницу, самые новые первыми.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.search(text: string, cursor?: number): Promise<CharacterSearchPage>
+```
+
+```lua title="Lua"
+local page = aiLib.characters.search(text, cursor)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    text: { type: 'string', description: 'То, что набрали. Пустой текст отвечает самыми новыми персонажами, так что экрану просмотра запрос не нужен.', required: true },
+    cursor: { type: 'number', description: 'Поле `next` страницы, которую вы только что прочитали. Для первой страницы не передавайте.' },
+  }}
+/>
+
+#### Возвращает
+
+[CharacterSearchPage](/ru/docs/developers/api/types#charactersearchpage): `characters` (до 25) и `next` (`null` на последней странице). При ошибке отвечает пустой страницей, а не `null`.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, onClientCallback } from "@aifivem/lib/server";
+import { oneArg, readText } from "@aifivem/lib/shared";
+
+onClientCallback(
+  "myscript:people",
+  { args: oneArg((v) => readText(v, 64)), rate: { count: 10, windowMs: 10_000 } },
+  async (_source, text) => ({ ok: true, ...(await characters.search(text)) }),
+);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+aiLib.onClientCallback('myscript:people', function(source, text)
+    if type(text) ~= 'string' then return aiLib.fail('CORE_ERR_ARGS') end
+    local page = aiLib.characters.search(text)
+    return { ok = true, characters = page.characters, next = page.next }
+end, { rate = { count = 10, windowMs = 10000 } })
+```
+</Tab>
+</Tabs>
+
+### characters.ofUser
+
+Все персонажи одного аккаунта, по слотам.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.ofUser(user: number | string): Promise<StoredCharacter[]>
+```
+
+```lua title="Lua"
+local list = aiLib.characters.ofUser(user)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    user: { type: 'number | string', description: 'Id аккаунта или license (`"license:abc"` либо просто `"abc"`).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Массив [StoredCharacter](/ru/docs/developers/api/types#storedcharacter), по порядку слотов. Пустой для неизвестного аккаунта.
+
+### characters.jobMembers and characters.gangMembers
+
+Все, у кого есть работа или кто в банде, загруженные или нет - страница за страницей, с грейдом и с серверным id, когда они подключены.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.jobMembers(job: string, after?: number, limit?: number): Promise<MembersPage>
+characters.gangMembers(gang: string, after?: number, limit?: number): Promise<MembersPage>
+```
+
+```lua title="Lua"
+local page = aiLib.characters.jobMembers(job, after, limit)
+local page = aiLib.characters.gangMembers(gang, after, limit)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    job: { type: 'string', description: 'Название работы (`gangMembers` принимает название банды).', required: true },
+    after: { type: 'number', description: 'Поле `next` страницы, которую вы только что прочитали. Для первой страницы не передавайте.' },
+    limit: { type: 'number', description: 'Участников на страницу, 1-500.', default: '100' },
+  }}
+/>
+
+#### Возвращает
+
+[MembersPage](/ru/docs/developers/api/types#memberspage): `members` и `next` (`null` на последней странице).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Весь состав работы, страница за страницей. */
+export async function roster(job: string) {
+  const all = [];
+  let after: number | undefined;
+  do {
+    const page = await characters.jobMembers(job, after);
+    all.push(...page.members);
+    after = page.next ?? undefined;
+  } while (after !== undefined);
+  return all;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local all, after = {}, nil
+    repeat
+        local page = aiLib.characters.jobMembers('police', after)
+        for _, m in ipairs(page.members) do all[#all + 1] = m end
+        after = page.next
+    until not after
+    print(('police: %d участников'):format(#all))
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Считать **подключённых** игроков работы - это не здесь: это зеркало библиотеки, [`online.jobMembers`](/ru/docs/developers/api/lib-server/players#onlinejobmembers) (без вызова экспорта и без чтения из базы).
+</Callout>
+
+### characters.hasJobMember
+
+Есть ли вообще кто-нибудь с этой работой, загруженный или нет. Читается одна строка, так что это достаточно дёшево для проверки при запуске («есть ли на этом сервере полиция?»).
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.hasJobMember(job: string): Promise<boolean>
+```
+
+```lua title="Lua"
+local anyone = aiLib.characters.hasJobMember(job)
+```
+
+#### Возвращает
+
+`true`, когда работу держит хотя бы один персонаж.
+
+### characters.addMoney, characters.removeMoney and characters.setMoney
+
+Деньги персонажа, загруженного или нет, со строкой журнала. Загруженный персонаж идёт через свой живой кошелёк, поэтому игрок видит изменение сразу.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.addMoney(charId: number, account: string, amount: number, reason?: string): Promise<CharacterResult>
+characters.removeMoney(charId: number, account: string, amount: number, reason?: string): Promise<CharacterResult>
+characters.setMoney(charId: number, account: string, amount: number, reason?: string): Promise<CharacterResult>
+```
+
+```lua title="Lua"
+local result = aiLib.characters.addMoney(charId, account, amount, reason)
+local result = aiLib.characters.removeMoney(charId, account, amount, reason)
+local result = aiLib.characters.setMoney(charId, account, amount, reason)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа.', required: true },
+    account: { type: 'string', description: 'Имя счёта из панели (`cash`, `bank`...). См. [Имена счетов](/ru/docs/developers/api/types#имена-счетов).', required: true },
+    amount: { type: 'number', description: 'Целые доллары, больше 0 для add и remove. `setMoney` принимает новый баланс (0 допустим).', required: true },
+    reason: { type: 'string', description: 'Что будет в строке журнала.', default: 'имя вызывающего ресурса' },
+  }}
+/>
+
+#### Возвращает
+
+`{ ok: true }` или `{ ok: false, error }` с языковым ключом: неизвестный персонаж, неизвестный счёт, дробная или отрицательная сумма, либо баланс, которым нельзя заплатить (`removeMoney`, если тип счёта не разрешает уходить ниже нуля).
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+export async function payOut(charId: number, amount: number): Promise<boolean> {
+  const result = await characters.addMoney(charId, "bank", amount, "Машина продана");
+  if (!result.ok) console.log(`выплата отклонена: ${result.error}`);
+  return result.ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local result = aiLib.characters.addMoney(12, 'bank', 2500, 'Машина продана')
+    if not result.ok then print(('отклонено: %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Переместить деньги между двумя счетами - это один вызов и одна транзакция: [`money.transfer`](/ru/docs/developers/api/lib-server/money#moneytransfer). Журнал сохранённого персонажа - это [`money.history`](/ru/docs/developers/api/lib-server/money#moneyhistory) с `{ owner: "character", id, account }`.
+</Callout>
+
+### characters.setJob and characters.removeJob
+
+Принимает персонажа на работу, меняет грейд или увольняет, онлайн он или нет. Действуют правила работ из панели, а работа безработного никогда не сохраняется: снять последнюю работу - и персонаж безработный.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.setJob(charId: number, job: string, grade: number): Promise<CharacterResult>
+characters.removeJob(charId: number, job: string): Promise<CharacterResult>
+```
+
+```lua title="Lua"
+local result = aiLib.characters.setJob(charId, job, grade)
+local result = aiLib.characters.removeJob(charId, job)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа.', required: true },
+    job: { type: 'string', description: 'Название работы как в панели (или в определении из скрипта).', required: true },
+    grade: { type: 'number', description: 'Грейд в этой работе, с 0. Грейд, которого у работы нет, отклоняется.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`{ ok: true }` или `{ ok: false, error }`: неизвестный персонаж, неизвестная работа, неизвестный грейд либо лимит панели на число работ.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters } from "@aifivem/lib/server";
+
+/** Уволить участника, онлайн он или нет. */
+export async function fire(charId: number, job: string): Promise<boolean> {
+  return (await characters.removeJob(charId, job)).ok;
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    print(aiLib.characters.removeJob(12, 'police').ok and 'уволен' or 'отклонено')
+end)
+```
+</Tab>
+</Tabs>
+
+### characters.setGang and characters.removeGang
+
+То же для банд.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.setGang(charId: number, gang: string, grade: number): Promise<CharacterResult>
+characters.removeGang(charId: number, gang: string): Promise<CharacterResult>
+```
+
+```lua title="Lua"
+local result = aiLib.characters.setGang(charId, gang, grade)
+local result = aiLib.characters.removeGang(charId, gang)
+```
+
+#### Возвращает
+
+`{ ok: true }` или `{ ok: false, error }`, как с работами.
+
+### characters.setMeta
+
+Одно значение метаданных персонажа, загруженного или нет. Загруженный персонаж получает его дельтой на своей игре.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.setMeta(charId: number, key: string, value: unknown): Promise<CharacterResult>
+```
+
+```lua title="Lua"
+local result = aiLib.characters.setMeta(charId, key, value)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа.', required: true },
+    key: { type: 'string', description: 'Ключ метаданных. Добавьте префикс своего ресурса (`myscript_points`), чтобы два скрипта никогда не спорили за один ключ.', required: true },
+    value: { type: 'unknown', description: 'Всё, что умещается в JSON. `null` (в Lua `nil`) убирает ключ.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`{ ok: true }` или `{ ok: false, error }` при неизвестном персонаже либо значении, которое JSON не умещает. Чтение метаданных - часть [`characters.get`](#charactersget); для подключённого игрока берите [GetMeta](/ru/docs/developers/api/core-server/metadata-settings#getmeta).
+
+### characters.setInfo
+
+Имя, дата рождения, национальность, пол и рост - каждое проверяется так, как это делает форма создания персонажа.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.setInfo(charId: number, patch: CharacterInfoPatch): Promise<CharacterResult>
+```
+
+```lua title="Lua"
+local result = aiLib.characters.setInfo(charId, patch)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа.', required: true },
+    patch: { type: 'CharacterInfoPatch', typeDescriptionLink: '/ru/docs/developers/api/types#characterinfopatch', description: 'Поля, которые меняются; пропустите одно, чтобы его сохранить. `sex` - только пока персонаж не загружен.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`{ ok: true }` или `{ ok: false, error }` с языковым ключом (имя, которое создание отклонило бы, дата не в формате `YYYY-MM-DD`, `sex` у загруженного персонажа).
+
+### characters.remove
+
+Удаляет персонажа (мягкое удаление: строка остаётся для логов).
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.remove(charId: number, by?: number | string): Promise<CharacterResult>
+```
+
+```lua title="Lua"
+local result = aiLib.characters.remove(charId, by)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    charId: { type: 'number', description: 'Id персонажа.', required: true },
+    by: { type: 'number | string', description: 'Кто удалил, для лога: серверный id или имя.' },
+  }}
+/>
+
+#### Возвращает
+
+`{ ok: true }` или `{ ok: false, error }` при неизвестном персонаже либо **персонаже, загруженном прямо сейчас**.
+
+### characters.playTime
+
+Секунды игры персонажа: сохранённая сумма плюс текущая сессия.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.playTime(target: number | { charId: number }): Promise<number | null>
+```
+
+```lua title="Lua"
+local seconds = aiLib.characters.playTime(target)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    target: { type: 'number | { charId: number }', description: 'Подключённый игрок как серверный id или id персонажа как `{ charId }` (загруженного или нет).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+Секунды или `null` при неизвестном персонаже (либо серверном id без загруженного персонажа).
+
+### characters.save
+
+Записывает сейчас позицию и метаданные подключённого игрока и ждёт его отложенные записи.
+
+**Сторона:** Сервер · **Ждёт:** да
+
+```ts title="Сигнатура"
+characters.save(source: number): Promise<boolean>
+```
+
+```lua title="Lua"
+local ok = aiLib.characters.save(source)
+```
+
+#### Возвращает
+
+`true`, когда всё записано, `false`, когда у игрока нет загруженного персонажа. ai-core сохраняет сам (периодически, при выгрузке, при остановке): берите это только тогда, когда запись должна случиться до вашего следующего шага.
+
+## В других местах библиотеки
+
+| Вам нужно | Где |
+| --- | --- |
+| Точка спавна сохранённого персонажа | [`characters.setOfflinePosition`](/ru/docs/developers/api/lib-server/world#characterssetofflineposition) |
+| Кто сейчас подключён, имена, работы и смена | [`online`](/ru/docs/developers/api/lib-server/players#onlinesources) |
+| Работы и банды загруженного игрока | [`jobs`](/ru/docs/developers/api/lib-server/jobs#jobscurrent) |
+| Деньги загруженного игрока | [`money`](/ru/docs/developers/api/lib-server/money#moneyget) |
+| Журнал персонажа | [`money.history`](/ru/docs/developers/api/lib-server/money#moneyhistory) |

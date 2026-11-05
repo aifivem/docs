@@ -81,7 +81,7 @@ end)
 
 Та единственная работа, которую другие скрипты должны считать «той самой» работой игрока: работа на дежурстве, иначе последняя работа, где игрок был на дежурстве, иначе первая работа, иначе безработная работа из панели. Скрипты ESX и QB видят эту работу через мост.
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.current`](/ru/docs/developers/api/lib-server/jobs#jobscurrent)
 
 ```ts title="Сигнатура"
 GetCurrentJob(src: number): JobMembership | null
@@ -184,7 +184,7 @@ end)
 
 Ставит игрока на дежурство по одной из его работ (и снимает с дежурства по любой другой) или снимает с дежурства.
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.setDuty`](/ru/docs/developers/api/lib-server/jobs#jobsduty-and-jobssetduty)
 
 ```ts title="Сигнатура"
 SetDuty(src: number, job: string | null): boolean
@@ -247,7 +247,7 @@ end)
 
 Выдаёт игроку работу или меняет ранг работы, которая у него уже есть.
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.set`](/ru/docs/developers/api/lib-server/jobs#jobsset)
 
 ```ts title="Сигнатура"
 SetJob(src: number, job: string, grade: number): boolean
@@ -311,7 +311,7 @@ end)
 
 Забирает у игрока работу. Игрок на дежурстве по этой работе сначала снимается с дежурства.
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.remove`](/ru/docs/developers/api/lib-server/jobs#jobsremove)
 
 ```ts title="Сигнатура"
 RemoveJob(src: number, job: string): boolean
@@ -360,6 +360,49 @@ end)
 ```
 </Tab>
 </Tabs>
+
+### GetUnemployedJob
+
+Название работы, которая есть у персонажа без работы, как задано в админ-панели.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.unemployed()`](/ru/docs/developers/api/lib-server/jobs#jobsunemployed)
+
+```ts title="Сигнатура"
+GetUnemployedJob(): string
+```
+
+```lua title="Lua"
+local name = exports['ai-core']:GetUnemployedJob()
+```
+
+#### Возвращает
+
+`string`: название работы. Никогда не считайте, что это `"unemployed"` - владелец сервера может её переименовать, и ai-core никогда не хранит её как принадлежность: персонаж без строк работы **и есть** безработный.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { jobs } from "@aifivem/lib/server";
+
+/** «Этот игрок без работы?» - без угадывания названия. */
+export function isJobless(source: number): boolean {
+  return jobs.current(source)?.job === jobs.unemployed();
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local current = exports['ai-core']:GetCurrentJob(source)
+local jobless = current and current.job == exports['ai-core']:GetUnemployedJob()
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Поставить игрока на работу безработного - это не `SetJob`: заберите у него работы через [RemoveJob](#removejob) (или [RemoveOfflineJob](/ru/docs/developers/api/core-server/stored-characters#setofflinejob-and-removeofflinejob) для персонажа, который не подключён).
+</Callout>
 
 ### GetOnDutyCount
 
@@ -588,6 +631,66 @@ end)
 </Tab>
 </Tabs>
 
+### RegisterJobDefinition and RemoveJobDefinition
+
+Работа, которая приходит с вашим скриптом, а не из панели: она принадлежит вызывающему ресурсу, никогда не пишется в файл панели и исчезает, когда ваш ресурс останавливается.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`definitions.registerJob`](/ru/docs/developers/api/lib-server/jobs#definitionsregisterjob-and-definitionsremovejob)
+
+```ts title="Сигнатура"
+RegisterJobDefinition(name: string, definition: JobDefinition): CharacterResult
+RemoveJobDefinition(name: string): boolean
+```
+
+```lua title="Lua"
+local result = exports['ai-core']:RegisterJobDefinition(name, definition)
+local ok = exports['ai-core']:RemoveJobDefinition(name)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Название работы, которое использует ваш скрипт.', required: true },
+    definition: { type: 'JobDefinition', typeDescriptionLink: '/ru/docs/developers/api/types#jobdefinition', description: 'Работа: `label`, `type`, `defaultDuty`, `listed` и `grades` (каждый с `label`, `salary`, `boss`).', required: true },
+  }}
+/>
+
+#### Возвращает
+
+`RegisterJobDefinition` отвечает [ActionResult](/ru/docs/developers/api/types#actionresult): `{ ok: true }` или `{ ok: false, error }` с языковым ключом, когда в панели уже есть работа с таким названием либо её зарегистрировал другой ресурс - панель владельца всегда выигрывает. `RemoveJobDefinition` отвечает `true` только для работы этого ресурса.
+
+#### Пример
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const core = resourceExport("ai-core");
+
+const result = core.RegisterJobDefinition("garbage", {
+  label: "Garbage",
+  type: "job",
+  defaultDuty: true,
+  grades: [{ label: "Driver", salary: 60, boss: false }],
+});
+if (!result.ok) console.log(`работа не зарегистрирована: ${result.error}`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local result = exports['ai-core']:RegisterJobDefinition('garbage', {
+    label = 'Garbage',
+    type = 'job',
+    defaultDuty = true,
+    grades = { { label = 'Driver', salary = 60, boss = false } },
+})
+if not result.ok then print(('работа не зарегистрирована: %s'):format(result.error)) end
+```
+</Tab>
+</Tabs>
+
 ### GetGangs
 
 Все банды персонажа игрока.
@@ -643,7 +746,7 @@ end
 
 Банда, которая сейчас активна у игрока. Территории банд, тайники банд и чаты банд должны использовать активную банду.
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.activeGang`](/ru/docs/developers/api/lib-server/jobs#jobsactivegang-and-jobssetactivegang)
 
 ```ts title="Сигнатура"
 GetActiveGang(src: number): string | null
@@ -698,7 +801,7 @@ end)
 
 Добавляет игрока в банду или меняет его ранг в банде, где он состоит. Персонаж без активной банды получает новую банду как активную.
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.setGang`](/ru/docs/developers/api/lib-server/jobs#jobssetgang-and-jobsremovegang)
 
 ```ts title="Сигнатура"
 SetGang(src: number, gang: string, grade: number): boolean
@@ -757,7 +860,7 @@ end)
 
 Исключает игрока из банды. Если это была активная банда, активной становится следующая оставшаяся (или никакая).
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.removeGang`](/ru/docs/developers/api/lib-server/jobs#jobssetgang-and-jobsremovegang)
 
 ```ts title="Сигнатура"
 RemoveGang(src: number, gang: string): boolean
@@ -811,7 +914,7 @@ end)
 
 Выбирает, какая из банд игрока активна, или никакая.
 
-**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** нет
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`jobs.setActiveGang`](/ru/docs/developers/api/lib-server/jobs#jobsactivegang-and-jobssetactivegang)
 
 ```ts title="Сигнатура"
 SetActiveGang(src: number, gang: string | null): boolean
@@ -961,3 +1064,32 @@ end
 ```
 </Tab>
 </Tabs>
+
+### RegisterGangDefinition and RemoveGangDefinition
+
+То же, что [RegisterJobDefinition](#registerjobdefinition-and-removejobdefinition), для банды, которую приносит ваш скрипт.
+
+**Сторона:** сервер · **Ожидание:** нет · **Библиотека:** [`definitions.registerGang`](/ru/docs/developers/api/lib-server/jobs#definitionsregistergang-and-definitionsremovegang)
+
+```ts title="Сигнатура"
+RegisterGangDefinition(name: string, definition: GangDefinition): CharacterResult
+RemoveGangDefinition(name: string): boolean
+```
+
+```lua title="Lua"
+local result = exports['ai-core']:RegisterGangDefinition(name, definition)
+local ok = exports['ai-core']:RemoveGangDefinition(name)
+```
+
+#### Параметры
+
+<TypeTable
+  type={{
+    name: { type: 'string', description: 'Название банды, которое использует ваш скрипт.', required: true },
+    definition: { type: 'GangDefinition', typeDescriptionLink: '/ru/docs/developers/api/types#gangdefinition', description: 'Банда: `label` и `grades`.', required: true },
+  }}
+/>
+
+#### Возвращает
+
+[ActionResult](/ru/docs/developers/api/types#actionresult) для регистрации (отклонено, когда такая банда есть в панели или ею владеет другой ресурс), `boolean` для удаления.

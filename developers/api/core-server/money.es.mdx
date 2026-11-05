@@ -17,7 +17,7 @@ Cómo funciona el dinero en ai-core:
 
 El saldo de un jugador en una cuenta.
 
-**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+**Lado:** Servidor · **Espera:** no · **Lib:** [`money.get`](/es/docs/developers/api/lib-server/money#moneyget)
 
 ```ts title="Firma"
 GetMoney(src: number, account: string): number | null
@@ -72,7 +72,7 @@ end)
 
 Añade dinero a la cuenta de un jugador. Úsalo para recompensas, sueldos que paga tu script o ingresos de ventas.
 
-**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+**Lado:** Servidor · **Espera:** no · **Lib:** [`money.add`](/es/docs/developers/api/lib-server/money#moneyadd-moneyremove-and-moneyset)
 
 ```ts title="Firma"
 AddMoney(src: number, account: string, amount: number, reason?: string): boolean
@@ -141,7 +141,7 @@ Para mover dinero de una cuenta a otra (un jugador que paga a un trabajo, una tr
 
 Quita dinero de la cuenta de un jugador. Úsalo para cobrar algo.
 
-**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+**Lado:** Servidor · **Espera:** no · **Lib:** [`money.remove`](/es/docs/developers/api/lib-server/money#moneyadd-moneyremove-and-moneyset)
 
 ```ts title="Firma"
 RemoveMoney(src: number, account: string, amount: number, reason?: string): boolean
@@ -209,7 +209,7 @@ Comprueba lo que puede fallar antes de quitar el dinero (espacio en el inventari
 
 Pone el saldo de un jugador a un valor exacto. Úsalo para herramientas de admin; las funciones del juego deberían añadir y quitar.
 
-**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+**Lado:** Servidor · **Espera:** no · **Lib:** [`money.set`](/es/docs/developers/api/lib-server/money#moneyadd-moneyremove-and-moneyset)
 
 ```ts title="Firma"
 SetMoney(src: number, account: string, amount: number, reason?: string): boolean
@@ -269,7 +269,7 @@ end)
 
 El saldo de la cuenta de un trabajo o una banda (dinero de la sociedad).
 
-**Lado:** Servidor · **Espera:** no · **Lib:** ninguna ([`banking.societyBalance`](/es/docs/developers/api/lib-server/money#bankingsocietybalance) pregunta a la capa de banca, que puede leer de un script de banca en su lugar)
+**Lado:** Servidor · **Espera:** no · **Lib:** [`money.sharedGet`](/es/docs/developers/api/lib-server/money#moneysharedget) ([`banking.societyBalance`](/es/docs/developers/api/lib-server/money#bankingsocietybalance) pregunta a la capa de banca, que puede leer de un script de banca en su lugar)
 
 ```ts title="Firma"
 GetSharedMoney(ownerType: "job" | "gang", ownerId: string, account: string): number | null
@@ -330,7 +330,7 @@ Cuando el ajuste del panel **Job and gang accounts** está en **The script's own
 
 Añade dinero a la cuenta de un trabajo o una banda.
 
-**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+**Lado:** Servidor · **Espera:** no · **Lib:** [`money.sharedAdd`](/es/docs/developers/api/lib-server/money#moneysharedadd-and-moneysharedremove)
 
 ```ts title="Firma"
 AddSharedMoney(
@@ -397,7 +397,7 @@ Cuando un jugador paga al trabajo, usa `TransferMoney` de la cuenta del jugador 
 
 Quita dinero de la cuenta de un trabajo o una banda.
 
-**Lado:** Servidor · **Espera:** no · **Lib:** ninguna
+**Lado:** Servidor · **Espera:** no · **Lib:** [`money.sharedRemove`](/es/docs/developers/api/lib-server/money#moneysharedadd-and-moneysharedremove)
 
 ```ts title="Firma"
 RemoveSharedMoney(
@@ -546,6 +546,58 @@ end, { lock = true })
 <Callout type="info">
 Ambos lados disparan su cambio habitual (el lado de un jugador dispara `ai-core:moneyChanged`). Dos jugadores pueden ser los dos lados: `{ source: a, account: "bank" }` a `{ source: b, account: "bank" }`.
 </Callout>
+
+### GetAccountHistory
+
+Las filas del registro de una cuenta, las más nuevas primero: qué se movió, el saldo justo después, el motivo, quién lo hizo y cuándo. Lee la cuenta de un jugador, la de un trabajo o banda, y la de un personaje guardado.
+
+**Lado:** Servidor · **Espera:** no (la respuesta llega en `done`) · **Lib:** [`money.history`](/es/docs/developers/api/lib-server/money#moneyhistory)
+
+```ts title="Firma"
+GetAccountHistory(account: LedgerRef, done: (page: LedgerPage) => void, query?: LedgerQuery): void
+```
+
+```lua title="Lua"
+exports['ai-core']:GetAccountHistory(account, function(page) end, query)
+```
+
+#### Parámetros
+
+<TypeTable
+  type={{
+    account: { type: 'LedgerRef', typeDescriptionLink: '/es/docs/developers/api/types#ledgerref', description: 'El registro de quién: `{ source, account }` para un jugador cargado, `{ owner: "job" | "gang", id, account }` para el dinero de sociedad, `{ owner: "character", id, account }` para un personaje guardado (`id` = el id del personaje como texto).', required: true },
+    done: { type: '(page: LedgerPage) => void', typeDescriptionLink: '/es/docs/developers/api/types#ledgerpage', description: 'Se llama con la página de filas.', required: true },
+    query: { type: 'LedgerQuery', typeDescriptionLink: '/es/docs/developers/api/types#ledgerquery', description: 'Qué filas: `before` (el `next` de la página que acabas de leer), `since` (segundos unix), `limit` (1-200).' },
+  }}
+/>
+
+#### Devuelve
+
+Nada. `done` recibe una [LedgerPage](/es/docs/developers/api/types#ledgerpage): las filas y el `before` de la página siguiente (`null` en la última). Una fila se escribe un momento después del cambio, así que la más nueva puede ir unos milisegundos detrás.
+
+#### Ejemplo
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { money } from "@aifivem/lib/server";
+
+// La lib envuelve el callback en una Promise.
+const page = await money.history({ source, account: "bank" }, { limit: 20 });
+for (const row of page.rows) console.log(`${row.at}: ${row.amount} (${row.reason})`);
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+    local page = aiLib.money.history({ source = source, account = 'bank' }, { limit = 20 })
+    for _, row in ipairs(page.rows) do
+        print(('%d: %d (%s)'):format(row.at, row.amount, row.reason))
+    end
+end)
+```
+</Tab>
+</Tabs>
 
 ### GetAccountTypes
 
