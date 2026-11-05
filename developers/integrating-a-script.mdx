@@ -1,0 +1,192 @@
+---
+title: Integrating your own script
+description: How your own resource works with AI Core - loading the lib, the layers it calls instead of other scripts, what it must never touch, and the checklist before release.
+icon: Puzzle
+---
+
+Your script does not have to be an `ai-*` script to work with AI Core. What you have to do depends on what you are writing:
+
+| What you have | What to do |
+| --- | --- |
+| A script written for ESX, QBCore, Qbox or vRP | Nothing. AI Core provides `es_extended`, `qb-core`, `qbx_core` and `vrp` and answers their API, so the script runs unchanged. See [Compatibility](/docs/compatibility). |
+| Your own new resource (Lua, TypeScript or plain JavaScript) | Load the lib and call AI Core through it. That is this page. |
+| A script that **provides** something other scripts need (an inventory, a phone, a key system, a garage, a fuel script...) | The same as above, plus an adapter in that layer so the rest of the server reaches it. See [Recommended scripts](/docs/developers/recommended-scripts). |
+
+The goal is one sentence: **everything your script shares with another script goes through the lib or ai-core, never through that script's own exports.** The owner can then replace the inventory, the key system or the phone and your script keeps working.
+
+## Load the lib
+
+<Steps>
+<Step>
+
+### Lua
+
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+`aiLib.<name>` is then available in every file of your resource. The full setup, which calls wait, and how Lua tables and vectors cross into TypeScript: [Lib for Lua](/docs/developers/api/lua).
+
+</Step>
+<Step>
+
+### TypeScript
+
+```ts title="server.ts"
+import { inventory, onClientCallback } from "@aifivem/lib/server";
+```
+
+`@aifivem/lib` comes from npm, so a resource outside the AI Core workspace installs it with `bun install @aifivem/lib @aifivem/shared`. A plain JavaScript resource without a build step loads `@ai-lib/dist/server.js` and uses the same global `aiLib`.
+
+</Step>
+<Step>
+
+### Start order
+
+ai-core and ai-lib start before your resource:
+
+```ini title="server.cfg"
+ensure ai-core
+ensure ai-lib
+ensure my-resource
+```
+
+</Step>
+</Steps>
+
+## Call AI Core, not the other script
+
+Every shared job has one door. The lib call and the ai-core export do the same thing; use whichever fits your language.
+
+| What you need | Lua | TypeScript | Reference |
+| --- | --- | --- | --- |
+| Give, take, count items | `aiLib.inventory.addItem` | `inventory.addItem` | [Items](/docs/developers/api/lib-server/items#inventoryadditem), [ai-core items](/docs/developers/api/core-server/items#additem) |
+| A usable item | `aiLib.inventory.registerUsableItem` | `inventory.registerUsableItem` | [registerUsableItem](/docs/developers/api/core-server/items#registerusableitem) |
+| A stash or a shop | `aiLib.inventory.registerStash` | `inventory.registerStash` | [Items](/docs/developers/api/lib-server/items#inventoryregisterstash) |
+| Vehicle keys | `aiLib.vehicleKeys.give` / `.has` | `vehicleKeys.give` / `.has` | [Vehicles](/docs/developers/api/lib-server/vehicles#vehiclekeysgive) |
+| Spawn a vehicle (plate, fuel, look, keys, seats in one call) | `aiLib.spawnVehicle` | `spawnVehicle` | [spawnVehicle](/docs/developers/api/lib-server/vehicles#spawnvehicle) |
+| Park or impound a vehicle | `aiLib.garages.store` | `garages.store` | [garages.store](/docs/developers/api/lib-server/vehicles#garagesstore) |
+| Money of a player | `exports['ai-core']:AddMoney(src, 'cash', 50, 'reason')` | `core.AddMoney(...)` | [Money](/docs/developers/api/core-server/money#addmoney) |
+| Money between two accounts, in one transaction | `aiLib.money.transfer` | `money.transfer` | [money.transfer](/docs/developers/api/lib-server/money#moneytransfer) |
+| Jobs, gangs, duty | `exports['ai-core']:SetJob(src, 'police', 2)` | `core.SetJob(...)` | [Jobs and gangs](/docs/developers/api/core-server/jobs-gangs#setjob) |
+| Who is online, their name, their job | `aiLib.online.name` | `online.name` | [Players](/docs/developers/api/lib-server/players#onlinename) |
+| A police alert | `aiLib.dispatch.alert` | `dispatch.alert` | [dispatch.alert](/docs/developers/api/lib-server/jobs#dispatchalert) |
+| Jail | `aiLib.prison.jail` | `prison.jail` | [prison.jail](/docs/developers/api/lib-server/jobs#prisonjail) |
+| An MDT record | `aiLib.mdt.record` | `mdt.record` | [mdt.record](/docs/developers/api/lib-server/jobs#mdtrecord) |
+| Revive, heal, "is dead" | `aiLib.medical.revive` | `medical.revive` | [medical.revive](/docs/developers/api/lib-server/jobs#medicalrevive) |
+| The phone (number, mail, message, notification) | `aiLib.phone.number` | `phone.number` | [Phone](/docs/developers/api/lib-server/phone-appearance#phonenumber) |
+| A look, an outfit | `aiLib.appearance.apply` | `appearance.apply` | [appearance.apply](/docs/developers/api/lib-client/layers#appearanceapply) |
+| Weather and time | `aiLib.world.setWeather` | `world.setWeather` | [World](/docs/developers/api/lib-server/world#worldsetweather) |
+| Lock a door | `aiLib.doors.setLocked` | `doors.setLocked` | [doors.setLocked](/docs/developers/api/lib-server/world#doorssetlocked) |
+| Notifications, progress bars, menus, input dialogs | `aiLib.notify`, `aiLib.progress`, `aiLib.menu.show` | `notify`, `progress`, `menu` | [Shared UI](/docs/developers/api/lib-client/ui#notify) |
+| A radial menu entry | `aiLib.radial.add` | `radial.add` | [radial.add](/docs/developers/api/lib-client/layers#radialadd) |
+| A command (listed in the admin panel, ACE checked) | `aiLib.addCommand` | `addCommand` | [addCommand](/docs/developers/api/lib-server/commands#addcommand) |
+| A log line in the owner's channels | `aiLib.aiLog` | `aiLog` | [aiLog](/docs/developers/api/lib-server/logs#ailog) |
+
+Which script answers each of these on this server, and the list of adapters: [Layers and the bridge](/docs/developers/layers). Every function with its signature, parameters and return: [API reference](/docs/developers/api).
+
+<Callout type="warn">
+**Never query AI Core's tables.** `ai_core_characters`, `ai_core_accounts`, `ai_core_character_jobs`, `ai_vehicles_owned` and the other `ai_*` tables are internal: characters, money, jobs and vehicles live in memory and are written on ai-core's own schedule, so a direct `SELECT` can be stale, and a column may change in any release. Ask ai-core instead - it answers for a loaded player and for a stored character alike ([characters](/docs/developers/api/core-server/characters), [money](/docs/developers/api/core-server/money), [jobs](/docs/developers/api/core-server/jobs-gangs)). The same goes for another `ai-*` script's data files (`data/*.json` of its admin panel): they are the panel's content, not an interface.
+</Callout>
+
+<Callout type="warn">
+**A citizenid is not a character id.** Two ids exist: the character id (`charId`, a number) and the `citizenid` (text) other frameworks' scripts use. Never convert one into the other yourself - ask ai-core (`GetCharIdByCitizenId`, `GetSourceByCitizenId`, `GetSourceByCharId`): [Characters](/docs/developers/api/core-server/characters#getsourcebycitizenid).
+</Callout>
+
+## Detecting AI Core
+
+```lua title="Lua"
+local onAiCore = GetResourceState('ai-core') == 'started'
+```
+
+In TypeScript the lib does it for you: `isResourceStarted("ai-core")`, or `optionalExport("ai-core")`, which is `null` while the resource is stopped ([exports](/docs/developers/api/lib-shared/exports#isresourcestarted)).
+
+A script that supports several frameworks finds `qbx_core`, `qb-core` and `es_extended` started as well, because ai-core provides them. That path works, but it only reaches what those APIs can say. Check `ai-core` **before** the framework names and take the AI Core path when it is there; keep the framework code as the fallback for other servers.
+
+## The rules your script is judged by
+
+These are the same rules every `ai-*` script follows ([Overview](/docs/developers)), and what a review looks at:
+
+<Steps>
+<Step>
+
+### The server decides
+
+Every client request goes through the lib's gate: a rate limit, one call at a time (`lock`), an ace check, and in TypeScript also guards (admin, has a character, near a point) and an argument parser. Money, items and permissions never change on the client, and a client value is never used as it arrives - in Lua you check every argument yourself.
+
+```lua title="server.lua"
+aiLib.onClientCallback('myshop:buy', function(source, item)
+    if type(item) ~= 'string' or #item > 32 then return aiLib.fail('CORE_ERR_ARGS') end
+    if not aiLib.inventory.canCarryItem(source, item, 1) then return aiLib.fail('INVENTORY_FULL') end
+    -- take the money and give the item here, on the server
+    return { ok = true }
+end, { rate = { count = 5, windowMs = 10000 }, lock = true })
+```
+
+[Client input](/docs/developers/api/lib-server/client-input#onclientcallback), the strict readers TypeScript has ([readText](/docs/developers/api/lib-shared/input#readtext), [oneArg](/docs/developers/api/lib-shared/input#onearg)) and refusals ([fail](/docs/developers/api/lib-shared/input#fail), [ActionResult](/docs/developers/api/types#actionresult)).
+
+</Step>
+<Step>
+
+### Snapshot, then deltas
+
+Live data goes to a client once in full, then only what changed, and only to the players who need it. No polling, no "something changed, fetch it again" signal, no per-tick traffic. State bags for per-entity and per-player values, [AreaStream](/docs/developers/api/lib-server/area-stream#areastream) for world objects, [state bags](/docs/developers/api/lib-shared/state-bags#entitystate) for the rest.
+
+</Step>
+<Step>
+
+### Settings in the admin panel
+
+A server owner should not edit Lua. Your script's own settings screen gets a card on ai-core's panel dashboard with one call, so the owner finds every script's settings in one place:
+
+```lua title="server.lua"
+exports['ai-core']:RegisterExternalPanel({
+    label = 'My script',
+    icon = 'gear',
+    description = 'Shops, prices and rewards',
+    command = 'myscriptconfig',
+})
+```
+
+A script you cannot change is listed with `ai_admin_label` / `ai_admin_command` lines in its `fxmanifest.lua` instead: [RegisterExternalPanel](/docs/developers/api/core-server/admin#registerexternalpanel). Commands registered with `aiLib.addCommand` and keybinds made with `aiLib.Keybind` show up in the panel's command and key lists on their own.
+
+</Step>
+<Step>
+
+### Your own data is yours
+
+Tables of your own resource are your business: name them after your resource (`myscript_*`) and create them at start. Lua resources use ai-mysql, which stands in for oxmysql, mysql-async and ghmattimysql (`MySQL.query.await`, `MySQL.single.await`), so the queries you already have keep working. A resource that reads the connection string itself also needs one line in `env.cfg`:
+
+```ini title="env.cfg"
+add_convar_permission my-resource read mysql_connection_string
+```
+
+See [The database](/docs/developers/database).
+
+</Step>
+</Steps>
+
+## Before you release
+
+- `ai-lib` (or `@aifivem/lib`) loaded, `dependency 'ai-lib'` in the manifest.
+- No other script's exports for items, keys, money, jobs, the phone, alerts, clothing, fuel, doors, garages or the prison.
+- No query against an `ai_*` table of AI Core, and no reading of another script's `data/*.json`.
+- Every client request rate limited and checked on the server.
+- Live data as snapshot and deltas.
+- Settings in the panel, texts in your own locale files ([locale](/docs/developers/api/lib-shared/locale#createlocale)).
+- Tested with the `ai-*` scripts the feature touches, and with the server's own choice replaced (another inventory, another key system) where a layer is involved.
+
+<Cards>
+  <Card title="API reference" href="/docs/developers/api" description="Every export, event and lib function with its signature, parameters and return." />
+  <Card title="Lib for Lua" href="/docs/developers/api/lua" description="aiLib: setup, the calls that wait, Lua tables and vectors across the resource boundary." />
+  <Card title="Layers and the bridge" href="/docs/developers/layers" description="Which script answers each layer, and how the ESX / QB / Qbox bridge works." />
+  <Card title="Recommended scripts" href="/docs/developers/recommended-scripts" description="Getting a free script listed in the panel, and writing the adapter for your layer." />
+</Cards>

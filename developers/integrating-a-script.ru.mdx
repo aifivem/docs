@@ -1,0 +1,192 @@
+---
+title: Интеграция своего скрипта
+description: Как ваш ресурс работает с AI Core - подключение либы, вызов слоёв вместо других скриптов, чего нельзя касаться, и чек-лист перед релизом.
+icon: Puzzle
+---
+
+Чтобы работать с AI Core, вашему скрипту не нужно быть скриптом `ai-*`. Что делать - зависит от того, что вы пишете:
+
+| Что у вас есть | Что делать |
+| --- | --- |
+| Скрипт, написанный под ESX, QBCore, Qbox или vRP | Ничего. AI Core предоставляет `es_extended`, `qb-core`, `qbx_core` и `vrp` и отвечает на их API, поэтому скрипт работает без изменений. См. [Совместимость](/ru/docs/compatibility). |
+| Ваш собственный новый ресурс (Lua, TypeScript или обычный JavaScript) | Подключить либу и обращаться к AI Core через неё. Об этом эта страница. |
+| Скрипт, который **предоставляет** то, что нужно другим скриптам (инвентарь, телефон, система ключей, гараж, скрипт топлива...) | То же самое плюс адаптер в этом слое, чтобы остальной сервер до него добрался. См. [Рекомендуемые скрипты](/ru/docs/developers/recommended-scripts). |
+
+Цель в одном предложении: **всё, что ваш скрипт делит с другим скриптом, идёт через либу или ai-core, но никогда через экспорты этого скрипта.** Тогда владелец может заменить инвентарь, систему ключей или телефон, а ваш скрипт продолжит работать.
+
+## Подключите либу
+
+<Steps>
+<Step>
+
+### Lua
+
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+После этого `aiLib.<name>` доступен в каждом файле вашего ресурса. Полная настройка, какие вызовы ждут ответа и как таблицы и векторы Lua переходят в TypeScript: [Либа для Lua](/ru/docs/developers/api/lua).
+
+</Step>
+<Step>
+
+### TypeScript
+
+```ts title="server.ts"
+import { inventory, onClientCallback } from "@aifivem/lib/server";
+```
+
+`@aifivem/lib` берётся из npm: ресурс вне рабочего пространства AI Core ставит её через `bun install @aifivem/lib @aifivem/shared`. Обычный JavaScript-ресурс без сборки подключает `@ai-lib/dist/server.js` и использует тот же глобальный `aiLib`.
+
+</Step>
+<Step>
+
+### Порядок запуска
+
+ai-core и ai-lib запускаются до вашего ресурса:
+
+```ini title="server.cfg"
+ensure ai-core
+ensure ai-lib
+ensure my-resource
+```
+
+</Step>
+</Steps>
+
+## Вызывайте AI Core, а не другой скрипт
+
+У каждой общей задачи одна дверь. Вызов либы и экспорт ai-core делают одно и то же; берите то, что подходит вашему языку.
+
+| Что нужно | Lua | TypeScript | Справочник |
+| --- | --- | --- | --- |
+| Выдать, забрать, посчитать предметы | `aiLib.inventory.addItem` | `inventory.addItem` | [Предметы](/ru/docs/developers/api/lib-server/items#inventoryadditem), [предметы ai-core](/ru/docs/developers/api/core-server/items#additem) |
+| Используемый предмет | `aiLib.inventory.registerUsableItem` | `inventory.registerUsableItem` | [registerUsableItem](/ru/docs/developers/api/core-server/items#registerusableitem) |
+| Хранилище или магазин | `aiLib.inventory.registerStash` | `inventory.registerStash` | [Предметы](/ru/docs/developers/api/lib-server/items#inventoryregisterstash) |
+| Ключи от машины | `aiLib.vehicleKeys.give` / `.has` | `vehicleKeys.give` / `.has` | [Транспорт](/ru/docs/developers/api/lib-server/vehicles#vehiclekeysgive) |
+| Создать машину (номер, топливо, вид, ключи и места одним вызовом) | `aiLib.spawnVehicle` | `spawnVehicle` | [spawnVehicle](/ru/docs/developers/api/lib-server/vehicles#spawnvehicle) |
+| Поставить в гараж или на штрафстоянку | `aiLib.garages.store` | `garages.store` | [garages.store](/ru/docs/developers/api/lib-server/vehicles#garagesstore) |
+| Деньги игрока | `exports['ai-core']:AddMoney(src, 'cash', 50, 'reason')` | `core.AddMoney(...)` | [Деньги](/ru/docs/developers/api/core-server/money#addmoney) |
+| Деньги между двумя счетами, одной транзакцией | `aiLib.money.transfer` | `money.transfer` | [money.transfer](/ru/docs/developers/api/lib-server/money#moneytransfer) |
+| Работы, банды, смена | `exports['ai-core']:SetJob(src, 'police', 2)` | `core.SetJob(...)` | [Работы и банды](/ru/docs/developers/api/core-server/jobs-gangs#setjob) |
+| Кто в сети, его имя, его работа | `aiLib.online.name` | `online.name` | [Игроки](/ru/docs/developers/api/lib-server/players#onlinename) |
+| Вызов для полиции | `aiLib.dispatch.alert` | `dispatch.alert` | [dispatch.alert](/ru/docs/developers/api/lib-server/jobs#dispatchalert) |
+| Тюрьма | `aiLib.prison.jail` | `prison.jail` | [prison.jail](/ru/docs/developers/api/lib-server/jobs#prisonjail) |
+| Запись в MDT | `aiLib.mdt.record` | `mdt.record` | [mdt.record](/ru/docs/developers/api/lib-server/jobs#mdtrecord) |
+| Поднять, вылечить, "мёртв ли" | `aiLib.medical.revive` | `medical.revive` | [medical.revive](/ru/docs/developers/api/lib-server/jobs#medicalrevive) |
+| Телефон (номер, почта, сообщение, уведомление) | `aiLib.phone.number` | `phone.number` | [Телефон](/ru/docs/developers/api/lib-server/phone-appearance#phonenumber) |
+| Внешность, комплект одежды | `aiLib.appearance.apply` | `appearance.apply` | [appearance.apply](/ru/docs/developers/api/lib-client/layers#appearanceapply) |
+| Погода и время | `aiLib.world.setWeather` | `world.setWeather` | [Мир](/ru/docs/developers/api/lib-server/world#worldsetweather) |
+| Закрыть дверь | `aiLib.doors.setLocked` | `doors.setLocked` | [doors.setLocked](/ru/docs/developers/api/lib-server/world#doorssetlocked) |
+| Уведомления, полосы прогресса, меню, диалоги ввода | `aiLib.notify`, `aiLib.progress`, `aiLib.menu.show` | `notify`, `progress`, `menu` | [Общий интерфейс](/ru/docs/developers/api/lib-client/ui#notify) |
+| Пункт радиального меню | `aiLib.radial.add` | `radial.add` | [radial.add](/ru/docs/developers/api/lib-client/layers#radialadd) |
+| Команда (видна в админ-панели, проверяется по ACE) | `aiLib.addCommand` | `addCommand` | [addCommand](/ru/docs/developers/api/lib-server/commands#addcommand) |
+| Строка лога в каналах владельца | `aiLib.aiLog` | `aiLog` | [aiLog](/ru/docs/developers/api/lib-server/logs#ailog) |
+
+Какой скрипт отвечает за каждый пункт на этом сервере и список адаптеров: [Слои и мост](/ru/docs/developers/layers). Каждая функция с подписью, параметрами и возвратом: [Справочник API](/ru/docs/developers/api).
+
+<Callout type="warn">
+**Никогда не обращайтесь к таблицам AI Core.** `ai_core_characters`, `ai_core_accounts`, `ai_core_character_jobs`, `ai_vehicles_owned` и остальные таблицы `ai_*` внутренние: персонажи, деньги, работы и машины живут в памяти и пишутся по расписанию самого ai-core, поэтому прямой `SELECT` может вернуть устаревшее, а колонка может измениться в любом релизе. Спросите ai-core - он отвечает и о загруженном игроке, и о сохранённом персонаже ([персонажи](/ru/docs/developers/api/core-server/characters), [деньги](/ru/docs/developers/api/core-server/money), [работы](/ru/docs/developers/api/core-server/jobs-gangs)). То же касается файлов данных другого скрипта `ai-*` (`data/*.json` его админ-панели): это содержимое панели, а не интерфейс.
+</Callout>
+
+<Callout type="warn">
+**citizenid - это не id персонажа.** Есть два id: id персонажа (`charId`, число) и `citizenid` (текст), которым пользуются скрипты других фреймворков. Никогда не пересчитывайте одно в другое сами - спросите ai-core (`GetCharIdByCitizenId`, `GetSourceByCitizenId`, `GetSourceByCharId`): [Персонажи](/ru/docs/developers/api/core-server/characters#getsourcebycitizenid).
+</Callout>
+
+## Как определить AI Core
+
+```lua title="Lua"
+local onAiCore = GetResourceState('ai-core') == 'started'
+```
+
+В TypeScript либа делает это за вас: `isResourceStarted("ai-core")` или `optionalExport("ai-core")`, который равен `null`, пока ресурс остановлен ([экспорты](/ru/docs/developers/api/lib-shared/exports#isresourcestarted)).
+
+Скрипт, поддерживающий несколько фреймворков, увидит запущенными и `qbx_core`, и `qb-core`, и `es_extended`, потому что их предоставляет ai-core. Этот путь работает, но добирается только до того, что умеют сказать те API. Проверяйте `ai-core` **до** имён фреймворков и выбирайте путь AI Core, когда он есть; код фреймворка оставьте как запасной для других серверов.
+
+## Правила, по которым оценивают ваш скрипт
+
+Это те же правила, которым следует каждый скрипт `ai-*` ([Обзор](/ru/docs/developers)), и то, на что смотрит ревью:
+
+<Steps>
+<Step>
+
+### Решает сервер
+
+Каждый запрос клиента проходит через калитку либы: ограничение частоты, один вызов за раз (`lock`), проверка ACE, а в TypeScript ещё и стражи (админ, есть персонаж, рядом с точкой) и разбор аргументов. Деньги, предметы и права никогда не меняются на клиенте, а значение от клиента никогда не используется как пришло - в Lua вы проверяете каждый аргумент сами.
+
+```lua title="server.lua"
+aiLib.onClientCallback('myshop:buy', function(source, item)
+    if type(item) ~= 'string' or #item > 32 then return aiLib.fail('CORE_ERR_ARGS') end
+    if not aiLib.inventory.canCarryItem(source, item, 1) then return aiLib.fail('INVENTORY_FULL') end
+    -- здесь, на сервере, списать деньги и выдать предмет
+    return { ok = true }
+end, { rate = { count = 5, windowMs = 10000 }, lock = true })
+```
+
+[Ввод от клиента](/ru/docs/developers/api/lib-server/client-input#onclientcallback), строгие читатели TypeScript ([readText](/ru/docs/developers/api/lib-shared/input#readtext), [oneArg](/ru/docs/developers/api/lib-shared/input#onearg)) и отказы ([fail](/ru/docs/developers/api/lib-shared/input#fail), [ActionResult](/ru/docs/developers/api/types#actionresult)).
+
+</Step>
+<Step>
+
+### Снимок, затем дельты
+
+Живые данные уходят клиенту один раз целиком, дальше - только изменения и только тем игрокам, кому они нужны. Никаких опросов, никаких сигналов "что-то изменилось, запроси снова", никакого трафика каждый тик. State bag'и для значений на сущность и на игрока, [AreaStream](/ru/docs/developers/api/lib-server/area-stream#areastream) для объектов мира, [state bag'и](/ru/docs/developers/api/lib-shared/state-bags#entitystate) для остального.
+
+</Step>
+<Step>
+
+### Настройки в админ-панели
+
+Владельцу сервера не следует править Lua. Экран настроек вашего скрипта получает карточку на главной странице панели ai-core одним вызовом, чтобы владелец находил настройки всех скриптов в одном месте:
+
+```lua title="server.lua"
+exports['ai-core']:RegisterExternalPanel({
+    label = 'My script',
+    icon = 'gear',
+    description = 'Shops, prices and rewards',
+    command = 'myscriptconfig',
+})
+```
+
+Скрипт, который вы не можете изменить, перечисляется строками `ai_admin_label` / `ai_admin_command` в его `fxmanifest.lua`: [RegisterExternalPanel](/ru/docs/developers/api/core-server/admin#registerexternalpanel). Команды, зарегистрированные через `aiLib.addCommand`, и клавиши, сделанные через `aiLib.Keybind`, сами попадают в списки команд и клавиш панели.
+
+</Step>
+<Step>
+
+### Ваши данные - ваши
+
+Таблицы вашего ресурса - ваше дело: называйте их по имени ресурса (`myscript_*`) и создавайте на старте. Lua-ресурсы используют ai-mysql, который заменяет oxmysql, mysql-async и ghmattimysql (`MySQL.query.await`, `MySQL.single.await`), так что имеющиеся запросы продолжат работать. Ресурсу, который сам читает строку подключения, нужна ещё одна строка в `env.cfg`:
+
+```ini title="env.cfg"
+add_convar_permission my-resource read mysql_connection_string
+```
+
+См. [База данных](/ru/docs/developers/database).
+
+</Step>
+</Steps>
+
+## Перед релизом
+
+- `ai-lib` (или `@aifivem/lib`) подключена, в манифесте есть `dependency 'ai-lib'`.
+- Нет экспортов другого скрипта для предметов, ключей, денег, работ, телефона, вызовов, одежды, топлива, дверей, гаражей и тюрьмы.
+- Нет запросов к таблицам `ai_*` AI Core и нет чтения `data/*.json` другого скрипта.
+- У каждого запроса клиента есть ограничение частоты и проверка на сервере.
+- Живые данные идут снимком и дельтами.
+- Настройки в панели, тексты в собственных языковых файлах ([locale](/ru/docs/developers/api/lib-shared/locale#createlocale)).
+- Проверено со скриптами `ai-*`, которых касается функция, а если задействован слой - ещё и с заменённым выбором сервера (другой инвентарь, другая система ключей).
+
+<Cards>
+  <Card title="Справочник API" href="/ru/docs/developers/api" description="Каждый экспорт, событие и функция либы с подписью, параметрами и возвратом." />
+  <Card title="Либа для Lua" href="/ru/docs/developers/api/lua" description="aiLib: настройка, вызовы которые ждут, таблицы и векторы Lua через границу ресурса." />
+  <Card title="Слои и мост" href="/ru/docs/developers/layers" description="Какой скрипт отвечает в каждом слое и как работает мост ESX / QB / Qbox." />
+  <Card title="Рекомендуемые скрипты" href="/ru/docs/developers/recommended-scripts" description="Как бесплатный скрипт попадает в список панели и как написать адаптер его слоя." />
+</Cards>

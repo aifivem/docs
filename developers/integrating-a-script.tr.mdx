@@ -1,0 +1,192 @@
+---
+title: Kendi script'ini entegre etmek
+description: Kendi resource'unun AI Core ile nasıl çalıştığı - lib'i yüklemek, başka script'ler yerine çağrılan katmanlar, asla dokunulmayacak yerler ve yayından önceki kontrol listesi.
+icon: Puzzle
+---
+
+Script'inin AI Core ile çalışması için `ai-*` script'i olması gerekmiyor. Yapman gereken, ne yazdığına bağlı:
+
+| Elindeki | Yapılacak |
+| --- | --- |
+| ESX, QBCore, Qbox ya da vRP için yazılmış bir script | Hiçbir şey. AI Core `es_extended`, `qb-core`, `qbx_core` ve `vrp` adlarını sağlar ve API'lerini yanıtlar; script hiç değişmeden çalışır. Bkz. [Uyumluluk](/tr/docs/compatibility). |
+| Kendi yeni resource'un (Lua, TypeScript ya da düz JavaScript) | Lib'i yükle ve AI Core'u onun üzerinden çağır. Bu sayfa bunu anlatıyor. |
+| Başka script'lerin ihtiyaç duyduğu bir şeyi **sağlayan** bir script (envanter, telefon, anahtar sistemi, garaj, yakıt script'i...) | Yukarıdakinin aynısı, artı o katmanda bir adapter: sunucunun kalanı script'ine böyle ulaşır. Bkz. [Önerilen script'ler](/tr/docs/developers/recommended-scripts). |
+
+Amaç tek cümle: **script'inin başka bir script'le paylaştığı her şey lib ya da ai-core üzerinden gider, asla o script'in kendi export'larından geçmez.** Sunucu sahibi envanteri, anahtar sistemini ya da telefonu değiştirdiğinde script'in çalışmaya devam eder.
+
+## Lib'i yükle
+
+<Steps>
+<Step>
+
+### Lua
+
+```lua title="fxmanifest.lua"
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+dependency 'ai-lib'
+shared_script '@ai-lib/init.lua'
+
+client_script 'client.lua'
+server_script 'server.lua'
+```
+
+`aiLib.<name>` artık resource'unun her dosyasında kullanılabilir. Kurulumun tamamı, hangi çağrıların beklediği ve Lua tablolarıyla vektörlerin TypeScript'e nasıl geçtiği: [Lua için lib](/tr/docs/developers/api/lua).
+
+</Step>
+<Step>
+
+### TypeScript
+
+```ts title="server.ts"
+import { inventory, onClientCallback } from "@aifivem/lib/server";
+```
+
+`@aifivem/lib` npm'den gelir; AI Core workspace'inin dışındaki bir resource `bun install @aifivem/lib @aifivem/shared` ile kurar. Derleme adımı olmayan düz bir JavaScript resource'u `@ai-lib/dist/server.js` dosyasını yükler ve aynı global `aiLib`'i kullanır.
+
+</Step>
+<Step>
+
+### Başlama sırası
+
+ai-core ve ai-lib senin resource'undan önce başlar:
+
+```ini title="server.cfg"
+ensure ai-core
+ensure ai-lib
+ensure my-resource
+```
+
+</Step>
+</Steps>
+
+## AI Core'u çağır, diğer script'i değil
+
+Paylaşılan her işin tek bir kapısı var. Lib çağrısı ile ai-core export'u aynı işi yapar; diline uyanı kullan.
+
+| İhtiyacın | Lua | TypeScript | Başvuru |
+| --- | --- | --- | --- |
+| Eşya verme, alma, sayma | `aiLib.inventory.addItem` | `inventory.addItem` | [Eşyalar](/tr/docs/developers/api/lib-server/items#inventoryadditem), [ai-core eşyaları](/tr/docs/developers/api/core-server/items#additem) |
+| Kullanılabilir eşya | `aiLib.inventory.registerUsableItem` | `inventory.registerUsableItem` | [registerUsableItem](/tr/docs/developers/api/core-server/items#registerusableitem) |
+| Depo ya da dükkân | `aiLib.inventory.registerStash` | `inventory.registerStash` | [Eşyalar](/tr/docs/developers/api/lib-server/items#inventoryregisterstash) |
+| Araç anahtarları | `aiLib.vehicleKeys.give` / `.has` | `vehicleKeys.give` / `.has` | [Araçlar](/tr/docs/developers/api/lib-server/vehicles#vehiclekeysgive) |
+| Araç spawn'lamak (plaka, yakıt, görünüm, anahtar, koltuklar tek çağrıda) | `aiLib.spawnVehicle` | `spawnVehicle` | [spawnVehicle](/tr/docs/developers/api/lib-server/vehicles#spawnvehicle) |
+| Aracı garaja koymak ya da çektirmek | `aiLib.garages.store` | `garages.store` | [garages.store](/tr/docs/developers/api/lib-server/vehicles#garagesstore) |
+| Oyuncunun parası | `exports['ai-core']:AddMoney(src, 'cash', 50, 'reason')` | `core.AddMoney(...)` | [Para](/tr/docs/developers/api/core-server/money#addmoney) |
+| İki hesap arasında, tek işlemde para | `aiLib.money.transfer` | `money.transfer` | [money.transfer](/tr/docs/developers/api/lib-server/money#moneytransfer) |
+| Meslekler, çeteler, görev durumu | `exports['ai-core']:SetJob(src, 'police', 2)` | `core.SetJob(...)` | [Meslekler ve çeteler](/tr/docs/developers/api/core-server/jobs-gangs#setjob) |
+| Kim çevrimiçi, adı, mesleği | `aiLib.online.name` | `online.name` | [Oyuncular](/tr/docs/developers/api/lib-server/players#onlinename) |
+| Polis ihbarı | `aiLib.dispatch.alert` | `dispatch.alert` | [dispatch.alert](/tr/docs/developers/api/lib-server/jobs#dispatchalert) |
+| Hapis | `aiLib.prison.jail` | `prison.jail` | [prison.jail](/tr/docs/developers/api/lib-server/jobs#prisonjail) |
+| MDT kaydı | `aiLib.mdt.record` | `mdt.record` | [mdt.record](/tr/docs/developers/api/lib-server/jobs#mdtrecord) |
+| Canlandırma, iyileştirme, "ölü mü" | `aiLib.medical.revive` | `medical.revive` | [medical.revive](/tr/docs/developers/api/lib-server/jobs#medicalrevive) |
+| Telefon (numara, mail, mesaj, bildirim) | `aiLib.phone.number` | `phone.number` | [Telefon](/tr/docs/developers/api/lib-server/phone-appearance#phonenumber) |
+| Görünüm, kıyafet | `aiLib.appearance.apply` | `appearance.apply` | [appearance.apply](/tr/docs/developers/api/lib-client/layers#appearanceapply) |
+| Hava ve saat | `aiLib.world.setWeather` | `world.setWeather` | [Dünya](/tr/docs/developers/api/lib-server/world#worldsetweather) |
+| Kapı kilitlemek | `aiLib.doors.setLocked` | `doors.setLocked` | [doors.setLocked](/tr/docs/developers/api/lib-server/world#doorssetlocked) |
+| Bildirim, ilerleme çubuğu, menü, metin girişi | `aiLib.notify`, `aiLib.progress`, `aiLib.menu.show` | `notify`, `progress`, `menu` | [Ortak arayüz](/tr/docs/developers/api/lib-client/ui#notify) |
+| Radial menü girdisi | `aiLib.radial.add` | `radial.add` | [radial.add](/tr/docs/developers/api/lib-client/layers#radialadd) |
+| Komut (admin panelinde listelenir, ACE kontrollü) | `aiLib.addCommand` | `addCommand` | [addCommand](/tr/docs/developers/api/lib-server/commands#addcommand) |
+| Sunucu sahibinin kanallarına log satırı | `aiLib.aiLog` | `aiLog` | [aiLog](/tr/docs/developers/api/lib-server/logs#ailog) |
+
+Bu sunucuda hangisini hangi script'in yanıtladığı ve adapter listesi: [Katmanlar ve köprü](/tr/docs/developers/layers). İmzası, parametreleri ve dönüşüyle her fonksiyon: [API başvurusu](/tr/docs/developers/api).
+
+<Callout type="warn">
+**AI Core'un tablolarına asla sorgu atma.** `ai_core_characters`, `ai_core_accounts`, `ai_core_character_jobs`, `ai_vehicles_owned` ve diğer `ai_*` tabloları içeridir: karakterler, para, meslekler ve araçlar bellekte durur ve ai-core'un kendi takvimiyle yazılır; doğrudan bir `SELECT` eski veri verebilir ve bir kolon her sürümde değişebilir. Onun yerine ai-core'a sor - yüklü bir oyuncuyu da kayıtlı bir karakteri de aynı şekilde yanıtlar ([karakterler](/tr/docs/developers/api/core-server/characters), [para](/tr/docs/developers/api/core-server/money), [meslekler](/tr/docs/developers/api/core-server/jobs-gangs)). Aynısı başka bir `ai-*` script'inin veri dosyaları için de geçerli (admin panelinin `data/*.json` dosyaları): onlar panelin içeriğidir, bir arayüz değil.
+</Callout>
+
+<Callout type="warn">
+**citizenid, karakter id'si değildir.** İki id var: karakter id'si (`charId`, bir sayı) ve diğer framework script'lerinin kullandığı `citizenid` (metin). Birini diğerine kendin çevirme - ai-core'a sor (`GetCharIdByCitizenId`, `GetSourceByCitizenId`, `GetSourceByCharId`): [Karakterler](/tr/docs/developers/api/core-server/characters#getsourcebycitizenid).
+</Callout>
+
+## AI Core'u algılamak
+
+```lua title="Lua"
+local onAiCore = GetResourceState('ai-core') == 'started'
+```
+
+TypeScript'te lib bunu senin için yapar: `isResourceStarted("ai-core")` ya da resource durduğu sürece `null` olan `optionalExport("ai-core")` ([export'lar](/tr/docs/developers/api/lib-shared/exports#isresourcestarted)).
+
+Birkaç framework'ü destekleyen bir script `qbx_core`, `qb-core` ve `es_extended` adlarını da başlamış görür, çünkü ai-core onları sağlar. O yol çalışır ama sadece o API'lerin söyleyebildiği kadarına ulaşır. Framework adlarından **önce** `ai-core`'u kontrol et ve varsa AI Core yolunu seç; framework kodunu diğer sunucular için yedek olarak bırak.
+
+## Script'inin ölçüldüğü kurallar
+
+Bunlar her `ai-*` script'inin uyduğu kurallarla aynı ([Genel bakış](/tr/docs/developers)) ve bir incelemenin baktığı şeyler:
+
+<Steps>
+<Step>
+
+### Karar sunucunun
+
+Client'tan gelen her istek lib'in kapısından geçer: hız sınırı, aynı anda tek çağrı (`lock`), ace kontrolü ve TypeScript'te ayrıca koruyucular (admin, karakteri var, bir noktaya yakın) ile argüman ayrıştırıcı. Para, eşya ve yetkiler client'ta değişmez ve client'tan gelen bir değer geldiği gibi kullanılmaz - Lua'da her argümanı kendin kontrol edersin.
+
+```lua title="server.lua"
+aiLib.onClientCallback('myshop:buy', function(source, item)
+    if type(item) ~= 'string' or #item > 32 then return aiLib.fail('CORE_ERR_ARGS') end
+    if not aiLib.inventory.canCarryItem(source, item, 1) then return aiLib.fail('INVENTORY_FULL') end
+    -- parayı al ve eşyayı burada, sunucuda ver
+    return { ok = true }
+end, { rate = { count = 5, windowMs = 10000 }, lock = true })
+```
+
+[Client girdisi](/tr/docs/developers/api/lib-server/client-input#onclientcallback), TypeScript'in katı okuyucuları ([readText](/tr/docs/developers/api/lib-shared/input#readtext), [oneArg](/tr/docs/developers/api/lib-shared/input#onearg)) ve ret cevapları ([fail](/tr/docs/developers/api/lib-shared/input#fail), [ActionResult](/tr/docs/developers/api/types#actionresult)).
+
+</Step>
+<Step>
+
+### Snapshot, sonra delta
+
+Canlı veri client'a bir kez tam olarak gider, sonra sadece değişen kısım ve sadece ihtiyacı olan oyunculara. Sürekli sorgulama yok, "bir şey değişti, tekrar çek" sinyali yok, her tick'te trafik yok. Varlık ve oyuncu başına değerler için state bag'ler, dünya nesneleri için [AreaStream](/tr/docs/developers/api/lib-server/area-stream#areastream), kalanı için [state bag'ler](/tr/docs/developers/api/lib-shared/state-bags#entitystate).
+
+</Step>
+<Step>
+
+### Ayarlar admin panelinde
+
+Sunucu sahibi Lua düzenlemek zorunda kalmamalı. Script'inin kendi ayar ekranı tek bir çağrıyla ai-core panelinin ana sayfasında bir kart alır; sahibi böylece her script'in ayarını tek yerde bulur:
+
+```lua title="server.lua"
+exports['ai-core']:RegisterExternalPanel({
+    label = 'My script',
+    icon = 'gear',
+    description = 'Shops, prices and rewards',
+    command = 'myscriptconfig',
+})
+```
+
+Değiştiremediğin bir script yerine `fxmanifest.lua` dosyasındaki `ai_admin_label` / `ai_admin_command` satırlarıyla listelenir: [RegisterExternalPanel](/tr/docs/developers/api/core-server/admin#registerexternalpanel). `aiLib.addCommand` ile kaydedilen komutlar ve `aiLib.Keybind` ile yapılan tuşlar panelin komut ve tuş listelerinde kendiliğinden görünür.
+
+</Step>
+<Step>
+
+### Kendi verin senin
+
+Kendi resource'unun tabloları senin işin: adlarını resource'una göre ver (`myscript_*`) ve başlangıçta oluştur. Lua resource'ları ai-mysql kullanır; o da oxmysql, mysql-async ve ghmattimysql'in yerine geçer (`MySQL.query.await`, `MySQL.single.await`), yani elindeki sorgular çalışmaya devam eder. Bağlantı dizesini kendi okuyan bir resource'un `env.cfg` dosyasına bir satır da gerekir:
+
+```ini title="env.cfg"
+add_convar_permission my-resource read mysql_connection_string
+```
+
+Bkz. [Veritabanı](/tr/docs/developers/database).
+
+</Step>
+</Steps>
+
+## Yayınlamadan önce
+
+- `ai-lib` (ya da `@aifivem/lib`) yüklü, manifest'te `dependency 'ai-lib'` var.
+- Eşya, anahtar, para, meslek, telefon, ihbar, kıyafet, yakıt, kapı, garaj ve hapishane için başka bir script'in export'u kullanılmıyor.
+- AI Core'un `ai_*` tablolarına sorgu yok, başka bir script'in `data/*.json` dosyası okunmuyor.
+- Client'tan gelen her istek hız sınırlı ve sunucuda kontrol ediliyor.
+- Canlı veri snapshot ve delta olarak gidiyor.
+- Ayarlar panelde, metinler kendi dil dosyalarında ([locale](/tr/docs/developers/api/lib-shared/locale#createlocale)).
+- Özelliğin dokunduğu `ai-*` script'leriyle test edildi ve katman söz konusuysa sunucunun seçimi değiştirilerek de (başka bir envanter, başka bir anahtar sistemi) test edildi.
+
+<Cards>
+  <Card title="API başvurusu" href="/tr/docs/developers/api" description="İmzası, parametreleri ve dönüşüyle her export, olay ve lib fonksiyonu." />
+  <Card title="Lua için lib" href="/tr/docs/developers/api/lua" description="aiLib: kurulum, bekleyen çağrılar, resource sınırını geçen Lua tabloları ve vektörler." />
+  <Card title="Katmanlar ve köprü" href="/tr/docs/developers/layers" description="Her katmanı hangi script'in yanıtladığı ve ESX / QB / Qbox köprüsünün nasıl çalıştığı." />
+  <Card title="Önerilen script'ler" href="/tr/docs/developers/recommended-scripts" description="Ücretsiz bir script'i panelde listeletmek ve katmanının adapter'ını yazmak." />
+</Cards>
