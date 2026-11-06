@@ -4,7 +4,7 @@ description: Les exports serveur, les state bags et les events d’ai-vehicles, 
 icon: Code
 ---
 
-ai-vehicles n’a que des exports serveur. Ils sont tous synchrones (pas de Promise, pas d’attente en Lua), sauf `SpawnVehicle`, qui répond via un callback. Les types sont dans `@aifivem/shared` (`vehicles.ts`).
+ai-vehicles n’a que des exports serveur. La plupart sont synchrones (pas de Promise, pas d’attente en Lua) ; ceux qui peuvent lire la base - `FindVehicle`, `GetVehiclesOf`, `SetPlate`, `DeleteVehicleByPlate`, `AdoptVehicle` - et `SpawnVehicle` répondent via un callback. Les types sont dans `@aifivem/shared` (`vehicles.ts`).
 
 ```ts title="TypeScript"
 import { resourceExport } from "@aifivem/lib/server";
@@ -49,6 +49,32 @@ Ce que renvoient `GetVehicle` et `GetVehicles`.
     fuel: { type: 'number', description: 'Carburant, 0-100.', required: true },
     engine: { type: 'number', description: 'Santé du moteur, de -4000 à 1000.', required: true },
     body: { type: 'number', description: 'Santé de la carrosserie, 0-1000.', required: true },
+  }}
+/>
+
+### DeleteByPlateResult
+
+Ce que répond [DeleteVehicleByPlate](#deletevehiclebyplate).
+
+<TypeTable
+  type={{
+    ok: { type: 'boolean', description: '`true` quand le véhicule a été supprimé.', required: true },
+    id: { type: 'number', description: 'L’id du véhicule supprimé (`ok: true` seulement).' },
+    entities: { type: 'number', description: 'Combien d’entités portant cette plaque ont été supprimées avec lui (`ok: true` seulement).' },
+    error: { type: '"invalid_plate" | "not_found" | "failed"', description: '`invalid_plate` : pas une plaque. `not_found` : aucun véhicule possédé ne l’a. `failed` : la suppression elle-même n’est pas passée (`ok: false` seulement).' },
+  }}
+/>
+
+### AdoptVehicleResult
+
+Ce que répond [AdoptVehicle](#adoptvehicle).
+
+<TypeTable
+  type={{
+    ok: { type: 'boolean', description: '`true` quand l’entité est maintenant un véhicule possédé.', required: true },
+    id: { type: 'number', description: 'Son nouvel id de véhicule (`ok: true` seulement).' },
+    plate: { type: 'string', description: 'La plaque obtenue : la sienne, ou une plaque générée (`ok: true` seulement).' },
+    error: { type: '"invalid" | "model" | "owned" | "plate_owned" | "failed"', description: '`owned` : l’entité est déjà un véhicule possédé. `plate_owned` : sa plaque appartient à un véhicule possédé, propriétaire en ligne ou non. `model` : le nom de modèle n’est pas celui de l’entité. `invalid` : pas une entité de véhicule, un mauvais propriétaire, ou des props d’un autre modèle. `failed` : l’écriture n’a pas abouti (`ok: false` seulement).' },
   }}
 />
 
@@ -291,6 +317,160 @@ local owners = exports['ai-vehicles']:GetPlateOwners() -- { { plate, type, id },
 
 Un tableau de triplets. Vide quand aucun véhicule n’est en mémoire.
 
+### FindVehicle
+
+Un véhicule possédé par sa plaque exacte, **même un dont le propriétaire n'est pas en ligne** : ai-vehicles répond depuis la mémoire quand il tient le véhicule, et lit la base quand il ne l'a pas. C'est la recherche pour une plaque qu'un joueur a tapée - une requête MDT, une fourrière, une barrière qui vérifie à qui est la voiture devant elle.
+
+**Côté :** Serveur · **Attend :** non (la réponse arrive dans `done`)
+
+```ts title="Signature"
+FindVehicle(plate: string, done: (vehicle: OwnedVehicle | null) => void, shape?: "framework"): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:FindVehicle(plate, function(vehicle) end, shape)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    plate: { type: 'string', description: 'La plaque, telle que le véhicule la porte. C’est une correspondance exacte : un morceau de plaque ne trouve rien.', required: true },
+    done: { type: '(vehicle: OwnedVehicle | null) => void', description: 'Appelé avec le véhicule, ou `null` quand aucun véhicule possédé n’a cette plaque.', required: true },
+    shape: { type: '"framework"', description: 'Répond `props` dans la forme d’ox_lib / qb-core avec `fuelLevel`, pour un script qui applique l’apparence lui-même.' },
+  }}
+/>
+
+#### Retour
+
+Rien. `done` reçoit un [OwnedVehicle](#ownedvehicle) ou `null`.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** À qui appartient la plaque, en ligne ou non. */
+export function ownerOf(plate: string): Promise<string | null> {
+  return new Promise((resolve) =>
+    vehicles.FindVehicle(plate, (vehicle) => resolve(vehicle?.owner.id ?? null)),
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function ownerOf(plate)
+  local p = promise.new()
+  exports['ai-vehicles']:FindVehicle(plate, function(vehicle)
+    p:resolve(vehicle and vehicle.owner.id or nil)
+  end)
+  return Citizen.Await(p)
+end
+
+CreateThread(function()
+  print(ownerOf('AI123ABC') or 'personne ne la possède')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Il n'existe pas de recherche sur toutes les plaques stockées. Pour les véhicules d'un propriétaire, utilisez [GetVehiclesOf](#getvehiclesof) ; pour les plaques en mémoire, [GetPlateOwners](#getplateowners).
+</Callout>
+
+### GetVehiclesOf
+
+Tous les véhicules d'un propriétaire, **y compris un personnage qui n'est pas en ligne**. [GetVehicles](#getvehicles) ne répond que pour les propriétaires qu'ai-vehicles tient en mémoire ; celui-ci lit la base quand il le faut.
+
+**Côté :** Serveur · **Attend :** non (la réponse arrive dans `done`)
+
+```ts title="Signature"
+GetVehiclesOf(owner: VehicleOwner, done: (vehicles: OwnedVehicle[]) => void, shape?: "framework"): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:GetVehiclesOf(owner, function(vehicles) end, shape)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Les véhicules de qui : un personnage (`{ type: "character", id: "12" }`, l’id du personnage en texte), une flotte de métier ou de gang, ou une resource qui le détient.', required: true },
+    done: { type: '(vehicles: OwnedVehicle[]) => void', description: 'Appelé avec les véhicules du propriétaire. Vide pour un propriétaire sans véhicule ou inconnu.', required: true },
+    shape: { type: '"framework"', description: 'Répond chaque `props` dans la forme d’ox_lib / qb-core avec `fuelLevel`.' },
+  }}
+/>
+
+#### Retour
+
+Rien. `done` reçoit un tableau de [OwnedVehicle](#ownedvehicle).
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** La liste de garage d'un personnage, en ligne ou non. */
+export async function garageOf(citizenid: string) {
+  const charId = await characters.idOf(citizenid);
+  if (charId === null) return [];
+  return new Promise((resolve) =>
+    vehicles.GetVehiclesOf({ type: "character", id: String(charId) }, resolve),
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+  local p = promise.new()
+  exports['ai-vehicles']:GetVehiclesOf({ type = 'character', id = '12' }, function(list) p:resolve(list) end)
+  for _, v in ipairs(Citizen.Await(p)) do
+    print(('%s %s (%s)'):format(v.plate, v.model, v.state))
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+### SetPlate
+
+Une autre plaque pour un véhicule possédé : un changeur de plaque, ou un admin qui en corrige une. Si le véhicule est dehors, l'entité la reçoit aussi.
+
+**Côté :** Serveur · **Attend :** non (la réponse arrive dans `done`)
+
+```ts title="Signature"
+SetPlate(id: number, plate: string, done?: (ok: boolean) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SetPlate(id, plate, function(ok) end)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'L’id du véhicule. Le véhicule doit être en mémoire (son propriétaire est en ligne, ou il vient d’être lu).', required: true },
+    plate: { type: 'string', description: '1 à 8 lettres ou chiffres. Une plaque générée (`AI` et six caractères) est refusée : elles appartiennent à ai-vehicles.', required: true },
+    done: { type: '(ok: boolean) => void', description: 'Appelé avec `true` quand la plaque a changé, `false` quand elle est prise ou pas valide.' },
+  }}
+/>
+
+#### Retour
+
+Rien. `done(false)` veut dire : la plaque appartient à un autre véhicule possédé, ressemble à une plaque générée, ou n'est pas 1 à 8 lettres et chiffres.
+
 ### SaveVehicle
 
 Enregistre l’état et l’apparence d’un véhicule : carburant, dégâts, état, garage, et props (couleurs, extras, saleté). Le tuning enregistré (`mods`, `neon`) ne change jamais ici, donc une apparence lue depuis le client d’un joueur ne peut pas enregistrer le travail d’un menu de modifications. Utilisez `SaveTuning` pour le tuning.
@@ -452,6 +632,118 @@ Rien.
 <Callout type="error">
 C’est irréversible. Le véhicule, son apparence et son tuning disparaissent.
 </Callout>
+
+### DeleteVehicleByPlate
+
+Supprime un véhicule possédé par sa plaque, **propriétaire en ligne ou non** : sa ligne et toutes les entités du monde qui portent cette plaque.
+
+**Côté :** Serveur · **Attend :** non (la réponse arrive dans `done`)
+
+```ts title="Signature"
+DeleteVehicleByPlate(plate: string, done?: (result: DeleteByPlateResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:DeleteVehicleByPlate(plate, function(result) end)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    plate: { type: 'string', description: 'La plaque du véhicule, exactement comme il la porte.', required: true },
+    done: { type: '(result: DeleteByPlateResult) => void', description: 'Appelé avec le résultat. À omettre si vous ne lisez pas la réponse.' },
+  }}
+/>
+
+#### Retour
+
+Rien. `done` reçoit un [DeleteByPlateResult](#deletebyplateresult) : `{ ok: true, id, entities }` avec l'id supprimé et le nombre d'entités parties avec lui, ou `{ ok: false, error }`.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+vehicles.DeleteVehicleByPlate(plate, (result) => {
+  if (!result.ok) console.log(`${plate} non supprimée : ${result.error}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:DeleteVehicleByPlate(plate, function(result)
+  if not result.ok then print(('non supprimé : %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="error">
+C'est irréversible, et cela ne demande pas si le véhicule est dehors : la voiture sous un joueur disparaît. Pour une commande d'admin, demandez confirmation d'abord.
+</Callout>
+
+### AdoptVehicle
+
+Transforme un véhicule déjà dans le monde en véhicule possédé : il passe en `out`, est suivi comme un véhicule qu'ai-vehicles a fait apparaître lui-même, et son propriétaire peut le garer. C'est ce que fait un `/admincar` d'administrateur.
+
+**Côté :** Serveur · **Attend :** non (la réponse arrive dans `done`)
+
+```ts title="Signature"
+AdoptVehicle(owner: VehicleOwner, entity: number, model: string, props: unknown, done?: (result: AdoptVehicleResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:AdoptVehicle(owner, entity, model, props, function(result) end)
+```
+
+#### Paramètres
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'À qui il appartient désormais.', required: true },
+    entity: { type: 'number', description: 'L’entité du véhicule sur le serveur.', required: true },
+    model: { type: 'string', description: 'Le nom de modèle de l’entité (`"sultan"`). Le serveur ne peut pas lire un nom de modèle lui-même : vous le passez et ai-vehicles le vérifie contre l’entité.', required: true },
+    props: { type: 'unknown', description: 'L’apparence lue sur un client : `VehicleProps` de la lib, ou la forme d’ox_lib / qb-core. Elle doit appartenir au même modèle.', required: true },
+    done: { type: '(result: AdoptVehicleResult) => void', description: 'Appelé avec le résultat.' },
+  }}
+/>
+
+#### Retour
+
+Rien. `done` reçoit un [AdoptVehicleResult](#adoptvehicleresult) : `{ ok: true, id, plate }`, ou `{ ok: false, error }`. L'entité garde sa propre plaque quand c'est une plaque personnalisée valide (les règles de [SetPlate](#setplate)) ; sinon elle reçoit la plaque générée.
+
+#### Exemple
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, triggerClientCallback } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** Donne à l'admin la voiture dans laquelle il est assis. */
+export async function adminCar(source: number, charId: number, entity: number) {
+  const look = await triggerClientCallback<{ model: string; props: unknown }>("mycars:look", source);
+  if (!look) return;
+  vehicles.AdoptVehicle({ type: "character", id: String(charId) }, entity, look.model, look.props, (result) => {
+    if (!result.ok) console.log(`non adopté : ${result.error}`);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:AdoptVehicle({ type = 'character', id = '12' }, entity, model, props, function(result)
+  print(result.ok and ('possédé sous %s'):format(result.plate) or ('non adopté : ' .. tostring(result.error)))
+end)
+```
+</Tab>
+</Tabs>
 
 ### SpawnVehicle
 

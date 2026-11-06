@@ -4,7 +4,7 @@ description: Eksporty serwera, state bagi i zdarzenia ai-vehicles oraz API qbx_v
 icon: Code
 ---
 
-ai-vehicles ma tylko eksporty serwera. Wszystkie są synchroniczne (bez Promise, bez czekania w Lua), z wyjątkiem `SpawnVehicle`, który odpowiada przez callback. Typy są w `@aifivem/shared` (`vehicles.ts`).
+ai-vehicles ma tylko eksporty serwera. Większość jest synchroniczna (bez Promise, bez czekania w Lua); te, które mogą czytać bazę - `FindVehicle`, `GetVehiclesOf`, `SetPlate`, `DeleteVehicleByPlate`, `AdoptVehicle` - oraz `SpawnVehicle` odpowiadają przez callback. Typy są w `@aifivem/shared` (`vehicles.ts`).
 
 ```ts title="TypeScript"
 import { resourceExport } from "@aifivem/lib/server";
@@ -49,6 +49,32 @@ Co zwracają `GetVehicle` i `GetVehicles`.
     fuel: { type: 'number', description: 'Paliwo, 0-100.', required: true },
     engine: { type: 'number', description: 'Stan silnika, od -4000 do 1000.', required: true },
     body: { type: 'number', description: 'Stan karoserii, 0-1000.', required: true },
+  }}
+/>
+
+### DeleteByPlateResult
+
+Co odpowiada [DeleteVehicleByPlate](#deletevehiclebyplate).
+
+<TypeTable
+  type={{
+    ok: { type: 'boolean', description: '`true`, gdy pojazd został usunięty.', required: true },
+    id: { type: 'number', description: 'Id usuniętego pojazdu (tylko `ok: true`).' },
+    entities: { type: 'number', description: 'Ile encji w świecie z tą tablicą usunięto razem z nim (tylko `ok: true`).' },
+    error: { type: '"invalid_plate" | "not_found" | "failed"', description: '`invalid_plate`: to nie tablica. `not_found`: żaden posiadany pojazd jej nie ma. `failed`: samo usunięcie nie przeszło (tylko `ok: false`).' },
+  }}
+/>
+
+### AdoptVehicleResult
+
+Co odpowiada [AdoptVehicle](#adoptvehicle).
+
+<TypeTable
+  type={{
+    ok: { type: 'boolean', description: '`true`, gdy encja jest już posiadanym pojazdem.', required: true },
+    id: { type: 'number', description: 'Jej nowe id pojazdu (tylko `ok: true`).' },
+    plate: { type: 'string', description: 'Tablica, z którą została: własna albo wygenerowana (tylko `ok: true`).' },
+    error: { type: '"invalid" | "model" | "owned" | "plate_owned" | "failed"', description: '`owned`: encja już jest posiadanym pojazdem. `plate_owned`: jej tablica należy do posiadanego pojazdu, niezależnie od tego, czy właściciel jest online. `model`: nazwa modelu nie jest nazwą encji. `invalid`: to nie encja pojazdu, zły właściciel albo props innego modelu. `failed`: nie dało się zapisać (tylko `ok: false`).' },
   }}
 />
 
@@ -291,6 +317,160 @@ local owners = exports['ai-vehicles']:GetPlateOwners() -- { { plate, type, id },
 
 Tablica trójek. Pusta, gdy w pamięci nie ma żadnego pojazdu.
 
+### FindVehicle
+
+Jeden posiadany pojazd po dokładnej tablicy, **także taki, którego właściciel nie jest online**: ai-vehicles odpowiada z pamięci, gdy trzyma pojazd, a gdy nie - czyta bazę. To wyszukiwanie dla tablicy wpisanej przez gracza: zapytanie w MDT, parking depozytowy, brama sprawdzająca, czyje jest auto przed nią.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`)
+
+```ts title="Sygnatura"
+FindVehicle(plate: string, done: (vehicle: OwnedVehicle | null) => void, shape?: "framework"): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:FindVehicle(plate, function(vehicle) end, shape)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    plate: { type: 'string', description: 'Tablica w takiej formie, jaką nosi pojazd. To dokładne dopasowanie: fragment tablicy nic nie znajdzie.', required: true },
+    done: { type: '(vehicle: OwnedVehicle | null) => void', description: 'Wołany z pojazdem albo z `null`, gdy żaden posiadany pojazd nie ma tej tablicy.', required: true },
+    shape: { type: '"framework"', description: 'Odpowiada `props` w formie ox_lib / qb-core z `fuelLevel`, dla skryptu, który sam nakłada wygląd.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje [OwnedVehicle](#ownedvehicle) albo `null`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** Czyja jest tablica, online czy nie. */
+export function ownerOf(plate: string): Promise<string | null> {
+  return new Promise((resolve) =>
+    vehicles.FindVehicle(plate, (vehicle) => resolve(vehicle?.owner.id ?? null)),
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function ownerOf(plate)
+  local p = promise.new()
+  exports['ai-vehicles']:FindVehicle(plate, function(vehicle)
+    p:resolve(vehicle and vehicle.owner.id or nil)
+  end)
+  return Citizen.Await(p)
+end
+
+CreateThread(function()
+  print(ownerOf('AI123ABC') or 'nikt jej nie ma')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Nie ma wyszukiwania po wszystkich zapisanych tablicach. Po pojazdy jednego właściciela weź [GetVehiclesOf](#getvehiclesof), po tablice w pamięci - [GetPlateOwners](#getplateowners).
+</Callout>
+
+### GetVehiclesOf
+
+Wszystkie pojazdy jednego właściciela, **także postaci, która nie jest online**. [GetVehicles](#getvehicles) odpowiada tylko za właścicieli, których ai-vehicles trzyma w pamięci; ten czyta bazę, gdy musi.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`)
+
+```ts title="Sygnatura"
+GetVehiclesOf(owner: VehicleOwner, done: (vehicles: OwnedVehicle[]) => void, shape?: "framework"): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:GetVehiclesOf(owner, function(vehicles) end, shape)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Czyje pojazdy: postać (`{ type: "character", id: "12" }`, id postaci jako tekst), flota pracy albo gangu, albo resource, który je trzyma.', required: true },
+    done: { type: '(vehicles: OwnedVehicle[]) => void', description: 'Wołany z pojazdami właściciela. Pusty dla właściciela bez pojazdów albo nieznanego.', required: true },
+    shape: { type: '"framework"', description: 'Odpowiada każde `props` w formie ox_lib / qb-core z `fuelLevel`.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje tablicę [OwnedVehicle](#ownedvehicle).
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** Lista garażowa postaci, online czy nie. */
+export async function garageOf(citizenid: string) {
+  const charId = await characters.idOf(citizenid);
+  if (charId === null) return [];
+  return new Promise((resolve) =>
+    vehicles.GetVehiclesOf({ type: "character", id: String(charId) }, resolve),
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+  local p = promise.new()
+  exports['ai-vehicles']:GetVehiclesOf({ type = 'character', id = '12' }, function(list) p:resolve(list) end)
+  for _, v in ipairs(Citizen.Await(p)) do
+    print(('%s %s (%s)'):format(v.plate, v.model, v.state))
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+### SetPlate
+
+Inna tablica dla posiadanego pojazdu: zmieniacz tablic albo administrator, który poprawia jedną. Gdy pojazd jest w świecie, encja też ją dostaje.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`)
+
+```ts title="Sygnatura"
+SetPlate(id: number, plate: string, done?: (ok: boolean) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SetPlate(id, plate, function(ok) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'Id pojazdu. Pojazd musi być w pamięci (jego właściciel jest online albo pojazd został właśnie odczytany).', required: true },
+    plate: { type: 'string', description: '1-8 liter albo cyfr. Wygenerowana tablica (`AI` i sześć znaków) jest odrzucana: te należą do ai-vehicles.', required: true },
+    done: { type: '(ok: boolean) => void', description: 'Wołany z `true`, gdy tablica się zmieniła, i z `false`, gdy jest zajęta albo nieprawidłowa.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done(false)` znaczy, że tablica należy do innego posiadanego pojazdu, wygląda jak wygenerowana albo nie jest 1-8 liter i cyfr.
+
 ### SaveVehicle
 
 Zapisuje stan i wygląd pojazdu: paliwo, uszkodzenia, stan, garaż i props (kolory, dodatki, brud). Zapisany tuning (`mods`, `neon`) nigdy się tu nie zmienia, więc wygląd odczytany z klienta gracza nie może zapisać pracy menu modów. Do tuningu używaj `SaveTuning`.
@@ -452,6 +632,118 @@ Nic.
 <Callout type="error">
 Tego nie da się cofnąć. Pojazd, jego wygląd i tuning znikają.
 </Callout>
+
+### DeleteVehicleByPlate
+
+Usuwa posiadany pojazd po tablicy, **niezależnie od tego, czy właściciel jest online**: jego wiersz i każdą encję w świecie z tą tablicą.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`)
+
+```ts title="Sygnatura"
+DeleteVehicleByPlate(plate: string, done?: (result: DeleteByPlateResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:DeleteVehicleByPlate(plate, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    plate: { type: 'string', description: 'Tablica pojazdu, dokładnie w takiej formie, jaką nosi.', required: true },
+    done: { type: '(result: DeleteByPlateResult) => void', description: 'Wołany z wynikiem. Pomiń, jeśli nie czytasz odpowiedzi.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje [DeleteByPlateResult](#deletebyplateresult): `{ ok: true, id, entities }` z usuniętym id i liczbą encji, które poszły razem z nim, albo `{ ok: false, error }`.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+vehicles.DeleteVehicleByPlate(plate, (result) => {
+  if (!result.ok) console.log(`${plate} nie usunięto: ${result.error}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:DeleteVehicleByPlate(plate, function(result)
+  if not result.ok then print(('nie usunięto: %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="error">
+Tego nie da się cofnąć i nie pyta, czy pojazd jest w świecie: auto pod graczem znika. Przy komendzie administratora najpierw poproś o potwierdzenie.
+</Callout>
+
+### AdoptVehicle
+
+Zamienia pojazd, który już stoi w świecie, w posiadany: wchodzi w stan `out`, jest śledzony jak ten, który ai-vehicles sam stworzył, a właściciel może go zaparkować. To właśnie robi administratorskie `/admincar`.
+
+**Strona:** Serwer · **Czeka:** nie (odpowiedź przychodzi w `done`)
+
+```ts title="Sygnatura"
+AdoptVehicle(owner: VehicleOwner, entity: number, model: string, props: unknown, done?: (result: AdoptVehicleResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:AdoptVehicle(owner, entity, model, props, function(result) end)
+```
+
+#### Parametry
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Czyj jest od teraz.', required: true },
+    entity: { type: 'number', description: 'Encja pojazdu na serwerze.', required: true },
+    model: { type: 'string', description: 'Nazwa modelu encji (`"sultan"`). Serwer sam nie odczyta nazwy modelu, więc podajesz ją Ty, a ai-vehicles sprawdza ją z encją.', required: true },
+    props: { type: 'unknown', description: 'Wygląd odczytany na kliencie: `VehicleProps` z liba albo forma ox_lib / qb-core. Musi należeć do tego samego modelu.', required: true },
+    done: { type: '(result: AdoptVehicleResult) => void', description: 'Wołany z wynikiem.' },
+  }}
+/>
+
+#### Zwraca
+
+Nic. `done` dostaje [AdoptVehicleResult](#adoptvehicleresult): `{ ok: true, id, plate }` albo `{ ok: false, error }`. Encja zachowuje własną tablicę, gdy jest prawidłową tablicą własną (zasady [SetPlate](#setplate)); w przeciwnym razie dostaje wygenerowaną.
+
+#### Przykład
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, triggerClientCallback } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** Daje administratorowi auto, w którym siedzi. */
+export async function adminCar(source: number, charId: number, entity: number) {
+  const look = await triggerClientCallback<{ model: string; props: unknown }>("mycars:look", source);
+  if (!look) return;
+  vehicles.AdoptVehicle({ type: "character", id: String(charId) }, entity, look.model, look.props, (result) => {
+    if (!result.ok) console.log(`nie przyjęto: ${result.error}`);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:AdoptVehicle({ type = 'character', id = '12' }, entity, model, props, function(result)
+  print(result.ok and ('posiadany jako %s'):format(result.plate) or ('nie przyjęto: ' .. tostring(result.error)))
+end)
+```
+</Tab>
+</Tabs>
 
 ### SpawnVehicle
 

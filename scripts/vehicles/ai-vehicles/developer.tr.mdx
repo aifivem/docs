@@ -4,7 +4,7 @@ description: ai-vehicles’ın server export’ları, state bag’leri ve event�
 icon: Code
 ---
 
-ai-vehicles’ın sadece server export’ları vardır. Hepsi senkrondur (Promise yok, Lua’da bekleme yok); tek istisna, cevabını bir callback ile veren `SpawnVehicle`’dır. Tipler `@aifivem/shared` içindedir (`vehicles.ts`).
+ai-vehicles’ın sadece server export’ları vardır. Çoğu senkrondur (Promise yok, Lua’da bekleme yok); veritabanını okuyabilenler - `FindVehicle`, `GetVehiclesOf`, `SetPlate`, `DeleteVehicleByPlate`, `AdoptVehicle` - ve `SpawnVehicle` cevabını bir callback ile verir. Tipler `@aifivem/shared` içindedir (`vehicles.ts`).
 
 ```ts title="TypeScript"
 import { resourceExport } from "@aifivem/lib/server";
@@ -49,6 +49,32 @@ Bir aracın sahibi.
     fuel: { type: 'number', description: 'Yakıt, 0-100.', required: true },
     engine: { type: 'number', description: 'Motor sağlığı, -4000 ile 1000 arası.', required: true },
     body: { type: 'number', description: 'Kaporta sağlığı, 0-1000.', required: true },
+  }}
+/>
+
+### DeleteByPlateResult
+
+[DeleteVehicleByPlate](#deletevehiclebyplate) ne döner.
+
+<TypeTable
+  type={{
+    ok: { type: 'boolean', description: 'Araç silindiyse `true`.', required: true },
+    id: { type: 'number', description: 'Silinen aracın id’si (yalnızca `ok: true`).' },
+    entities: { type: 'number', description: 'O plakayı taşıyan kaç dünya varlığının onunla silindiği (yalnızca `ok: true`).' },
+    error: { type: '"invalid_plate" | "not_found" | "failed"', description: '`invalid_plate`: plaka değil. `not_found`: o plakaya sahip bir araç yok. `failed`: silme işlemi geçmedi (yalnızca `ok: false`).' },
+  }}
+/>
+
+### AdoptVehicleResult
+
+[AdoptVehicle](#adoptvehicle) ne döner.
+
+<TypeTable
+  type={{
+    ok: { type: 'boolean', description: 'Varlık artık sahipli bir araçsa `true`.', required: true },
+    id: { type: 'number', description: 'Yeni araç id’si (yalnızca `ok: true`).' },
+    plate: { type: 'string', description: 'Sonunda sahip olduğu plaka: kendisi ya da üretilmiş olanı (yalnızca `ok: true`).' },
+    error: { type: '"invalid" | "model" | "owned" | "plate_owned" | "failed"', description: '`owned`: varlık zaten sahipli bir araç. `plate_owned`: plakası sahipli bir araca ait, sahibi çevrimiçi olsun olmasın. `model`: model adı varlığın modeli değil. `invalid`: araç varlığı değil, yanlış sahip ya da başka modelin props’u. `failed`: yazılamadı (yalnızca `ok: false`).' },
   }}
 />
 
@@ -291,6 +317,160 @@ local owners = exports['ai-vehicles']:GetPlateOwners() -- { { plate, type, id },
 
 Üçlülerden oluşan bir dizi. Bellekte araç yoksa boştur.
 
+### FindVehicle
+
+Plakasıyla tek bir sahipli araç, **sahibi çevrimiçi olmasa da**: ai-vehicles aracı bellekte tutuyorsa bellekten, tutmuyorsa veritabanından cevap verir. Bir oyuncunun yazdığı plaka için arama budur - MDT sorgusu, çekici noktası, önündeki arabanın sahibini kontrol eden bir bariyer.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir)
+
+```ts title="İmza"
+FindVehicle(plate: string, done: (vehicle: OwnedVehicle | null) => void, shape?: "framework"): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:FindVehicle(plate, function(vehicle) end, shape)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    plate: { type: 'string', description: 'Aracın taşıdığı şekliyle plaka. Bu tam eşleşmedir: plakanın bir parçası hiçbir şey bulmaz.', required: true },
+    done: { type: '(vehicle: OwnedVehicle | null) => void', description: 'Araçla çağrılır; o plakaya sahip bir araç yoksa `null`.', required: true },
+    shape: { type: '"framework"', description: '`props` değerini ox_lib / qb-core biçiminde ve `fuelLevel` ile döner; görünümü kendi uygulayan script’ler için.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [OwnedVehicle](#ownedvehicle) ya da `null` alır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** Plakanın sahibi kim, çevrimiçi olsun olmasın. */
+export function ownerOf(plate: string): Promise<string | null> {
+  return new Promise((resolve) =>
+    vehicles.FindVehicle(plate, (vehicle) => resolve(vehicle?.owner.id ?? null)),
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+local function ownerOf(plate)
+  local p = promise.new()
+  exports['ai-vehicles']:FindVehicle(plate, function(vehicle)
+    p:resolve(vehicle and vehicle.owner.id or nil)
+  end)
+  return Citizen.Await(p)
+end
+
+CreateThread(function()
+  print(ownerOf('AI123ABC') or 'sahibi yok')
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+Kayıtlı bütün plakalar üzerinde arama yok. Tek bir sahibin araçları için [GetVehiclesOf](#getvehiclesof), ai-vehicles’ın bellekte tuttuğu plakalar için [GetPlateOwners](#getplateowners).
+</Callout>
+
+### GetVehiclesOf
+
+Tek bir sahibin bütün araçları, **çevrimiçi olmayan bir karakter dahil**. [GetVehicles](#getvehicles) yalnızca ai-vehicles’ın bellekte tuttuğu sahipler için cevap verir; bu, gerektiğinde veritabanını okur.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir)
+
+```ts title="İmza"
+GetVehiclesOf(owner: VehicleOwner, done: (vehicles: OwnedVehicle[]) => void, shape?: "framework"): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:GetVehiclesOf(owner, function(vehicles) end, shape)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Kimin araçları: bir karakter (`{ type: "character", id: "12" }`, karakter id’si metin olarak), bir meslek ya da çete filosu, ya da aracı tutan bir resource.', required: true },
+    done: { type: '(vehicles: OwnedVehicle[]) => void', description: 'Sahibin araçlarıyla çağrılır. Aracı olmayan ya da bilinmeyen bir sahip için boş.', required: true },
+    shape: { type: '"framework"', description: 'Her `props` değerini ox_lib / qb-core biçiminde ve `fuelLevel` ile döner.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [OwnedVehicle](#ownedvehicle) dizisi alır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { characters, resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** Bir karakterin garaj listesi, çevrimiçi olsun olmasın. */
+export async function garageOf(citizenid: string) {
+  const charId = await characters.idOf(citizenid);
+  if (charId === null) return [];
+  return new Promise((resolve) =>
+    vehicles.GetVehiclesOf({ type: "character", id: String(charId) }, resolve),
+  );
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+CreateThread(function()
+  local p = promise.new()
+  exports['ai-vehicles']:GetVehiclesOf({ type = 'character', id = '12' }, function(list) p:resolve(list) end)
+  for _, v in ipairs(Citizen.Await(p)) do
+    print(('%s %s (%s)'):format(v.plate, v.model, v.state))
+  end
+end)
+```
+</Tab>
+</Tabs>
+
+### SetPlate
+
+Sahipli bir araca başka bir plaka: bir plaka değiştirici ya da bir admin düzeltmesi. Araç dışarıdaysa dünyadaki varlık da yeni plakayı alır.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir)
+
+```ts title="İmza"
+SetPlate(id: number, plate: string, done?: (ok: boolean) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:SetPlate(id, plate, function(ok) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    id: { type: 'number', description: 'Araç id’si. Aracın bellekte olması gerekir (sahibi çevrimiçi ya da araç yeni okunmuş).', required: true },
+    plate: { type: 'string', description: '1-8 harf ya da rakam. Üretilmiş bir plaka (`AI` ve altı karakter) reddedilir: onlar ai-vehicles’a aittir.', required: true },
+    done: { type: '(ok: boolean) => void', description: 'Plaka değiştiyse `true`, alınmışsa ya da geçersizse `false` ile çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done(false)`: plaka başka bir sahipli araca ait, üretilmiş bir plakaya benziyor ya da 1-8 harf ve rakam değil.
+
 ### SaveVehicle
 
 Bir aracın durumunu ve görünüşünü kaydeder: yakıt, hasar, durum, garaj ve props (renkler, ekstralar, kir). Kayıtlı modifiye (`mods`, `neon`) burada asla değişmez; böylece bir oyuncunun client’ından okunan görünüş, bir mod menüsünün yaptıklarını kaydedemez. Modifiye için `SaveTuning` kullan.
@@ -452,6 +632,118 @@ Hiçbir şey.
 <Callout type="error">
 Bu geri alınamaz. Araç, görünüşü ve modifiyesi yok olur.
 </Callout>
+
+### DeleteVehicleByPlate
+
+Sahipli bir aracı plakasıyla siler, **sahibi çevrimiçi olsun olmasın**: satırını ve o plakayı taşıyan dünyadaki her varlığı.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir)
+
+```ts title="İmza"
+DeleteVehicleByPlate(plate: string, done?: (result: DeleteByPlateResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:DeleteVehicleByPlate(plate, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    plate: { type: 'string', description: 'Aracın plakası, taşıdığı şekliyle.', required: true },
+    done: { type: '(result: DeleteByPlateResult) => void', description: 'Sonuçla çağrılır. Cevabı okumuyorsan verme.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [DeleteByPlateResult](#deletebyplateresult) alır: sildiği id ve onunla giden dünya varlığı sayısıyla `{ ok: true, id, entities }`, ya da `{ ok: false, error }`.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+vehicles.DeleteVehicleByPlate(plate, (result) => {
+  if (!result.ok) console.log(`${plate} silinmedi: ${result.error}`);
+});
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:DeleteVehicleByPlate(plate, function(result)
+  if not result.ok then print(('silinmedi: %s'):format(result.error)) end
+end)
+```
+</Tab>
+</Tabs>
+
+<Callout type="error">
+Bu geri alınamaz ve aracın dışarıda olup olmadığını sormaz: oyuncunun altındaki araba kaybolur. Bir admin komutu için önce onay al.
+</Callout>
+
+### AdoptVehicle
+
+Dünyada hâlihazırda bulunan bir aracı sahipli araca çevirir: durumu `out` olur, ai-vehicles’ın kendi spawn ettiği bir araç gibi takip edilir ve sahibi onu park edebilir. Bir admin `/admincar` komutunun yaptığı şey budur.
+
+**Taraf:** Server · **Bekler:** hayır (cevap `done` içinde gelir)
+
+```ts title="İmza"
+AdoptVehicle(owner: VehicleOwner, entity: number, model: string, props: unknown, done?: (result: AdoptVehicleResult) => void): void
+```
+
+```lua title="Lua"
+exports['ai-vehicles']:AdoptVehicle(owner, entity, model, props, function(result) end)
+```
+
+#### Parametreler
+
+<TypeTable
+  type={{
+    owner: { type: 'VehicleOwner', description: 'Bundan sonra sahibi kim.', required: true },
+    entity: { type: 'number', description: 'Sunucudaki araç varlığı.', required: true },
+    model: { type: 'string', description: 'Varlığın model adı (`"sultan"`). Sunucu model adını kendi okuyamaz; sen verirsin, ai-vehicles bunu varlıkla karşılaştırır.', required: true },
+    props: { type: 'unknown', description: 'Bir client’ta okunan görünüm: lib `VehicleProps` ya da ox_lib / qb-core biçimi. Aynı modele ait olmalı.', required: true },
+    done: { type: '(result: AdoptVehicleResult) => void', description: 'Sonuçla çağrılır.' },
+  }}
+/>
+
+#### Dönüş değeri
+
+Hiçbir şey. `done` bir [AdoptVehicleResult](#adoptvehicleresult) alır: `{ ok: true, id, plate }` ya da `{ ok: false, error }`. Varlığın plakası geçerli bir özel plakaysa ([SetPlate](#setplate) kuralları) onu korur; değilse üretilmiş plakayı alır.
+
+#### Örnek
+
+<Tabs items={['TypeScript', 'Lua']}>
+<Tab value="TypeScript">
+```ts
+import { resourceExport, triggerClientCallback } from "@aifivem/lib/server";
+
+const vehicles = resourceExport("ai-vehicles");
+
+/** Admin’e içinde oturduğu arabayı verir. */
+export async function adminCar(source: number, charId: number, entity: number) {
+  const look = await triggerClientCallback<{ model: string; props: unknown }>("mycars:look", source);
+  if (!look) return;
+  vehicles.AdoptVehicle({ type: "character", id: String(charId) }, entity, look.model, look.props, (result) => {
+    if (!result.ok) console.log(`sahiplenilmedi: ${result.error}`);
+  });
+}
+```
+</Tab>
+<Tab value="Lua">
+```lua
+exports['ai-vehicles']:AdoptVehicle({ type = 'character', id = '12' }, entity, model, props, function(result)
+  print(result.ok and ('%s plakasıyla sahiplendi'):format(result.plate) or ('sahiplenilmedi: ' .. tostring(result.error)))
+end)
+```
+</Tab>
+</Tabs>
 
 ### SpawnVehicle
 
